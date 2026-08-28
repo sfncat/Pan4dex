@@ -48,3 +48,6 @@ htmlcov/
 .pytest_cache/
 *.cover
 .tox/
+
+# Releases (manual commit only)
+releases/
