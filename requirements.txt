@@ -1,0 +1,4 @@
+# Pan4dex 万格 - 运行时依赖
+PyQt6>=6.6.0
+send2trash>=1.8.0
+Pillow>=10.0.0

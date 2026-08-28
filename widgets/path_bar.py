@@ -1,0 +1,132 @@
+"""
+Pan4dex 万格 — 路径栏组件
+"""
+from PyQt6.QtGui import QFileSystemModel, QAction
+from PyQt6.QtWidgets import (
+    QComboBox, QCompleter, QWidget, 
+    QHBoxLayout, QPushButton, QToolButton
+)
+from PyQt6.QtCore import Qt, pyqtSignal, QDir
+
+
+class PathBar(QWidget):
+    """路径栏组件"""
+    
+    # 信号
+    path_entered = pyqtSignal(str)  # 路径输入信号
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        
+        self.layout = QHBoxLayout(self)
+        self.layout.setContentsMargins(2, 2, 2, 2)
+        self.layout.setSpacing(2)
+        
+        # 后退按钮
+        self.back_btn = QToolButton()
+        self.back_btn.setText("◀")
+        self.back_btn.setToolTip("后退")
+        self.back_btn.setFixedSize(24, 24)
+        self.layout.addWidget(self.back_btn)
+        
+        # 前进按钮
+        self.forward_btn = QToolButton()
+        self.forward_btn.setText("▶")
+        self.forward_btn.setToolTip("前进")
+        self.forward_btn.setFixedSize(24, 24)
+        self.layout.addWidget(self.forward_btn)
+        
+        # 上级目录按钮
+        self.up_btn = QToolButton()
+        self.up_btn.setText("▲")
+        self.up_btn.setToolTip("上级目录")
+        self.up_btn.setFixedSize(24, 24)
+        self.up_btn.clicked.connect(self.go_up)
+        self.layout.addWidget(self.up_btn)
+        
+        # 刷新按钮
+        self.refresh_btn = QToolButton()
+        self.refresh_btn.setText("🔄")
+        self.refresh_btn.setToolTip("刷新")
+        self.refresh_btn.setFixedSize(24, 24)
+        self.layout.addWidget(self.refresh_btn)
+        
+        # 路径输入框
+        self.combo_box = QComboBox()
+        self.combo_box.setEditable(True)
+        self.combo_box.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self.combo_box.setMinimumHeight(24)
+        
+        # 设置自动补全
+        self.completer = QCompleter()
+        self.completer_model = QFileSystemModel()
+        self.completer_model.setRootPath("")
+        self.completer.setModel(self.completer_model)
+        self.completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
+        self.completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        self.combo_box.setCompleter(self.completer)
+        
+        # 信号
+        self.combo_box.lineEdit().returnPressed.connect(self.on_return_pressed)
+        self.combo_box.activated.connect(self.on_item_activated)
+        
+        self.layout.addWidget(self.combo_box)
+        
+        # 设置样式
+        self.setStyleSheet("""
+            QComboBox {
+                background-color: #3D3D3D;
+                color: #CCCCCC;
+                border: 1px solid #505050;
+                border-radius: 3px;
+                padding: 2px 5px;
+            }
+            QComboBox:hover {
+                border-color: #2196F3;
+            }
+            QComboBox::drop-down {
+                border: none;
+                width: 20px;
+            }
+            QToolButton {
+                background-color: #3D3D3D;
+                color: #CCCCCC;
+                border: 1px solid #505050;
+                border-radius: 3px;
+            }
+            QToolButton:hover {
+                background-color: #505050;
+                border-color: #2196F3;
+            }
+        """)
+    
+    def set_path(self, path: str):
+        """设置路径"""
+        self.combo_box.setEditText(path)
+        # 添加到历史
+        if self.combo_box.findText(path) == -1:
+            self.combo_box.addItem(path)
+    
+    def get_path(self) -> str:
+        """获取当前路径"""
+        return self.combo_box.currentText()
+    
+    def on_return_pressed(self):
+        """回车处理"""
+        path = self.combo_box.currentText().strip()
+        if path:
+            self.path_entered.emit(path)
+    
+    def on_item_activated(self, index):
+        """下拉项激活"""
+        path = self.combo_box.itemText(index)
+        if path:
+            self.path_entered.emit(path)
+    
+    def go_up(self):
+        """返回上级目录"""
+        import os
+        current = self.combo_box.currentText()
+        parent = os.path.dirname(current)
+        if parent and parent != current:
+            self.path_entered.emit(parent)
