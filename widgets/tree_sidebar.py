@@ -75,35 +75,7 @@ class TreeSidebar(QDockWidget):
         self.setWidget(self.main_widget)
         
         # 样式
-        self.setStyleSheet("""
-            QTreeView {
-                background-color: #1E1E1E;
-                color: #CCCCCC;
-                border: none;
-                selection-background-color: #2196F3;
-                outline: none;
-            }
-            QTreeView::item:hover {
-                background-color: #2A2A2A;
-            }
-            QTreeView::item:selected {
-                background-color: #2196F3;
-            }
-            QPushButton {
-                background-color: #3D3D3D;
-                color: #CCCCCC;
-                border: 1px solid #505050;
-                border-radius: 3px;
-                padding: 3px 8px;
-                font-size: 11px;
-            }
-            QPushButton:hover {
-                background-color: #505050;
-            }
-            QPushButton:checked {
-                background-color: #2196F3;
-            }
-        """)
+
     
     def init_model(self):
         """初始化文件系统模型"""

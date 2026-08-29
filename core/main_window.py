@@ -4,7 +4,7 @@ Pan4dex 万格 — 主窗口
 from PyQt6.QtWidgets import (
     QMainWindow, QTabWidget, QSplitter, QWidget, 
     QVBoxLayout, QStatusBar, QMenuBar,
-    QToolBar, QLabel, QApplication, QMenu
+    QToolBar, QLabel, QApplication, QMenu, QDialog
 )
 from PyQt6.QtCore import Qt, QSettings, QSize, QPoint, pyqtSignal
 from PyQt6.QtGui import QAction, QKeySequence, QCursor
@@ -41,7 +41,7 @@ class MainWindow(QMainWindow):
         
         # 当前活动窗格（目录树导航目标）
         self._active_pane = None
-        
+
         # 创建 UI
         self.create_menu_bar()
         self.create_tool_bar()
@@ -50,9 +50,49 @@ class MainWindow(QMainWindow):
         self.create_preview_panel()
         self.create_bookmark_sidebar()
         self.create_tree_sidebar()
-        
+
         # 应用默认主题
         self.theme_manager.apply_theme("dark")
+        
+        # 自动恢复上次的布局
+        self._auto_load_layout()
+    
+    def _auto_load_layout(self):
+        """自动加载上次保存的布局"""
+        import json
+        import os
+        
+        layout_file = os.path.expanduser("~/.config/pan4dex/layout.json")
+        
+        if not os.path.exists(layout_file):
+            return
+        
+        try:
+            with open(layout_file, 'r', encoding='utf-8') as f:
+                layout = json.load(f)
+        except Exception:
+            return
+        
+        # 等待 UI 初始化完成后恢复布局
+        from PyQt6.QtCore import QTimer
+        QTimer.singleShot(100, lambda: self._apply_layout(layout))
+    
+    def _apply_layout(self, layout: dict):
+        """应用布局配置"""
+        panes_layout = layout.get('panes', {})
+        if not panes_layout:
+            return
+        
+        current_widget = self.tab_widget.currentWidget()
+        if not isinstance(current_widget, QuadPaneWidget):
+            return
+        
+        for pane_name, state in panes_layout.items():
+            pane = getattr(current_widget, pane_name, None)
+            if pane:
+                pane.set_state(state)
+        
+        self.status_bar.showMessage("已恢复上次布局")
     
     def create_preview_panel(self):
         """创建预览面板"""
@@ -160,7 +200,7 @@ class MainWindow(QMainWindow):
         tree_action.triggered.connect(self.toggle_tree_sidebar)
         view_menu.addAction(tree_action)
         self.tree_action = tree_action
-        
+
         preview_action = QAction("预览面板(&P)", self)
         preview_action.setShortcut(QKeySequence("F3"))
         preview_action.setCheckable(True)
@@ -358,7 +398,9 @@ class MainWindow(QMainWindow):
     def set_theme(self, name: str):
         """设置主题"""
         if self.theme_manager.apply_theme(name):
-            self.status_bar.showMessage(f"已切换到 {self.theme_manager.get_theme(name)['display_name']}")
+            theme_info = self.theme_manager.get_theme(name)
+            display_name = theme_info['display_name'] if theme_info else name
+            self.status_bar.showMessage(f"已切换到 {display_name}")
     
     def open_batch_rename(self):
         """打开批量重命名"""
@@ -431,19 +473,84 @@ class MainWindow(QMainWindow):
         if current_widget:
             current_widget.switch_to_dual()
     
+    def save_layout(self):
+        """保存当前布局到配置文件"""
+        import json
+        import os
+        
+        config_dir = os.path.expanduser("~/.config/pan4dex")
+        os.makedirs(config_dir, exist_ok=True)
+        layout_file = os.path.join(config_dir, "layout.json")
+        
+        # 获取当前标签页的布局
+        current_widget = self.tab_widget.currentWidget()
+        if not isinstance(current_widget, QuadPaneWidget):
+            return
+        
+        layout = {
+            'version': '1.0',
+            'panes': {}
+        }
+        
+        for pane_name in ['pane1', 'pane2', 'pane3', 'pane4']:
+            pane = getattr(current_widget, pane_name, None)
+            if pane:
+                layout['panes'][pane_name] = pane.get_state()
+        
+        try:
+            with open(layout_file, 'w', encoding='utf-8') as f:
+                json.dump(layout, f, ensure_ascii=False, indent=2)
+            self.status_bar.showMessage(f"布局已保存到 {layout_file}")
+        except Exception as e:
+            self.status_bar.showMessage(f"保存布局失败: {e}")
+
+    def load_layout(self):
+        """从配置文件恢复布局"""
+        import json
+        import os
+        
+        layout_file = os.path.expanduser("~/.config/pan4dex/layout.json")
+        
+        if not os.path.exists(layout_file):
+            self.status_bar.showMessage("未找到布局配置文件")
+            return
+        
+        try:
+            with open(layout_file, 'r', encoding='utf-8') as f:
+                layout = json.load(f)
+        except Exception as e:
+            self.status_bar.showMessage(f"加载布局失败: {e}")
+            return
+        
+        # 恢复当前标签页的布局
+        current_widget = self.tab_widget.currentWidget()
+        if not isinstance(current_widget, QuadPaneWidget):
+            return
+        
+        panes_layout = layout.get('panes', {})
+        for pane_name, state in panes_layout.items():
+            pane = getattr(current_widget, pane_name, None)
+            if pane:
+                pane.set_state(state)
+        
+        self.status_bar.showMessage("布局已恢复")
+
     def show_about(self):
         """显示关于对话框"""
         from PyQt6.QtWidgets import QMessageBox
         import sys
         import os
         
-        # 动态获取版本号
+        # 动态获取版本号和编译时间
         try:
             from main import __version__, __build_time__
-            version_str = f"版本: {__version__}"
+            if __build_time__:
+                version_str = f"版本: {__version__} ({__build_time__})"
+            else:
+                version_str = f"版本: {__version__}"
             build_str = f"<p>编译时间: {__build_time__}</p>" if __build_time__ else ""
         except ImportError:
-            version_str = "版本: 0.1.0"
+            version_str = "版本: 0.9.4"
             build_str = ""
         
         QMessageBox.about(
@@ -460,7 +567,23 @@ class MainWindow(QMainWindow):
         """打开设置对话框"""
         from widgets.settings_dialog import SettingsDialog
         dialog = SettingsDialog(self)
-        dialog.exec()
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            # 应用设置
+            settings = dialog.get_settings()
+            
+            # 应用主题
+            theme = settings.get('theme', 'dark')
+            self.theme_manager.apply_theme(theme)
+            
+            # 应用字体
+            font_family = settings.get('font_family')
+            font_size = settings.get('font_size', 9)
+            if font_family and font_family != "系统默认":
+                from PyQt6.QtGui import QFont
+                font = QFont(font_family, font_size)
+                QApplication.instance().setFont(font)
+            
+            self.status_bar.showMessage("设置已应用")
     
     def save_geometry(self):
         """保存窗口位置和大小"""
@@ -479,7 +602,37 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         """关闭窗口时保存状态"""
         self.save_geometry()
+        self._auto_save_layout()
         super().closeEvent(event)
+    
+    def _auto_save_layout(self):
+        """自动保存当前布局"""
+        import json
+        import os
+        
+        config_dir = os.path.expanduser("~/.config/pan4dex")
+        os.makedirs(config_dir, exist_ok=True)
+        layout_file = os.path.join(config_dir, "layout.json")
+        
+        current_widget = self.tab_widget.currentWidget()
+        if not isinstance(current_widget, QuadPaneWidget):
+            return
+        
+        layout = {
+            'version': '1.0',
+            'panes': {}
+        }
+        
+        for pane_name in ['pane1', 'pane2', 'pane3', 'pane4']:
+            pane = getattr(current_widget, pane_name, None)
+            if pane:
+                layout['panes'][pane_name] = pane.get_state()
+        
+        try:
+            with open(layout_file, 'w', encoding='utf-8') as f:
+                json.dump(layout, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
 
 
 class QuadPaneWidget(QWidget):

@@ -1,15 +1,19 @@
 """
 Pan4dex 万格 — 单窗格组件
 """
+import logging
+
+logger = logging.getLogger("pan4dex.pane")
 from PyQt6.QtGui import QFileSystemModel, QAction, QKeySequence, QCursor
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QTreeView, QProgressBar, 
-    QLabel, QMenu, QMessageBox, QInputDialog, QLineEdit
+    QWidget, QVBoxLayout, QTreeView, QProgressBar,
+    QLabel, QMenu, QMessageBox, QInputDialog, QLineEdit, QHBoxLayout, QTabWidget
 )
 from PyQt6.QtCore import Qt, QDir, QMimeData, pyqtSignal, QThread, QPoint, QEvent
 import os
 
 from widgets.path_bar import PathBar
+from widgets.pane_tree_view import PaneTreeView
 from core.file_operations import FileOperations, FileOperationType, FileOperationResult
 
 
@@ -29,6 +33,10 @@ class Pane(QWidget):
         self.clipboard = []  # 剪贴板：存储复制的文件路径
         self.clipboard_action = None  # 'copy' or 'cut'
         
+        # 导航历史（支持前进/后退）
+        self._nav_history = [self.current_path]
+        self._nav_index = 0
+        
         # 拖拽起始位置
         self.drag_start_pos = None
         
@@ -46,33 +54,80 @@ class Pane(QWidget):
         self.activated.emit(self)
         super().focusInEvent(a0)
     
-    def eventFilter(self, a0, a1):
-        """事件过滤器 - 检测 tree_view 获得焦点或点击"""
-        if a0 == self.tree_view:
-            if a1.type() == QEvent.Type.FocusIn:
+    def eventFilter(self, obj, event):
+        """事件过滤器"""
+        logger.debug(f"eventFilter: obj={obj.__class__.__name__}, event={event.type()}")
+        
+        # 鼠标侧键导航（后退/前进）- viewport 上捕获
+        if obj == self.tree_view.viewport():
+            if event.type() == QEvent.Type.MouseButtonPress:
                 self.activated.emit(self)
-            elif a1.type() == QEvent.Type.MouseButtonPress:
+                if hasattr(event, 'button'):
+                    btn = event.button()
+                    logger.debug(f"viewport mouse press: button={btn}")
+                    if btn == Qt.MouseButton.BackButton:
+                        logger.info("Mouse back button -> go_back")
+                        self.go_back()
+                        return True
+                    elif btn == Qt.MouseButton.ForwardButton:
+                        logger.info("Mouse forward button -> go_forward")
+                        self.go_forward()
+                        return True
+            elif event.type() == QEvent.Type.FocusIn:
                 self.activated.emit(self)
-        return super().eventFilter(a0, a1)
+        
+        # 标签栏双击检测
+        if hasattr(self, '_tab_bar') and event.type() == QEvent.Type.MouseButtonDblClick:
+            if obj == self._tab_bar:
+                pos = event.pos()
+                index = self._tab_bar.tabAt(pos)
+                logger.debug(f"tabBar doubleClick: index={index}")
+                self._on_tab_bar_double_clicked(index)
+                return True
+            elif obj == self.pane_tabs:
+                logger.debug(f"paneTabs doubleClick -> add tab")
+                self.add_pane_tab()
+                return True
+        
+        return super().eventFilter(obj, event)
     
     def init_ui(self):
         """初始化 UI"""
         self.layout = QVBoxLayout(self)
         self.layout.setContentsMargins(0, 0, 0, 0)
         self.layout.setSpacing(0)
-        
+
         # 路径栏
         self.path_bar = PathBar()
         self.path_bar.path_entered.connect(self.on_path_entered)
+        self.path_bar.tree_toggle_requested.connect(self.toggle_tree)
+        self.path_bar.tabs_toggle_requested.connect(self.toggle_tabs)
         self.layout.addWidget(self.path_bar)
-        
+
         # 设置焦点策略，让 focusInEvent 能触发
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        
+
+        # 水平容器：左侧目录树 + 右侧文件列表
+        self.h_container = QWidget()
+        self.h_layout = QHBoxLayout(self.h_container)
+        self.h_layout.setContentsMargins(0, 0, 0, 0)
+        self.h_layout.setSpacing(0)
+
+        # 内嵌目录树
+        self.pane_tree_view = PaneTreeView()
+        self.pane_tree_view.folder_clicked.connect(self.on_pane_tree_clicked)
+        self.pane_tree_view.setVisible(False)  # 默认隐藏
+        self.h_layout.addWidget(self.pane_tree_view)
+
+        # 文件列表容器
+        self.file_list_widget = QWidget()
+        self.file_list_layout = QVBoxLayout(self.file_list_widget)
+        self.file_list_layout.setContentsMargins(0, 0, 0, 0)
+        self.file_list_layout.setSpacing(0)
+
         # 文件列表
         self.tree_view = QTreeView()
         self.tree_view.setRootIsDecorated(False)
-        # 禁用交替行颜色，避免 Windows 上白底灰字问题
         self.tree_view.setAlternatingRowColors(False)
         self.tree_view.setSortingEnabled(True)
         self.tree_view.setItemsExpandable(False)
@@ -80,70 +135,55 @@ class Pane(QWidget):
         self.tree_view.doubleClicked.connect(self.on_item_double_clicked)
         self.tree_view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.tree_view.customContextMenuRequested.connect(self.show_context_menu)
-        # 安装事件过滤器，检测 tree_view 获得焦点时发出 activated 信号
-        self.tree_view.installEventFilter(self)
-        
-        # 强制设置调色板，防止 Windows 原生主题覆盖
-        from PyQt6.QtGui import QPalette, QColor
-        palette = self.tree_view.palette()
-        palette.setColor(QPalette.ColorRole.Base, QColor("#1E1E1E"))
-        palette.setColor(QPalette.ColorRole.AlternateBase, QColor("#1E1E1E"))
-        palette.setColor(QPalette.ColorRole.Text, QColor("#E0E0E0"))
-        self.tree_view.setPalette(palette)
-        
+        self.tree_view.viewport().installEventFilter(self)
+
+
+
         # 拖拽支持
         self.tree_view.setDragEnabled(True)
         self.tree_view.setAcceptDrops(True)
         self.tree_view.setDropIndicatorShown(True)
         self.tree_view.setDragDropMode(QTreeView.DragDropMode.DragDrop)
-        
-        self.layout.addWidget(self.tree_view)
-        
+
+        self.file_list_layout.addWidget(self.tree_view)
+
+        self.h_layout.addWidget(self.file_list_widget, 1)  # 文件列表占据剩余空间
+
+        self.layout.addWidget(self.h_container)
+
         # 进度条
         self.progress_bar = QProgressBar()
         self.progress_bar.setVisible(False)
         self.progress_bar.setMaximumHeight(3)
         self.progress_bar.setTextVisible(False)
         self.layout.addWidget(self.progress_bar)
-        
+
         # 状态栏
         self.status_label = QLabel()
         self.status_label.setContentsMargins(5, 2, 5, 2)
         self.layout.addWidget(self.status_label)
+
+        # 窗格内标签页栏（默认隐藏）
+        self.pane_tabs = QTabWidget()
+        self.pane_tabs.setMaximumHeight(30)
+        self.pane_tabs.setTabsClosable(True)
+        self.pane_tabs.tabCloseRequested.connect(self.close_pane_tab)
+        self.pane_tabs.currentChanged.connect(self.on_pane_tab_changed)
+        self.pane_tabs.setVisible(False)
+        # 标签栏右键菜单
+        self.pane_tabs.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.pane_tabs.customContextMenuRequested.connect(self.show_pane_tab_context_menu)
+        # 双击标签栏处理 - 安装在 QTabWidget 上
+        self._tab_bar = self.pane_tabs.tabBar()
+        self._tab_bar.installEventFilter(self)
+        self.pane_tabs.installEventFilter(self)
+        self.layout.addWidget(self.pane_tabs)
+
+        # 初始化第一个标签页
+        self._pane_tab_paths = [self.current_path]
+        self.pane_tabs.addTab(QLabel(), os.path.basename(self.current_path) if os.path.basename(self.current_path) else self.current_path)
         
-        # 设置样式
-        self.setStyleSheet("""
-            QTreeView {
-                background-color: #1E1E1E;
-                color: #CCCCCC;
-                border: none;
-                selection-background-color: #2196F3;
-                outline: none;
-            }
-            QTreeView::item:hover {
-                background-color: #2A2A2A;
-            }
-            QTreeView::item:selected {
-                background-color: #2196F3;
-            }
-            QHeaderView::section {
-                background-color: #2D2D2D;
-                color: #CCCCCC;
-                border: 1px solid #404040;
-                padding: 5px;
-            }
-            QProgressBar {
-                background-color: #2D2D2D;
-                border: none;
-            }
-            QProgressBar::chunk {
-                background-color: #2196F3;
-            }
-            QLabel {
-                color: #888888;
-                font-size: 11px;
-            }
-        """)
+
     
     def init_model(self):
         """初始化文件系统模型"""
@@ -161,19 +201,228 @@ class Pane(QWidget):
         # 选择变化时更新预览（需要在 model 设置之后）
         self.tree_view.selectionModel().selectionChanged.connect(self.on_selection_changed)
     
+    def get_state(self) -> dict:
+        """获取窗格状态"""
+        return {
+            'current_path': self.current_path,
+            'tree_visible': self.pane_tree_view.isVisible(),
+            'tabs_visible': self.pane_tabs.isVisible(),
+            'tab_paths': self._pane_tab_paths.copy(),
+            'tab_current': self.pane_tabs.currentIndex() if self.pane_tabs.isVisible() else 0,
+        }
+
+    def set_state(self, state: dict):
+        """恢复窗格状态"""
+        if not state:
+            return
+        
+        # 恢复标签页
+        tab_paths = state.get('tab_paths', [])
+        if tab_paths:
+            # 清除现有标签页
+            while self.pane_tabs.count() > 0:
+                self.pane_tabs.removeTab(0)
+            self._pane_tab_paths = []
+            
+            # 恢复标签页
+            for path in tab_paths:
+                self._pane_tab_paths.append(path)
+                self.pane_tabs.addTab(QLabel(), os.path.basename(path) if os.path.basename(path) else path)
+            
+            # 恢复当前标签页
+            current_idx = state.get('tab_current', 0)
+            if 0 <= current_idx < len(tab_paths):
+                self.pane_tabs.setCurrentIndex(current_idx)
+                path = tab_paths[current_idx]
+            else:
+                path = tab_paths[0] if tab_paths else state.get('current_path', QDir.homePath())
+            
+            self.current_path = path
+            self.path_bar.set_path(path)
+            index = self.model.setRootPath(path)
+            self.tree_view.setRootIndex(index)
+            self.pane_tree_view.expand_to_path(path)
+            self.update_status_bar()
+        
+        # 恢复目录树可见性
+        if state.get('tree_visible', False):
+            self.set_tree_visible(True)
+        else:
+            self.set_tree_visible(False)
+        
+        # 恢复标签栏可见性
+        if state.get('tabs_visible', False):
+            self.pane_tabs.setVisible(True)
+            self.path_bar.set_tabs_button_checked(True)
+        else:
+            self.pane_tabs.setVisible(False)
+            self.path_bar.set_tabs_button_checked(False)
+
     def navigate_to(self, path: str):
         """导航到指定路径"""
         import os
         if os.path.isdir(path):
             self.current_path = path
             self.path_bar.set_path(path)
-            
+
             index = self.model.setRootPath(path)
             self.tree_view.setRootIndex(index)
-            
+
+            # 同步展开内嵌目录树到当前路径
+            self.pane_tree_view.expand_to_path(path)
+
+            # 更新当前标签页的名称和路径
+            current_idx = self.pane_tabs.currentIndex()
+            if self.pane_tabs.isVisible() and 0 <= current_idx < len(self._pane_tab_paths):
+                self._pane_tab_paths[current_idx] = path
+                self.pane_tabs.setTabText(current_idx, os.path.basename(path) if os.path.basename(path) else path)
+
+            # 更新导航历史
+            if self._nav_history[self._nav_index] != path:
+                # 截断前进历史
+                self._nav_history = self._nav_history[:self._nav_index + 1]
+                self._nav_history.append(path)
+                self._nav_index = len(self._nav_history) - 1
+
             self.update_status_bar()
             self.path_changed.emit(path)
-    
+
+    def go_back(self):
+        """后退到上一个目录"""
+        if self._nav_index > 0:
+            self._nav_index -= 1
+            path = self._nav_history[self._nav_index]
+            self._navigate_no_history(path)
+
+    def go_forward(self):
+        """前进到下一个目录"""
+        if self._nav_index < len(self._nav_history) - 1:
+            self._nav_index += 1
+            path = self._nav_history[self._nav_index]
+            self._navigate_no_history(path)
+
+    def _navigate_no_history(self, path: str):
+        """导航但不记录历史"""
+        import os
+        if os.path.isdir(path):
+            self.current_path = path
+            self.path_bar.set_path(path)
+
+            index = self.model.setRootPath(path)
+            self.tree_view.setRootIndex(index)
+
+            self.pane_tree_view.expand_to_path(path)
+
+            current_idx = self.pane_tabs.currentIndex()
+            if self.pane_tabs.isVisible() and 0 <= current_idx < len(self._pane_tab_paths):
+                self._pane_tab_paths[current_idx] = path
+                self.pane_tabs.setTabText(current_idx, os.path.basename(path) if os.path.basename(path) else path)
+
+            self.update_status_bar()
+            self.path_changed.emit(path)
+
+    def on_pane_tree_clicked(self, path: str):
+        """内嵌目录树点击 - 导航到本窗格"""
+        self.navigate_to(path)
+
+    def set_tree_visible(self, visible: bool):
+        """设置内嵌目录树可见性"""
+        self.pane_tree_view.setVisible(visible)
+        self.path_bar.set_tree_button_checked(visible)
+        if visible:
+            self.pane_tree_view.setFixedWidth(200)
+            self.h_layout.setStretch(0, 0)
+            self.h_layout.setStretch(1, 1)
+        else:
+            self.h_layout.setStretch(0, 0)
+            self.h_layout.setStretch(1, 1)
+
+    def toggle_tree(self):
+        """切换本窗格的目录树"""
+        visible = self.pane_tree_view.isVisible()
+        self.set_tree_visible(not visible)
+
+    def toggle_tabs(self):
+        """切换本窗格的标签页栏"""
+        visible = self.pane_tabs.isVisible()
+        self.pane_tabs.setVisible(not visible)
+        self.path_bar.set_tabs_button_checked(not visible)
+
+    def _on_tab_bar_double_clicked(self, index):
+        """双击标签栏"""
+        if index == -1:
+            # 双击空白处新建标签
+            self.add_pane_tab()
+        else:
+            # 双击标签重命名
+            self._rename_pane_tab(index)
+
+    def _rename_pane_tab(self, index):
+        """重命名标签页"""
+        from PyQt6.QtWidgets import QInputDialog
+        
+        current_name = self.pane_tabs.tabText(index)
+        new_name, ok = QInputDialog.getText(
+            self, "重命名标签页", "新名称:", text=current_name
+        )
+        if ok and new_name.strip():
+            self.pane_tabs.setTabText(index, new_name.strip())
+
+    def show_pane_tab_context_menu(self, position):
+        """显示窗格标签栏右键菜单"""
+        menu = QMenu()
+        menu.setStyleSheet("""
+            QMenu {
+                background-color: #2D2D2D;
+                color: #CCCCCC;
+                border: 1px solid #404040;
+            }
+            QMenu::item:selected {
+                background-color: #404040;
+            }
+        """)
+        
+        new_tab_action = QAction("新建标签页(&N)", self)
+        new_tab_action.triggered.connect(lambda: self.add_pane_tab())
+        menu.addAction(new_tab_action)
+        
+        close_tab_action = QAction("关闭标签页(&C)", self)
+        close_tab_action.triggered.connect(lambda: self.close_pane_tab(self.pane_tabs.currentIndex()))
+        menu.addAction(close_tab_action)
+        
+        menu.exec(QCursor.pos())
+
+    def close_pane_tab(self, index):
+        """关闭窗格内标签页"""
+        if self.pane_tabs.count() > 1:
+            self.pane_tabs.removeTab(index)
+            if index < len(self._pane_tab_paths):
+                self._pane_tab_paths.pop(index)
+
+    def on_pane_tab_changed(self, index):
+        """窗格内标签页切换"""
+        if hasattr(self, 'model') and 0 <= index < len(self._pane_tab_paths):
+            path = self._pane_tab_paths[index]
+            if os.path.isdir(path):
+                # 更新当前路径并刷新文件列表
+                self.current_path = path
+                self.path_bar.set_path(path)
+                idx = self.model.setRootPath(path)
+                self.tree_view.setRootIndex(idx)
+                self.pane_tree_view.expand_to_path(path)
+                self.update_status_bar()
+
+    def add_pane_tab(self, path: str = None):
+        """添加窗格内标签页"""
+        if path is None:
+            path = self.current_path
+        self._pane_tab_paths.append(path)
+        self.pane_tabs.addTab(QLabel(), os.path.basename(path) if os.path.basename(path) else path)
+        # 添加标签页后显示标签页栏
+        if not self.pane_tabs.isVisible():
+            self.pane_tabs.setVisible(True)
+            self.path_bar.set_tabs_button_checked(True)
+
     def on_path_entered(self, path: str):
         """路径栏输入处理"""
         import os
@@ -317,6 +566,12 @@ class Pane(QWidget):
             paste_action.setShortcut(QKeySequence("Ctrl+V"))
             paste_action.triggered.connect(self.paste)
             menu.addAction(paste_action)
+            
+            menu.addSeparator()
+            
+            new_tab_action = QAction("新建标签页(&T)", self)
+            new_tab_action.triggered.connect(lambda: self.add_pane_tab())
+            menu.addAction(new_tab_action)
             
             menu.addSeparator()
             

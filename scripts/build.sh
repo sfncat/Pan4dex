@@ -15,8 +15,10 @@ TARGET_BUILD_DIR="~/pan4dex-build"
 TARGET_DIST_DIR="~/tools/pan4dex"
 
 # Windows 配置
-WIN_HOST="win59"
-WIN_BUILD_DIR="C:\\Users\\sshuser\\pan4dex"
+WIN_HOST="192.168.5.55"
+WIN_USER="sshuser"
+WIN_REMOTE="${WIN_USER}@${WIN_HOST}"
+WIN_BUILD_DIR="D:\\workspace\\2026\\pan4dex"
 
 # 获取版本号
 VERSION="${1:-}"
@@ -47,7 +49,7 @@ ssh "${TARGET_HOST}" "cd ${TARGET_BUILD_DIR} && rm -rf build dist"
 echo "[3/6] 构建 Linux 版本（在 ${TARGET_HOST} 上）..."
 BUILD_TIME=$(date '+%Y-%m-%d %H:%M:%S')
 # 注入编译时间到 main.py（目标机上）
-ssh "${TARGET_HOST}" "cd ${TARGET_BUILD_DIR} && sed -i 's|__build_time__ = \"\"|__build_time__ = \"${BUILD_TIME}\"|' main.py && ~/.local/bin/pyinstaller --onefile --windowed --name=pan4dex main.py 2>&1 | tail -3"
+ssh "${TARGET_HOST}" "cd ${TARGET_BUILD_DIR} && sed -i 's|__build_time__ = \"\"|__build_time__ = \"${BUILD_TIME}\"|' main.py && ~/.local/bin/pyinstaller packaging/pan4dex.spec --noconfirm 2>&1 | tail -3"
 
 # 4. 安装到目标机
 echo "[4/6] 安装到 ${TARGET_DIST_DIR}..."
@@ -55,15 +57,21 @@ ssh "${TARGET_HOST}" "rm -f ${TARGET_DIST_DIR}/pan4dex; mkdir -p ${TARGET_DIST_D
 
 # 5. 构建 Windows 版本
 echo "[5/6] 构建 Windows 版本（在 ${WIN_HOST} 上）..."
-scp -r "${PROJECT_ROOT}/" "${WIN_HOST}:${WIN_BUILD_DIR}\\" 2>&1 | tail -2
-ssh "${WIN_HOST}" "cmd /c 'cd ${WIN_BUILD_DIR} && build.bat ${VERSION}'" 2>&1 | tail -3
+# 先清理旧源码目录，确保不会用旧文件编译
+ssh "${WIN_USER}@${WIN_HOST}" "cmd /c \"rd /s /q ${WIN_BUILD_DIR}\""
+ssh "${WIN_USER}@${WIN_HOST}" "cmd /c \"mkdir ${WIN_BUILD_DIR}\""
+# 用 tar 管道同步，确保完全覆盖
+cd "${PROJECT_ROOT}" && tar cf - . | ssh "${WIN_USER}@${WIN_HOST}" "cmd /c \"cd /d ${WIN_BUILD_DIR} && tar xf -\"" 2>&1 | tail -3
+# 清理旧的 build/dist 确保重新编译
+ssh "${WIN_USER}@${WIN_HOST}" "cmd /c \"cd /d ${WIN_BUILD_DIR} && if exist build rmdir /s /q build && if exist dist rmdir /s /q dist\""
+ssh "${WIN_USER}@${WIN_HOST}" "cmd /c 'cd /d ${WIN_BUILD_DIR} && pyinstaller --onefile --windowed --name=pan4dex --add-data=resources;resources --hidden-import=PyQt6.QtCore --hidden-import=PyQt6.QtGui --hidden-import=PyQt6.QtWidgets --hidden-import=qdarkstyle --hidden-import=qdarkstyle.dark --hidden-import=qdarkstyle.light --manifest packaging\\pan4dex.manifest main.py'" 2>&1 | tail -3
 
 # 6. 复制到本机 releases 目录
 echo "[6/6] 备份到本地 releases 目录..."
 mkdir -p "${RELEASES_DIR}"
 scp "${TARGET_HOST}:${TARGET_BUILD_DIR}/dist/pan4dex" "${RELEASES_DIR}/pan4dex-${VERSION}-linux"
 chmod +x "${RELEASES_DIR}/pan4dex-${VERSION}-linux"
-scp "${WIN_HOST}:${WIN_BUILD_DIR}\\releases\\pan4dex-${VERSION}.exe" "${RELEASES_DIR}/" 2>/dev/null || true
+scp "${WIN_HOST}:${WIN_BUILD_DIR}/releases/pan4dex-${VERSION}.exe" "${RELEASES_DIR}/" 2>/dev/null || true
 
 # 验证
 echo ""

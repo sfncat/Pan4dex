@@ -216,10 +216,14 @@
 | 21.1 | 自定义操作 | P3 | 🔴 | 用户定义快捷操作（如打开编辑器、转换格式） | 操作配置 | - |
 | 21.2 | 操作快捷键 | P3 | 🔴 | 为自定义操作绑定快捷键 | 快捷键配置 | - |
 
-|| 22.1 | 目录树侧边栏 | P1 | 🟢 | 左侧显示目录树，双击导航到当前活动窗格 | QTreeView + QFileSystemModel | tree_sidebar.py TreeSidebar |
-|| 22.2 | 活动窗格跟踪 | P1 | 🟢 | 焦点在哪个窗格，目录树导航就作用于哪个窗格 | _active_pane + eventFilter | pane.py eventFilter() |
-|| 22.3 | 自动展开控制 | P1 | 🟢 | 可开关自动展开文件夹功能 | 按钮+状态跟踪 | tree_sidebar.py toggle_auto_expand() |
-|| 22.4 | 展开/折叠按钮 | P1 | 🟢 | 一键展开或折叠所有节点 | QTreeView.expandAll/collapseAll | tree_sidebar.py |
+||| 22.1 | 目录树侧边栏 | P1 | 🟢 | 左侧显示目录树，双击导航到当前活动窗格 | QTreeView + QFileSystemModel | tree_sidebar.py TreeSidebar |
+||| 22.2 | 活动窗格跟踪 | P1 | 🟢 | 焦点在哪个窗格，目录树导航就作用于哪个窗格 | _active_pane + eventFilter | pane.py eventFilter() |
+||| 22.3 | 自动展开控制 | P1 | 🟢 | 可开关自动展开文件夹功能 | 按钮+状态跟踪 | tree_sidebar.py toggle_auto_expand() |
+||| 22.4 | 展开/折叠按钮 | P1 | 🟢 | 一键展开或折叠所有节点 | QTreeView.expandAll/collapseAll | tree_sidebar.py |
+||| 22.5 | 每窗格独立目录树 | P1 | 🟢 | 每个窗格左侧内嵌独立目录树，路径栏按钮控制本窗格 | PaneTreeView | widgets/pane_tree_view.py |
+||| 22.6 | 目录树按钮 | P1 | 🟢 | 路径栏目录树按钮，点击切换本窗格目录树显示/隐藏 | PathBar.tree_btn | widgets/path_bar.py |
+||| 22.7 | 窗格内标签页 | P1 | 🟢 | 每个窗格底部可显示标签页栏，独立管理多个路径 | QTabWidget | core/pane.py |
+||| 22.8 | 标签页按钮 | P1 | 🟢 | 路径栏标签页按钮，点击切换本窗格标签页栏显示/隐藏 | PathBar.tabs_btn | widgets/path_bar.py |
 
 ---
 

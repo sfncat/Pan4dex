@@ -1,15 +1,12 @@
 """
-Pan4dex 万格 — 设置对话框
+Pan4dex 万格 — 设置对话框（主题/字体）
 """
-import json
-import os
-from pathlib import Path
-
 from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, 
-    QLineEdit, QPushButton, QComboBox, QGroupBox,
-    QFormLayout, QDialogButtonBox
+    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QComboBox,
+    QPushButton, QFontDialog, QColorDialog, QGroupBox,
+    QFormLayout, QSpinBox, QTabWidget, QWidget
 )
+from PyQt6.QtGui import QFont, QColor
 from PyQt6.QtCore import Qt
 
 
@@ -18,82 +15,123 @@ class SettingsDialog(QDialog):
     
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("设置")
-        self.setMinimumWidth(400)
         
-        # 配置文件路径
-        self.config_dir = os.path.expanduser("~/.config/pan4dex")
-        self.config_file = os.path.join(self.config_dir, "settings.json")
-        os.makedirs(self.config_dir, exist_ok=True)
+        self.setWindowTitle("设置")
+        self.setMinimumSize(400, 300)
+        
+        # 当前设置
+        self.current_theme = "dark"
+        self.current_font_family = "系统默认"
+        self.current_font_size = 9
         
         self.init_ui()
-        self.load_settings()
     
     def init_ui(self):
+        """初始化 UI"""
         layout = QVBoxLayout(self)
         
-        # 终端设置
-        terminal_group = QGroupBox("终端设置")
-        terminal_layout = QFormLayout()
+        # 标签页
+        tabs = QTabWidget()
+        layout.addWidget(tabs)
         
-        self.terminal_combo = QComboBox()
-        self.terminal_combo.setEditable(True)
-        self.terminal_combo.addItems([
-            "自动检测",
-            "gnome-terminal",
-            "konsole",
-            "xfce4-terminal",
-            "mate-terminal",
-            "terminator",
-            "tilix",
-            "alacritty",
-            "kitty",
-            "xterm",
-            "x-terminal-emulator",
-        ])
-        self.terminal_combo.setPlaceholderText("输入终端命令或选择预设")
+        # 主题设置
+        theme_tab = self.create_theme_tab()
+        tabs.addTab(theme_tab, "主题")
         
-        terminal_layout.addRow("终端应用:", self.terminal_combo)
-        
-        hint = QLabel("设置后右键「打开终端」将使用此应用")
-        hint.setStyleSheet("color: #888888; font-size: 11px;")
-        terminal_layout.addRow("", hint)
-        
-        terminal_group.setLayout(terminal_layout)
-        layout.addWidget(terminal_group)
+        # 字体设置
+        font_tab = self.create_font_tab()
+        tabs.addTab(font_tab, "字体")
         
         # 按钮
-        button_box = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
-        button_box.accepted.connect(self.save_settings)
-        button_box.rejected.connect(self.reject)
-        layout.addWidget(button_box)
-    
-    def load_settings(self):
-        """加载设置"""
-        if os.path.exists(self.config_file):
-            try:
-                with open(self.config_file, 'r') as f:
-                    config = json.load(f)
-                terminal = config.get('terminal', '')
-                if terminal:
-                    self.terminal_combo.setCurrentText(terminal)
-            except:
-                pass
-    
-    def save_settings(self):
-        """保存设置"""
-        terminal = self.terminal_combo.currentText().strip()
-        if terminal == "自动检测":
-            terminal = ""
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
         
-        config = {"terminal": terminal}
+        cancel_btn = QPushButton("取消")
+        cancel_btn.clicked.connect(self.reject)
+        btn_layout.addWidget(cancel_btn)
         
-        try:
-            with open(self.config_file, 'w') as f:
-                json.dump(config, f, indent=2, ensure_ascii=False)
-            self.accept()
-        except Exception as e:
-            from PyQt6.QtWidgets import QMessageBox
-            QMessageBox.warning(self, "保存失败", f"无法保存设置: {e}")
+        ok_btn = QPushButton("确定")
+        ok_btn.clicked.connect(self.accept)
+        btn_layout.addWidget(ok_btn)
+        
+        layout.addLayout(btn_layout)
+    
+    def create_theme_tab(self) -> QWidget:
+        """创建设置主题标签页"""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        
+        # 主题选择
+        theme_group = QGroupBox("主题")
+        theme_layout = QFormLayout(theme_group)
+        
+        self.theme_combo = QComboBox()
+        self.theme_combo.addItem("深色 (QDarkStyle)", "dark")
+        self.theme_combo.addItem("浅色 (QDarkStyle)", "light")
+        self.theme_combo.currentIndexChanged.connect(self.on_theme_changed)
+        theme_layout.addRow("主题:", self.theme_combo)
+        
+        layout.addWidget(theme_group)
+        layout.addStretch()
+        
+        return widget
+    
+    def create_font_tab(self) -> QWidget:
+        """创建设置字体标签页"""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        
+        # 字体选择
+        font_group = QGroupBox("字体")
+        font_layout = QFormLayout(font_group)
+        
+        self.font_combo = QComboBox()
+        self.font_combo.addItem("系统默认", None)
+        self.font_combo.addItem("Microsoft YaHei UI", "Microsoft YaHei UI")
+        self.font_combo.addItem("Segoe UI", "Segoe UI")
+        self.font_combo.addItem("Noto Sans CJK SC", "Noto Sans CJK SC")
+        self.font_combo.addItem("DejaVu Sans", "DejaVu Sans")
+        self.font_combo.addItem("Consolas", "Consolas")
+        self.font_combo.addItem("Courier New", "Courier New")
+        self.font_combo.currentIndexChanged.connect(self.on_font_changed)
+        font_layout.addRow("字体:", self.font_combo)
+        
+        # 字号
+        self.font_size_spin = QSpinBox()
+        self.font_size_spin.setRange(8, 24)
+        self.font_size_spin.setValue(9)
+        font_layout.addRow("字号:", self.font_size_spin)
+        
+        # 预览
+        self.preview_label = QLabel("这是字体预览文本 - Pan4dex 万格")
+        self.preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.preview_label.setMinimumHeight(60)
+        font_layout.addRow("预览:", self.preview_label)
+        
+        layout.addWidget(font_group)
+        layout.addStretch()
+        
+        return widget
+    
+    def on_theme_changed(self, index):
+        """主题变化"""
+        self.current_theme = self.theme_combo.itemData(index)
+    
+    def on_font_changed(self, index):
+        """字体变化"""
+        self.current_font_family = self.font_combo.currentText()
+        self.current_font_size = self.font_size_spin.value()
+        self.update_preview()
+    
+    def update_preview(self):
+        """更新字体预览"""
+        font = QFont(self.current_font_family, self.font_size_spin.value())
+        self.preview_label.setFont(font)
+    
+    def get_settings(self) -> dict:
+        """获取设置"""
+        return {
+            'theme': self.current_theme,
+            'font_family': self.font_combo.currentText(),
+            'font_size': self.font_size_spin.value(),
+        }

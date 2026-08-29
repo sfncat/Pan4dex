@@ -14,6 +14,8 @@ class PathBar(QWidget):
     
     # 信号
     path_entered = pyqtSignal(str)  # 路径输入信号
+    tree_toggle_requested = pyqtSignal()  # 目录树按钮点击信号
+    tabs_toggle_requested = pyqtSignal()  # 标签页按钮点击信号
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -51,6 +53,24 @@ class PathBar(QWidget):
         self.refresh_btn.setFixedSize(24, 24)
         self.layout.addWidget(self.refresh_btn)
         
+        # 目录树按钮
+        self.tree_btn = QToolButton()
+        self.tree_btn.setText("🌲")
+        self.tree_btn.setToolTip("目录树")
+        self.tree_btn.setFixedSize(24, 24)
+        self.tree_btn.setCheckable(True)
+        self.tree_btn.clicked.connect(self.on_tree_clicked)
+        self.layout.addWidget(self.tree_btn)
+        
+        # 标签页按钮
+        self.tabs_btn = QToolButton()
+        self.tabs_btn.setText("📑")
+        self.tabs_btn.setToolTip("标签页")
+        self.tabs_btn.setFixedSize(24, 24)
+        self.tabs_btn.setCheckable(True)
+        self.tabs_btn.clicked.connect(self.on_tabs_clicked)
+        self.layout.addWidget(self.tabs_btn)
+        
         # 路径输入框
         self.combo_box = QComboBox()
         self.combo_box.setEditable(True)
@@ -73,32 +93,7 @@ class PathBar(QWidget):
         self.layout.addWidget(self.combo_box)
         
         # 设置样式
-        self.setStyleSheet("""
-            QComboBox {
-                background-color: #3D3D3D;
-                color: #CCCCCC;
-                border: 1px solid #505050;
-                border-radius: 3px;
-                padding: 2px 5px;
-            }
-            QComboBox:hover {
-                border-color: #2196F3;
-            }
-            QComboBox::drop-down {
-                border: none;
-                width: 20px;
-            }
-            QToolButton {
-                background-color: #3D3D3D;
-                color: #CCCCCC;
-                border: 1px solid #505050;
-                border-radius: 3px;
-            }
-            QToolButton:hover {
-                background-color: #505050;
-                border-color: #2196F3;
-            }
-        """)
+
     
     def set_path(self, path: str):
         """设置路径"""
@@ -130,3 +125,19 @@ class PathBar(QWidget):
         parent = os.path.dirname(current)
         if parent and parent != current:
             self.path_entered.emit(parent)
+
+    def on_tree_clicked(self):
+        """目录树按钮点击"""
+        self.tree_toggle_requested.emit()
+
+    def on_tabs_clicked(self):
+        """标签页按钮点击"""
+        self.tabs_toggle_requested.emit()
+
+    def set_tree_button_checked(self, checked: bool):
+        """设置目录树按钮状态"""
+        self.tree_btn.setChecked(checked)
+
+    def set_tabs_button_checked(self, checked: bool):
+        """设置标签页按钮状态"""
+        self.tabs_btn.setChecked(checked)

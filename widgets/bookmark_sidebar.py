@@ -92,32 +92,7 @@ class BookmarkSidebar(QDockWidget):
         self.setWidget(self.main_widget)
         
         # 设置样式
-        self.setStyleSheet("""
-            QListWidget {
-                background-color: #1E1E1E;
-                color: #CCCCCC;
-                border: none;
-            }
-            QListWidget::item {
-                padding: 5px;
-                border-bottom: 1px solid #2A2A2A;
-            }
-            QListWidget::item:hover {
-                background-color: #2A2A2A;
-            }
-            QListWidget::item:selected {
-                background-color: #2196F3;
-            }
-            QPushButton {
-                background-color: #3D3D3D;
-                color: #CCCCCC;
-                border: 1px solid #505050;
-                border-radius: 3px;
-            }
-            QPushButton:hover {
-                background-color: #505050;
-            }
-        """)
+
     
     def load_bookmarks(self):
         """加载收藏"""
