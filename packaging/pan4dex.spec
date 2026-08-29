@@ -44,10 +44,8 @@ a.binaries = [b for b in a.binaries if 'libXau' not in b[0]]
 a.binaries = [b for b in a.binaries if 'libXdmcp' not in b[0]]
 a.binaries = [b for b in a.binaries if 'libxcb' not in b[0]]
 a.binaries = [b for b in a.binaries if 'libxkbcommon' not in b[0]]
-# 排除 XCB 平台插件（依赖链太长），只保留 offscreen
-a.binaries = [b for b in a.binaries if 'platforms/libqxcb' not in b[0]]
-a.binaries = [b for b in a.binaries if 'platforms/libqwayland' not in b[0]]
-a.binaries = [b for b in a.binaries if 'xcbglintegrations' not in b[0]]
+# 不排除 XCB 平台插件（需要支持 X11 显示）
+# a.binaries = [b for b in a.binaries if 'platforms/libqxcb' not in b[0]]
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
