@@ -102,6 +102,7 @@ class Pane(QWidget):
         self.path_bar.path_entered.connect(self.on_path_entered)
         self.path_bar.tree_toggle_requested.connect(self.toggle_tree)
         self.path_bar.tabs_toggle_requested.connect(self.toggle_tabs)
+        self.path_bar.terminal_requested.connect(self.open_terminal_here)
         self.layout.addWidget(self.path_bar)
 
         # 设置焦点策略，让 focusInEvent 能触发

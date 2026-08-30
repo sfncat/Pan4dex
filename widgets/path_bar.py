@@ -16,6 +16,7 @@ class PathBar(QWidget):
     path_entered = pyqtSignal(str)  # 路径输入信号
     tree_toggle_requested = pyqtSignal()  # 目录树按钮点击信号
     tabs_toggle_requested = pyqtSignal()  # 标签页按钮点击信号
+    terminal_requested = pyqtSignal()  # 终端按钮点击信号
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -70,6 +71,14 @@ class PathBar(QWidget):
         self.tabs_btn.setCheckable(True)
         self.tabs_btn.clicked.connect(self.on_tabs_clicked)
         self.layout.addWidget(self.tabs_btn)
+        
+        # 终端按钮
+        self.terminal_btn = QToolButton()
+        self.terminal_btn.setText("🖥")
+        self.terminal_btn.setToolTip("打开终端")
+        self.terminal_btn.setFixedSize(24, 24)
+        self.terminal_btn.clicked.connect(self.on_terminal_clicked)
+        self.layout.addWidget(self.terminal_btn)
         
         # 路径输入框
         self.combo_box = QComboBox()
@@ -133,6 +142,10 @@ class PathBar(QWidget):
     def on_tabs_clicked(self):
         """标签页按钮点击"""
         self.tabs_toggle_requested.emit()
+
+    def on_terminal_clicked(self):
+        """终端按钮点击"""
+        self.terminal_requested.emit()
 
     def set_tree_button_checked(self, checked: bool):
         """设置目录树按钮状态"""

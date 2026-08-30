@@ -100,7 +100,7 @@ else
     # 检查 win54 是否在线，不在线则唤醒
     if ! ping -c 1 -W 2 ${WIN_BUILD_IP} &>/dev/null; then
         echo "  win54 不在线，发送 Wake-on-LAN..."
-        wakeonlan ${WIN_BUILD_MAC} 2>&1
+        wakeonlan -i 192.168.5.50 -p 9 ${WIN_BUILD_MAC} 2>&1
         echo "  等待 win54 启动（最多 60 秒）..."
         for i in $(seq 1 12); do
             sleep 5
