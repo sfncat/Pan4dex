@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Pan4dex 万格 — 构建脚本
-# Linux 在 gti 上打包，Windows 在 win59 上打包
+# Pan4dex 万格 — 统一构建脚本
+# Linux: Docker 本机构建（Debian bullseye, glibc 2.31）→ 部署到 gti (58)
+# Windows: win54 (54) 构建 → 部署到 win55 (55)
 # 用法: ./scripts/build.sh [版本号]
 
 set -euo pipefail
@@ -10,15 +11,17 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 RELEASES_DIR="${PROJECT_ROOT}/releases"
 
 # 目标机配置
-TARGET_HOST="gti"
-TARGET_BUILD_DIR="~/pan4dex-build"
-TARGET_DIST_DIR="~/tools/pan4dex"
+GTI_HOST="gti"
+GTI_DIST_DIR="~/tools/pan4dex"
 
-# Windows 配置
-WIN_HOST="192.168.5.55"
-WIN_USER="sshuser"
-WIN_REMOTE="${WIN_USER}@${WIN_HOST}"
-WIN_BUILD_DIR="D:\\workspace\\2026\\pan4dex"
+# Windows 构建机（构建在这台机器上执行）
+WIN_BUILD_HOST="win54"
+WIN_BUILD_MAC="52:54:10:73:70:cd"  # WOL MAC 地址
+WIN_BUILD_IP="192.168.5.54"
+# Windows 部署目标（构建完成后复制到这里）
+WIN_DEPLOY_HOST="192.168.5.55"
+WIN_DEPLOY_USER="sshuser"
+WIN_DEPLOY_DIR="D:\\workspace\\2026\\pan4dex\\dist"
 
 # 获取版本号
 VERSION="${1:-}"
@@ -35,53 +38,121 @@ echo "  Pan4dex 构建"
 echo "  版本: ${VERSION}"
 echo "=========================================="
 
-# 1. 同步源码到目标机
-echo "[1/6] 同步源码到目标机..."
-rsync -avz --exclude='.venv' --exclude='build' --exclude='dist' --exclude='__pycache__' \
-    --exclude='*.pyc' --exclude='.git' --exclude='releases' \
-    "${PROJECT_ROOT}/" "${TARGET_HOST}:${TARGET_BUILD_DIR}/" 2>&1 | tail -3
+# ── 1. Linux Docker 构建 ──
+echo "[1/5] Linux Docker 构建..."
 
-# 2. 清理旧构建
-echo "[2/6] 清理旧构建..."
-ssh "${TARGET_HOST}" "cd ${TARGET_BUILD_DIR} && rm -rf build dist"
+# 确保 Docker 运行
+if ! sudo systemctl is-active --quiet docker; then
+    echo "  启动 Docker..."
+    sudo systemctl start docker
+    sleep 2
+fi
 
-# 3. 在目标机上打包 Linux 版本
-echo "[3/6] 构建 Linux 版本（在 ${TARGET_HOST} 上）..."
-BUILD_TIME=$(date '+%Y-%m-%d %H:%M:%S')
-# 注入编译时间到 main.py（目标机上）
-ssh "${TARGET_HOST}" "cd ${TARGET_BUILD_DIR} && sed -i 's|__build_time__ = \"\"|__build_time__ = \"${BUILD_TIME}\"|' main.py && ~/.local/bin/pyinstaller packaging/pan4dex.spec --noconfirm 2>&1 | tail -3"
+# 构建镜像 + 运行构建
+DOCKER_IMAGE="pan4dex-builder-linux"
+CONTAINER_NAME="pan4dex-build-linux"
 
-# 4. 安装到目标机
-echo "[4/6] 安装到 ${TARGET_DIST_DIR}..."
-ssh "${TARGET_HOST}" "rm -f ${TARGET_DIST_DIR}/pan4dex; mkdir -p ${TARGET_DIST_DIR} && cp ${TARGET_BUILD_DIR}/dist/pan4dex ${TARGET_DIST_DIR}/pan4dex && chmod +x ${TARGET_DIST_DIR}/pan4dex"
+sudo docker build -t ${DOCKER_IMAGE} -f docker/Dockerfile . 2>&1 | tail -3
+sudo docker rm -f ${CONTAINER_NAME} 2>/dev/null || true
 
-# 5. 构建 Windows 版本
-echo "[5/6] 构建 Windows 版本（在 ${WIN_HOST} 上）..."
-# 先清理旧源码目录，确保不会用旧文件编译
-ssh "${WIN_USER}@${WIN_HOST}" "cmd /c \"rd /s /q ${WIN_BUILD_DIR}\""
-ssh "${WIN_USER}@${WIN_HOST}" "cmd /c \"mkdir ${WIN_BUILD_DIR}\""
-# 用 tar 管道同步，确保完全覆盖
-cd "${PROJECT_ROOT}" && tar cf - . | ssh "${WIN_USER}@${WIN_HOST}" "cmd /c \"cd /d ${WIN_BUILD_DIR} && tar xf -\"" 2>&1 | tail -3
-# 清理旧的 build/dist 确保重新编译
-ssh "${WIN_USER}@${WIN_HOST}" "cmd /c \"cd /d ${WIN_BUILD_DIR} && if exist build rmdir /s /q build && if exist dist rmdir /s /q dist\""
-ssh "${WIN_USER}@${WIN_HOST}" "cmd /c 'cd /d ${WIN_BUILD_DIR} && pyinstaller --onefile --windowed --name=pan4dex --add-data=resources;resources --hidden-import=PyQt6.QtCore --hidden-import=PyQt6.QtGui --hidden-import=PyQt6.QtWidgets --hidden-import=qdarkstyle --hidden-import=qdarkstyle.dark --hidden-import=qdarkstyle.light --manifest packaging\\pan4dex.manifest main.py'" 2>&1 | tail -3
+sudo docker run --name ${CONTAINER_NAME} \
+    -v "$(pwd):/app" \
+    -e "VERSION=${VERSION}" \
+    ${DOCKER_IMAGE} \
+    bash -c "
+        cd /app
+        export PYBUILD_TIME=\$(date '+%Y-%m-%d %H:%M:%S')
+        sed -i \"s/__build_time__ = \\\"\\\"/__build_time__ = \\\"\${PYBUILD_TIME}\\\"/\" main.py
+        pyinstaller --onefile --windowed --name=pan4dex main.py
+        mkdir -p /app/releases
+        mv dist/pan4dex /app/releases/pan4dex-${VERSION}-linux
+        chmod +x /app/releases/pan4dex-${VERSION}-linux
+    " 2>&1 | tail -5
 
-# 6. 复制到本机 releases 目录
-echo "[6/6] 备份到本地 releases 目录..."
+sudo docker rm -f ${CONTAINER_NAME} 2>/dev/null || true
+
+# 验证 Linux 产物
+LINUX_BIN="${RELEASES_DIR}/pan4dex-${VERSION}-linux"
+if [ ! -f "${LINUX_BIN}" ]; then
+    echo "  ✗ Linux 构建失败"
+    exit 1
+fi
+echo "  ✓ Linux: $(ls -lh ${LINUX_BIN} | awk '{print $5}')"
+
+# ── 2. Windows 构建（win54） ──
+echo "[2/5] Windows 构建（${WIN_BUILD_HOST}）..."
+
+# 检查 win54 是否在线，不在线则唤醒
+if ! ping -c 1 -W 2 ${WIN_BUILD_IP} &>/dev/null; then
+    echo "  win54 不在线，发送 Wake-on-LAN..."
+    wakeonlan ${WIN_BUILD_MAC} 2>&1
+    echo "  等待 win54 启动（最多 60 秒）..."
+    for i in $(seq 1 12); do
+        sleep 5
+        if ping -c 1 -W 2 ${WIN_BUILD_IP} &>/dev/null; then
+            echo "  win54 已启动"
+            break
+        fi
+        echo "  等待中... (${i}x5s)"
+    done
+    if ! ping -c 1 -W 2 ${WIN_BUILD_IP} &>/dev/null; then
+        echo "  ✗ win54 唤醒失败，请检查网络或手动开机"
+        exit 1
+    fi
+    # 等系统完全就绪 + SSH 服务启动
+    echo "  等待 SSH 服务就绪..."
+    for i in $(seq 1 12); do
+        sleep 5
+        if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 ${WIN_BUILD_HOST} 'echo OK' &>/dev/null; then
+            echo "  SSH 就绪"
+            break
+        fi
+        echo "  等待 SSH... (${i}x5s)"
+    done
+fi
+
+# 同步源码到 win54（用 tar 管道确保完全覆盖）
+cd "${PROJECT_ROOT}"
+tar cf - . | ssh ${WIN_BUILD_HOST} 'cmd /c "cd /d C:\workspace\pan4dex && tar xf -"' 2>&1 | tail -3
+
+# 在 win54 上执行构建
+ssh ${WIN_BUILD_HOST} "cmd /c \"cd C:\workspace\pan4dex && python scripts/build_windows.py ${VERSION}\"" 2>&1 | tail -5
+
+# 验证 Windows 产物
+WIN_EXE="pan4dex-${VERSION}.exe"
+if ! ssh ${WIN_BUILD_HOST} "cmd /c \"if exist C:\workspace\pan4dex\releases\${WIN_EXE} echo OK\"" 2>&1 | grep -q "OK"; then
+    echo "  ✗ Windows 构建失败"
+    exit 1
+fi
+echo "  ✓ Windows: ${WIN_EXE}"
+
+# ── 3. 部署 Linux 到 gti (58) ──
+echo "[3/5] 部署 Linux 到 ${GTI_HOST}..."
+scp "${LINUX_BIN}" "${GTI_HOST}:${GTI_DIST_DIR}/pan4dex" 2>&1 | tail -1
+ssh ${GTI_HOST} "chmod +x ${GTI_DIST_DIR}/pan4dex" 2>&1
+echo "  ✓ Linux 已部署到 ${GTI_HOST}:${GTI_DIST_DIR}/pan4dex"
+
+# ── 4. 部署 Windows 到 win55 (55) ──
+echo "[4/5] 部署 Windows 到 ${WIN_DEPLOY_HOST}..."
+# 先从 win54 拉到本地
+scp "${WIN_BUILD_HOST}:C:/workspace/pan4dex/releases/${WIN_EXE}" "${RELEASES_DIR}/" 2>&1 | tail -1
+# 再从本地推到 win55
+scp "${RELEASES_DIR}/${WIN_EXE}" "${WIN_DEPLOY_USER}@${WIN_DEPLOY_HOST}:${WIN_DEPLOY_DIR}/" 2>&1 | tail -1
+echo "  ✓ Windows 已部署到 ${WIN_DEPLOY_HOST}:${WIN_DEPLOY_DIR}/${WIN_EXE}"
+
+# ── 5. 备份到本地 releases ──
+echo "[5/5] 备份到本地..."
 mkdir -p "${RELEASES_DIR}"
-scp "${TARGET_HOST}:${TARGET_BUILD_DIR}/dist/pan4dex" "${RELEASES_DIR}/pan4dex-${VERSION}-linux"
-chmod +x "${RELEASES_DIR}/pan4dex-${VERSION}-linux"
-scp "${WIN_HOST}:${WIN_BUILD_DIR}/releases/pan4dex-${VERSION}.exe" "${RELEASES_DIR}/" 2>/dev/null || true
+chmod +x "${RELEASES_DIR}/${WIN_EXE}" 2>/dev/null || true
+echo "  ✓ ${RELEASES_DIR}/pan4dex-${VERSION}-linux"
+echo "  ✓ ${RELEASES_DIR}/${WIN_EXE}"
 
 # 验证
 echo ""
 echo "  ✓ 构建成功"
 echo "  ✓ 版本: ${VERSION}"
-echo "  ✓ Linux: ${TARGET_HOST}:${TARGET_DIST_DIR}/pan4dex"
-echo "  ✓ 本机 Linux: ${RELEASES_DIR}/pan4dex-${VERSION}-linux"
-if [ -f "${RELEASES_DIR}/pan4dex-${VERSION}.exe" ]; then
-    echo "  ✓ 本机 Windows: ${RELEASES_DIR}/pan4dex-${VERSION}.exe"
-fi
+echo "  ✓ Linux: ${GTI_HOST}:${GTI_DIST_DIR}/pan4dex"
+echo "  ✓ Windows: ${WIN_DEPLOY_HOST}:${WIN_DEPLOY_DIR}/${WIN_EXE}"
 echo ""
 echo "=========================================="
 echo "  构建完成: pan4dex-${VERSION}"

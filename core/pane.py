@@ -733,10 +733,7 @@ class Pane(QWidget):
             else:
                 QMessageBox.warning(self, "创建失败", result.error)
     
-    def paste(self):
-        """粘贴"""
-        pass  # TODO
-    
+
     def open_terminal_here(self):
         """在当前目录打开终端"""
         import subprocess

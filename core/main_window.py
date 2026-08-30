@@ -26,6 +26,19 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Pan4dex 万格")
         self.setMinimumSize(1024, 768)
         
+        # 设置应用图标
+        from PyQt6.QtGui import QIcon
+        import sys
+        import os
+        if getattr(sys, 'frozen', False):
+            # PyInstaller 打包后
+            base_dir = sys._MEIPASS
+        else:
+            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        icon_path = os.path.join(base_dir, 'resources', 'icons', 'icon.png')
+        if os.path.exists(icon_path):
+            self.setWindowIcon(QIcon(icon_path))
+        
         # 恢复窗口位置和大小
         self.settings = QSettings("sfncat", "Pan4dex")
         self.restore_geometry()
@@ -166,11 +179,56 @@ class MainWindow(QMainWindow):
         
         copy_action = QAction("复制(&C)", self)
         copy_action.setShortcut(QKeySequence("Ctrl+C"))
+        copy_action.triggered.connect(self.on_copy)
         edit_menu.addAction(copy_action)
+        
+        cut_action = QAction("剪切(&X)", self)
+        cut_action.setShortcut(QKeySequence("Ctrl+X"))
+        cut_action.triggered.connect(self.on_cut)
+        edit_menu.addAction(cut_action)
         
         paste_action = QAction("粘贴(&V)", self)
         paste_action.setShortcut(QKeySequence("Ctrl+V"))
+        paste_action.triggered.connect(self.on_paste)
         edit_menu.addAction(paste_action)
+        
+        edit_menu.addSeparator()
+        
+        select_all_action = QAction("全选(&A)", self)
+        select_all_action.setShortcut(QKeySequence("Ctrl+A"))
+        select_all_action.triggered.connect(self.on_select_all)
+        edit_menu.addAction(select_all_action)
+        
+        edit_menu.addSeparator()
+        
+        delete_action = QAction("删除(&D)", self)
+        delete_action.setShortcut(QKeySequence("Delete"))
+        delete_action.triggered.connect(self.on_delete)
+        edit_menu.addAction(delete_action)
+        
+        rename_action = QAction("重命名(&R)", self)
+        rename_action.setShortcut(QKeySequence("F2"))
+        rename_action.triggered.connect(self.on_rename)
+        edit_menu.addAction(rename_action)
+        
+        edit_menu.addSeparator()
+        
+        refresh_action = QAction("刷新(&F)", self)
+        refresh_action.setShortcut(QKeySequence("F5"))
+        refresh_action.triggered.connect(self.on_refresh)
+        edit_menu.addAction(refresh_action)
+        
+        edit_menu.addSeparator()
+        
+        new_folder_action = QAction("新建文件夹(&N)", self)
+        new_folder_action.setShortcut(QKeySequence("F7"))
+        new_folder_action.triggered.connect(self.on_new_folder)
+        edit_menu.addAction(new_folder_action)
+        
+        new_file_action = QAction("新建文件(&E)", self)
+        new_file_action.setShortcut(QKeySequence("F8"))
+        new_file_action.triggered.connect(self.on_new_file)
+        edit_menu.addAction(new_file_action)
         
         # 视图菜单
         view_menu = menubar.addMenu("视图(&V)")
@@ -229,6 +287,10 @@ class MainWindow(QMainWindow):
         checksum_action = QAction("校验和工具(&C)...", self)
         checksum_action.triggered.connect(self.open_checksum)
         tools_menu.addAction(checksum_action)
+        
+        timestamp_action = QAction("时间戳转换(&T)...", self)
+        timestamp_action.triggered.connect(self.open_timestamp_tool)
+        tools_menu.addAction(timestamp_action)
         
         compare_action = QAction("文件比较(&M)...", self)
         compare_action.triggered.connect(self.open_file_compare)
@@ -370,6 +432,51 @@ class MainWindow(QMainWindow):
             if widget:
                 self.status_bar.showMessage(f"当前标签页: {self.tab_widget.tabText(index)}")
     
+    def on_copy(self):
+        """复制操作"""
+        if self._active_pane:
+            self._active_pane.copy_selected()
+
+    def on_cut(self):
+        """剪切操作"""
+        if self._active_pane:
+            self._active_pane.cut_selected()
+
+    def on_paste(self):
+        """粘贴操作"""
+        if self._active_pane:
+            self._active_pane.paste()
+
+    def on_delete(self):
+        """删除操作"""
+        if self._active_pane:
+            self._active_pane.delete_selected()
+
+    def on_rename(self):
+        """重命名操作"""
+        if self._active_pane:
+            self._active_pane.rename_selected()
+
+    def on_select_all(self):
+        """全选操作"""
+        if self._active_pane:
+            self._active_pane.tree_view.selectAll()
+
+    def on_refresh(self):
+        """刷新操作"""
+        if self._active_pane:
+            self._active_pane.navigate_to(self._active_pane.current_path)
+
+    def on_new_folder(self):
+        """新建文件夹"""
+        if self._active_pane:
+            self._active_pane.new_folder()
+
+    def on_new_file(self):
+        """新建文件"""
+        if self._active_pane:
+            self._active_pane.new_file()
+
     def on_pane_activated(self, pane):
         """窗格被激活（获得焦点）"""
         self._active_pane = pane
@@ -429,6 +536,12 @@ class MainWindow(QMainWindow):
         """打开校验和工具"""
         from widgets.checksum_tool import ChecksumDialog
         dialog = ChecksumDialog(parent=self)
+        dialog.exec()
+
+    def open_timestamp_tool(self):
+        """打开时间戳转换工具"""
+        from widgets.timestamp_tool import TimestampToolDialog
+        dialog = TimestampToolDialog(parent=self)
         dialog.exec()
     
     def open_file_compare(self):

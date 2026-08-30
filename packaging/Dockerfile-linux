@@ -1,0 +1,50 @@
+FROM python:3.10-bullseye
+
+ENV QT_QPA_PLATFORM=offscreen
+
+# 安装 Qt6 运行时库（glibc 2.31 ≤ gti 2.35，兼容）
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgl1-mesa-dev \
+    libxkbcommon-dev \
+    libxkbcommon-x11-0 \
+    libegl1-mesa-dev \
+    libfontconfig1-dev \
+    libfreetype6-dev \
+    libx11-dev \
+    libx11-xcb-dev \
+    libxext-dev \
+    libxfixes-dev \
+    libxi-dev \
+    libxrender-dev \
+    libxcb1-dev \
+    libxcb-glx0-dev \
+    libxcb-keysyms1-dev \
+    libxcb-image0-dev \
+    libxcb-shm0-dev \
+    libxcb-icccm4-dev \
+    libxcb-sync-dev \
+    libxcb-xfixes0-dev \
+    libxcb-shape0-dev \
+    libxcb-randr0-dev \
+    libxcb-render-util0-dev \
+    libdbus-1-dev \
+    libssl-dev \
+    xvfb \
+    && rm -rf /var/lib/apt/lists/*
+
+# 用 pip 安装 PyQt6 预编译 wheel（manylinux_2_28，glibc 2.28+ 可运行）
+RUN pip install --no-cache-dir --only-binary=:all: PyQt6 PyQt6-Qt6 PyQt6-sip && \
+    pip install --no-cache-dir PyInstaller send2trash Pillow qdarkstyle cairosvg
+
+WORKDIR /app
+
+COPY . .
+
+RUN echo '#!/bin/bash\n\
+Xvfb :99 -screen 0 1024x768x24 &>/dev/null &\n\
+export DISPLAY=:99\n\
+sleep 1\n\
+exec "$@"' > /entrypoint.sh && chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["/bin/bash"]
