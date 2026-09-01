@@ -4,7 +4,7 @@ Pan4dex 万格 — 设置对话框（主题/字体）
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QComboBox,
     QPushButton, QFontDialog, QColorDialog, QGroupBox,
-    QFormLayout, QSpinBox, QTabWidget, QWidget
+    QFormLayout, QSpinBox, QTabWidget, QWidget, QCheckBox
 )
 from PyQt6.QtGui import QFont, QColor
 from PyQt6.QtCore import Qt
@@ -33,15 +33,19 @@ class SettingsDialog(QDialog):
         # 标签页
         tabs = QTabWidget()
         layout.addWidget(tabs)
-        
+
         # 主题设置
         theme_tab = self.create_theme_tab()
         tabs.addTab(theme_tab, "主题")
-        
+
         # 字体设置
         font_tab = self.create_font_tab()
         tabs.addTab(font_tab, "字体")
-        
+
+        # 工具栏设置
+        toolbar_tab = self.create_toolbar_tab()
+        tabs.addTab(toolbar_tab, "工具栏")
+
         # 按钮
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
@@ -113,6 +117,41 @@ class SettingsDialog(QDialog):
         
         return widget
     
+    def create_toolbar_tab(self) -> QWidget:
+        """创建工具栏设置标签页"""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        
+        toolbar_group = QGroupBox("工具栏按钮")
+        toolbar_layout = QVBoxLayout(toolbar_group)
+        
+        # 定义所有按钮的 checkbox
+        self.toolbar_checkboxes = {}
+        btn_labels = [
+            ('back', '后退'),
+            ('forward', '前进'),
+            ('up', '上级目录'),
+            ('refresh', '刷新'),
+            ('tree', '目录树'),
+            ('tabs', '标签页'),
+            ('view', '查看模式'),
+            ('new_folder', '新建文件夹'),
+            ('terminal', '终端'),
+        ]
+        for key, label in btn_labels:
+            cb = QCheckBox(f"{label} (&{label[0]})")
+            # 前进/后退默认不显示
+            if key in ('back', 'forward'):
+                cb.setChecked(False)
+            else:
+                cb.setChecked(True)
+            self.toolbar_checkboxes[key] = cb
+            toolbar_layout.addWidget(cb)
+        
+        layout.addWidget(toolbar_group)
+        layout.addStretch()
+        return widget
+
     def on_theme_changed(self, index):
         """主题变化"""
         self.current_theme = self.theme_combo.itemData(index)
@@ -130,8 +169,14 @@ class SettingsDialog(QDialog):
     
     def get_settings(self) -> dict:
         """获取设置"""
-        return {
+        settings = {
             'theme': self.current_theme,
             'font_family': self.font_combo.currentText(),
             'font_size': self.font_size_spin.value(),
         }
+        # 收集工具栏按钮可见性
+        if hasattr(self, 'toolbar_checkboxes'):
+            settings['toolbar_buttons'] = {
+                key: cb.isChecked() for key, cb in self.toolbar_checkboxes.items()
+            }
+        return settings

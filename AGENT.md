@@ -82,7 +82,9 @@ pan4dex/
 │   └── test_m6_tools.py      # M6 工具功能测试
 ├── scripts/                  # 辅助脚本
 │   ├── build.sh              # Linux 构建脚本（gti 远程打包）
-│   └── build.bat             # Windows 构建脚本（win59 远程打包）
+│   ├── build_windows.py      # Windows 构建脚本（win54 远程打包）
+│   ├── zip_it.py             # 打包 zip（自动找最新 exe）
+│   └── extract_zip.py        # 解压部署到目标机器
 ├── packaging/                # 打包配置
 │   └── pan4dex.spec          # PyInstaller spec 文件
 ├── resources/                # 资源文件（图标等）
@@ -127,24 +129,63 @@ pan4dex/
 ### 构建脚本
 ```bash
 # Linux 版本（在 gti 192.168.5.58 上打包）
-./scripts/build.sh v0.8.7
+./scripts/build.sh v{版本号}
 
-# Windows 版本（在 win59 192.168.5.59 上打包）
-# 通过 build.sh 自动触发，或手动在 win59 上运行 build.bat
+# Windows 版本（在 win54 192.168.5.54 上打包）
+scp {同步文件} win54:C:/workspace/pan4dex/
+ssh win54 'cmd /c "cd C:\workspace\pan4dex && python scripts/build_windows.py v{版本号}"'
+ssh win54 'cmd /c "cd C:\workspace\pan4dex && python scripts/zip_it.py"'
 ```
 
-### 部署位置
-- **gti (58)**: `~/tools/pan4dex/pan4dex` — Linux 可执行文件
-- **win59 (59)**: `C:\Users\sshuser\pan4dex\releases\pan4dex-v{版本号}.exe`
-- **本地备份**: `releases/pan4dex-v{版本号}-linux` 和 `releases/pan4dex-v{版本号}.exe`
+### 机器配置
+| 机器 | IP | 用户 | 用途 | 路径 |
+|---|---|---|---|---|
+| win54 | 192.168.5.54 | kali | Windows 构建机 | C:\workspace\pan4dex\ |
+| 55 | 192.168.5.55 | sshuser | Windows 部署目标 | D:\workspace\2026\pan4dex\dist\ |
+| gti | 192.168.5.58 | kali | Linux 部署目标 | ~/tools/pan4dex/ |
 
-### 构建流程
-1. rsync 源码到目标机
-2. 清理旧构建
-3. 注入编译时间到 `main.py` 的 `__build_time__`
-4. PyInstaller 打包
-5. 安装到目标机 `~/tools/pan4dex/`
-6. 备份到本地 `releases/`
+### win54 唤醒
+```bash
+wakeonlan -i 192.168.5.50 -p 9 52:54:10:73:70:cd
+# 等待 SSH 就绪（可能需要 2-3 分钟）
+```
+
+### 文件同步清单
+每次必须同步的文件：
+- `main.py`（版本号）
+- `widgets/path_bar.py`
+- `widgets/thumbnail_view.py`
+- `core/pane.py`
+- `core/main_window.py`
+- `config/theme_manager.py`
+- `scripts/build_windows.py`
+- `scripts/zip_it.py`
+- `scripts/extract_zip.py`
+
+### 构建要求
+`build_windows.py` 必须包含：
+- `--hidden-import=PyQt6.QtSvg`
+- `--collect-all=PyQt6`
+- `--add-data=...imageformats;imageformats`（图片格式插件）
+
+### 55 上解压部署
+```bash
+ssh sshuser@192.168.5.55 'cmd /c "taskkill /F /IM pan4dex* /T 2>nul & timeout /t 2 /nobreak >nul & cd /d D:\workspace\2026\pan4dex\dist & python extract_zip.py"'
+```
+
+### 常见错误
+| 错误 | 原因 | 解决 |
+|------|------|------|
+| 55 上版本号不对 | zip_it.py 硬编码了旧版本 | 修复 zip_it.py 为自动查找最新 |
+| 图片无法显示 | 缺少 Qt 图片格式插件 | 确保 build_windows.py 包含 `--add-data=imageformats` |
+| 应用崩溃 | QTreeView setIconSize(128) | 使用独立 ThumbnailView |
+| win54 SSH 超时 | 机器睡眠 | 先 WOL 唤醒，等待 2-3 分钟 |
+| 55 上文件被占用 | 应用正在运行 | 先 taskkill 再替换 |
+
+### 版本号规则
+- 格式：`0.9.5XX`（三位小版本号）
+- 用户手动控制，不要自动递增
+- 构建时间由 `build_windows.py` 自动注入
 
 ---
 
@@ -223,5 +264,5 @@ A: `customContextMenuRequested` 的坐标是相对 `QTabWidget` 的，需要用 
 
 ---
 
-**文档版本**: v1.1  
-**最后更新**: 2026-08-28
+**文档版本**: v1.2  
+**最后更新**: 2026-08-31

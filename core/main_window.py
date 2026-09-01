@@ -1,6 +1,7 @@
 """
 Pan4dex 万格 — 主窗口
 """
+import logging
 from PyQt6.QtWidgets import (
     QMainWindow, QTabWidget, QSplitter, QWidget, 
     QVBoxLayout, QStatusBar, QMenuBar,
@@ -8,6 +9,8 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, QSettings, QSize, QPoint, pyqtSignal
 from PyQt6.QtGui import QAction, QKeySequence, QCursor
+
+logger = logging.getLogger("pan4dex.window")
 
 from core.pane import Pane
 from widgets.preview_panel import PreviewPanel
@@ -52,23 +55,50 @@ class MainWindow(QMainWindow):
         # 预览面板状态
         self._preview_toggle = False
         
-        # 当前活动窗格（目录树导航目标）
+        import time
+        _t0 = time.perf_counter()
+        
         self._active_pane = None
 
         # 创建 UI
         self.create_menu_bar()
+        logger.info(f"[启动计时] 菜单栏: {(time.perf_counter()-_t0)*1000:.1f}ms")
+        
         self.create_tool_bar()
+        logger.info(f"[启动计时] 工具栏: {(time.perf_counter()-_t0)*1000:.1f}ms")
+        
         self.create_status_bar()
+        logger.info(f"[启动计时] 状态栏: {(time.perf_counter()-_t0)*1000:.1f}ms")
+        
         self.create_central_widget()
+        logger.info(f"[启动计时] 中央widget(含四窗格): {(time.perf_counter()-_t0)*1000:.1f}ms")
+        
         self.create_preview_panel()
+        logger.info(f"[启动计时] 预览面板: {(time.perf_counter()-_t0)*1000:.1f}ms")
+        
         self.create_bookmark_sidebar()
+        logger.info(f"[启动计时] 收藏夹侧栏: {(time.perf_counter()-_t0)*1000:.1f}ms")
+        
         self.create_tree_sidebar()
+        logger.info(f"[启动计时] 目录树侧栏: {(time.perf_counter()-_t0)*1000:.1f}ms")
 
+        # 延迟应用主题和恢复布局（避免阻塞启动）
+        from PyQt6.QtCore import QTimer
+        QTimer.singleShot(0, self._deferred_init)
+        logger.info(f"[启动计时] 延迟初始化已调度: {(time.perf_counter()-_t0)*1000:.1f}ms")
+    
+    def _deferred_init(self):
+        """延迟初始化（在事件循环开始后执行）"""
+        import time
+        _t0 = time.perf_counter()
+        
         # 应用默认主题
         self.theme_manager.apply_theme("dark")
+        logger.info(f"[启动计时] 主题应用: {(time.perf_counter()-_t0)*1000:.1f}ms")
         
         # 自动恢复上次的布局
         self._auto_load_layout()
+        logger.info(f"[启动计时] 布局恢复: {(time.perf_counter()-_t0)*1000:.1f}ms")
     
     def _auto_load_layout(self):
         """自动加载上次保存的布局"""
@@ -696,8 +726,21 @@ class MainWindow(QMainWindow):
                 font = QFont(font_family, font_size)
                 QApplication.instance().setFont(font)
             
+            # 应用工具栏按钮可见性
+            toolbar_buttons = settings.get('toolbar_buttons', {})
+            self.apply_toolbar_buttons(toolbar_buttons)
+            
             self.status_bar.showMessage("设置已应用")
     
+    def apply_toolbar_buttons(self, config: dict):
+        """应用工具栏按钮可见性"""
+        for tab_index in range(self.tab_widget.count()):
+            quad = self.tab_widget.widget(tab_index)
+            if hasattr(quad, 'pane1'):
+                for pane in [quad.pane1, quad.pane2, quad.pane3, quad.pane4]:
+                    for btn_name, visible in config.items():
+                        pane.set_button_visibility(btn_name, visible)
+
     def save_geometry(self):
         """保存窗口位置和大小"""
         self.settings.setValue("geometry", self.saveGeometry())

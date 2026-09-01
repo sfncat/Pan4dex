@@ -56,6 +56,12 @@ class TreeSidebar(QDockWidget):
         self.auto_expand_btn.clicked.connect(self.toggle_auto_expand)
         self.toolbar.addWidget(self.auto_expand_btn)
         
+        # 跟随当前位置按钮
+        self.follow_btn = QPushButton("📍 跟随")
+        self.follow_btn.setToolTip("展开目录树到当前窗格所在目录")
+        self.follow_btn.clicked.connect(self.on_follow_clicked)
+        self.toolbar.addWidget(self.follow_btn)
+        
         self.toolbar.addStretch()
         
         self.layout.addLayout(self.toolbar)
@@ -75,7 +81,6 @@ class TreeSidebar(QDockWidget):
         self.setWidget(self.main_widget)
         
         # 样式
-
     
     def init_model(self):
         """初始化文件系统模型"""
@@ -118,6 +123,37 @@ class TreeSidebar(QDockWidget):
         """项目折叠"""
         pass
     
+    def on_follow_clicked(self):
+        """跟随当前位置按钮点击"""
+        # 从 MainWindow 获取当前活动窗格的路径
+        main_window = self.parent()
+        if main_window and hasattr(main_window, '_active_pane') and main_window._active_pane:
+            path = main_window._active_pane.current_path
+            self.expand_to_path_recursive(path)
+    
+    def expand_to_path_recursive(self, path: str):
+        """递归展开到指定路径（展开所有父级）"""
+        if not os.path.isdir(path):
+            return
+        
+        # 从根路径开始，逐级展开
+        parts = []
+        current = path
+        while current and current != os.path.dirname(current):
+            parts.append(current)
+            current = os.path.dirname(current)
+        
+        # 从根到叶逐级展开
+        for p in reversed(parts):
+            index = self.model.index(p)
+            if index.isValid():
+                self.tree_view.expand(index)
+        
+        # 设置当前选中项
+        leaf_index = self.model.index(path)
+        if leaf_index.isValid():
+            self.tree_view.setCurrentIndex(leaf_index)
+    
     def expand_all(self):
         """展开所有"""
         self.tree_view.expandAll()
@@ -132,8 +168,22 @@ class TreeSidebar(QDockWidget):
         self.auto_expand_btn.setText(f"自动展开: {'开' if self.auto_expand else '关'}")
     
     def expand_to_path(self, path: str):
-        """展开到指定路径"""
+        """递归展开到指定路径（展开所有父级）"""
         if os.path.isdir(path):
-            index = self.model.index(path)
-            self.tree_view.expand(index)
-            self.tree_view.setCurrentIndex(index)
+            # 从根路径开始，逐级展开
+            parts = []
+            current = path
+            while current and current != os.path.dirname(current):
+                parts.append(current)
+                current = os.path.dirname(current)
+            
+            # 从根到叶逐级展开
+            for p in reversed(parts):
+                index = self.model.index(p)
+                if index.isValid():
+                    self.tree_view.expand(index)
+            
+            # 设置当前选中项
+            leaf_index = self.model.index(path)
+            if leaf_index.isValid():
+                self.tree_view.setCurrentIndex(leaf_index)

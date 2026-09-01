@@ -43,8 +43,7 @@ class Pane(QWidget):
         # 创建 UI
         self.init_ui()
         
-        # 初始化模型
-        self.init_model()
+        # 模型已在 init_ui 中通过 _setup_shared_model 设置
         
         # 设置默认路径
         self.navigate_to(self.current_path)
@@ -56,15 +55,15 @@ class Pane(QWidget):
     
     def eventFilter(self, obj, event):
         """事件过滤器"""
-        logger.debug(f"eventFilter: obj={obj.__class__.__name__}, event={event.type()}")
+        # 只记录有意义的事件，过滤掉高频的 paint/move/resize 等
+        et = event.type()
         
         # 鼠标侧键导航（后退/前进）- viewport 上捕获
         if obj == self.tree_view.viewport():
-            if event.type() == QEvent.Type.MouseButtonPress:
+            if et == QEvent.Type.MouseButtonPress:
                 self.activated.emit(self)
                 if hasattr(event, 'button'):
                     btn = event.button()
-                    logger.debug(f"viewport mouse press: button={btn}")
                     if btn == Qt.MouseButton.BackButton:
                         logger.info("Mouse back button -> go_back")
                         self.go_back()
@@ -73,36 +72,38 @@ class Pane(QWidget):
                         logger.info("Mouse forward button -> go_forward")
                         self.go_forward()
                         return True
-            elif event.type() == QEvent.Type.FocusIn:
+            elif et == QEvent.Type.FocusIn:
                 self.activated.emit(self)
         
         # 标签栏双击检测
-        if hasattr(self, '_tab_bar') and event.type() == QEvent.Type.MouseButtonDblClick:
+        if hasattr(self, '_tab_bar') and et == QEvent.Type.MouseButtonDblClick:
             if obj == self._tab_bar:
-                pos = event.pos()
-                index = self._tab_bar.tabAt(pos)
-                logger.debug(f"tabBar doubleClick: index={index}")
-                self._on_tab_bar_double_clicked(index)
-                return True
-            elif obj == self.pane_tabs:
-                logger.debug(f"paneTabs doubleClick -> add tab")
-                self.add_pane_tab()
+                logger.info("Tab bar double click -> new tab")
+                # 双击标签栏新建标签页
+                self.add_pane_tab(self.current_path)
                 return True
         
-        return super().eventFilter(obj, event)
-    
+        return False
+
     def init_ui(self):
         """初始化 UI"""
+        import time
+        _t0 = time.perf_counter()
+        
         self.layout = QVBoxLayout(self)
         self.layout.setContentsMargins(0, 0, 0, 0)
         self.layout.setSpacing(0)
 
         # 路径栏
         self.path_bar = PathBar()
+        logger.info(f"[启动计时] PathBar 创建: {(time.perf_counter()-_t0)*1000:.1f}ms")
+        
         self.path_bar.path_entered.connect(self.on_path_entered)
         self.path_bar.tree_toggle_requested.connect(self.toggle_tree)
         self.path_bar.tabs_toggle_requested.connect(self.toggle_tabs)
         self.path_bar.terminal_requested.connect(self.open_terminal_here)
+        self.path_bar.view_mode_requested.connect(self.on_view_mode_changed)
+        self.path_bar.new_folder_requested.connect(self.new_folder)
         self.layout.addWidget(self.path_bar)
 
         # 设置焦点策略，让 focusInEvent 能触发
@@ -138,8 +139,6 @@ class Pane(QWidget):
         self.tree_view.customContextMenuRequested.connect(self.show_context_menu)
         self.tree_view.viewport().installEventFilter(self)
 
-
-
         # 拖拽支持
         self.tree_view.setDragEnabled(True)
         self.tree_view.setAcceptDrops(True)
@@ -147,6 +146,13 @@ class Pane(QWidget):
         self.tree_view.setDragDropMode(QTreeView.DragDropMode.DragDrop)
 
         self.file_list_layout.addWidget(self.tree_view)
+
+        # 超大图标视图（独立于 QTreeView，安全处理大图标）
+        from widgets.thumbnail_view import ThumbnailView
+        self.thumbnail_view = ThumbnailView()
+        self.thumbnail_view.setVisible(False)
+        self.thumbnail_view.itemDoubleClicked.connect(self.on_thumbnail_item_double_clicked)
+        self.file_list_layout.addWidget(self.thumbnail_view)
 
         self.h_layout.addWidget(self.file_list_widget, 1)  # 文件列表占据剩余空间
 
@@ -184,23 +190,40 @@ class Pane(QWidget):
         self._pane_tab_paths = [self.current_path]
         self.pane_tabs.addTab(QLabel(), os.path.basename(self.current_path) if os.path.basename(self.current_path) else self.current_path)
         
-
-    
-    def init_model(self):
-        """初始化文件系统模型"""
-        self.model = QFileSystemModel()
-        self.model.setRootPath("")
-        self.model.setFilter(
-            QDir.Filter.AllDirs | 
-            QDir.Filter.Files | 
-            QDir.Filter.NoDotAndDotDot |
-            QDir.Filter.Hidden
-        )
-        
-        self.tree_view.setModel(self.model)
+        # 设置文件模型（使用共享模型）
+        self._setup_shared_model()
         
         # 选择变化时更新预览（需要在 model 设置之后）
         self.tree_view.selectionModel().selectionChanged.connect(self.on_selection_changed)
+    
+    def _setup_shared_model(self):
+        """设置共享的 QFileSystemModel"""
+        # 使用静态共享模型，避免每个窗格都创建
+        if not hasattr(Pane, '_shared_file_model') or Pane._shared_file_model is None:
+            import time
+            t0 = time.perf_counter()
+            model = QFileSystemModel()
+            model.setRootPath("")
+            model.setFilter(
+                QDir.Filter.AllDirs | 
+                QDir.Filter.Files | 
+                QDir.Filter.NoDotAndDotDot |
+                QDir.Filter.Hidden
+            )
+            elapsed = (time.perf_counter() - t0) * 1000
+            logger.info(f"[启动计时] QFileSystemModel 创建（首次，后续共享）: {elapsed:.1f}ms")
+            Pane._shared_file_model = model
+        
+        self.model = Pane._shared_file_model
+        self.tree_view.setModel(self.model)
+        
+        # 设置根索引
+        index = self.model.setRootPath(self.current_path)
+        self.tree_view.setRootIndex(index)
+        
+
+    
+
     
     def get_state(self) -> dict:
         """获取窗格状态"""
@@ -441,6 +464,15 @@ class Pane(QWidget):
             self.navigate_to(path)
         else:
             # 打开文件
+            self.open_file(path)
+    
+    def on_thumbnail_item_double_clicked(self, item):
+        """超大图标视图双击处理"""
+        path = item.data(Qt.ItemDataRole.UserRole)
+        is_dir = item.data(Qt.ItemDataRole.UserRole + 1)
+        if is_dir:
+            self.navigate_to(path)
+        else:
             self.open_file(path)
     
     def open_file(self, file_path: str):
@@ -734,6 +766,34 @@ class Pane(QWidget):
             else:
                 QMessageBox.warning(self, "创建失败", result.error)
     
+
+    def on_view_mode_changed(self, mode: str):
+        """查看模式变化"""
+        from PyQt6.QtCore import QSize
+        logger.info(f"[DEBUG] Pane.on_view_mode_changed: mode={mode}, current_path={self.current_path}")
+        try:
+            if mode == 'icon':
+                self.tree_view.setVisible(True)
+                self.thumbnail_view.setVisible(False)
+                self.tree_view.setIconSize(QSize(48, 48))
+            elif mode == 'xlarge':
+                # 超大图标模式 - 使用独立的 ThumbnailView
+                self.tree_view.setVisible(False)
+                self.thumbnail_view.setVisible(True)
+                logger.info(f"[DEBUG] Calling thumbnail_view.load_directory({self.current_path})")
+                self.thumbnail_view.load_directory(self.current_path)
+            else:
+                self.tree_view.setVisible(True)
+                self.thumbnail_view.setVisible(False)
+                self.tree_view.setIconSize(QSize(16, 16))
+        except Exception as e:
+            import logging
+            logging.getLogger("pan4dex.pane").error(f"View mode change error: {e}")
+        self.path_bar.set_view_mode(mode)
+
+    def set_button_visibility(self, button_name: str, visible: bool):
+        """设置工具栏按钮可见性"""
+        self.path_bar.set_button_visibility(button_name, visible)
 
     def open_terminal_here(self):
         """在当前目录打开终端"""

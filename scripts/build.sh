@@ -145,9 +145,9 @@ else
     echo "[3/5] 部署 Windows 到 ${WIN_DEPLOY_HOST}..."
     # 先从 win54 拉到本地
     scp "${WIN_BUILD_HOST}:C:/workspace/pan4dex/releases/${WIN_EXE}" "${RELEASES_DIR}/" 2>&1 | tail -1
-    # 再从本地推到 win55
-    scp "${RELEASES_DIR}/${WIN_EXE}" "${WIN_DEPLOY_USER}@${WIN_DEPLOY_HOST}:${WIN_DEPLOY_DIR}/" 2>&1 | tail -1
-    echo "  ✓ Windows 已部署到 ${WIN_DEPLOY_HOST}:${WIN_DEPLOY_DIR}/${WIN_EXE}"
+    # 再从本地推到 win55（不带版本号）
+    scp "${RELEASES_DIR}/${WIN_EXE}" "${WIN_DEPLOY_USER}@${WIN_DEPLOY_HOST}:${WIN_DEPLOY_DIR}/pan4dex.exe" 2>&1 | tail -1
+    echo "  ✓ Windows 已部署到 ${WIN_DEPLOY_HOST}:${WIN_DEPLOY_DIR}/pan4dex.exe"
 fi
 
 # ── 4. 部署 Linux 到 gti (58) ──

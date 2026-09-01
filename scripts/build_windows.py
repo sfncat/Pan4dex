@@ -24,17 +24,41 @@ print(f"Working dir: {os.getcwd()}")
 print(f"Script: {script_path}")
 
 # Inject build time
+import re
 build_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 main_py = project_root / "main.py"
-# Read as bytes, decode as utf-8 (handles gbk windows files)
 raw = main_py.read_bytes()
 try:
     content = raw.decode("utf-8")
 except UnicodeDecodeError:
     content = raw.decode("gbk", errors="ignore")
-content = content.replace('__build_time__ = ""', f'__build_time__ = "{build_time}"')
+# 替换任意值的 __build_time__
+content = re.sub(r'__build_time__\s*=\s*"[^"]*"', f'__build_time__ = "{build_time}"', content)
 main_py.write_text(content, encoding="utf-8")
 print(f"Build time: {build_time}")
+
+# Find imageformats path dynamically
+try:
+    import PyQt6
+    from pathlib import Path
+    pyqt6_dir = Path(PyQt6.__file__).parent
+    imageformats_path = pyqt6_dir / "Qt6" / "plugins" / "imageformats"
+    if not imageformats_path.exists():
+        # Try alternative path structure
+        imageformats_path = pyqt6_dir / "plugins" / "imageformats"
+    if not imageformats_path.exists():
+        # Try to find it by searching
+        for p in pyqt6_dir.rglob("imageformats"):
+            if p.is_dir():
+                imageformats_path = p
+                break
+    print(f"Image formats path: {imageformats_path}")
+    print(f"Image format DLLs: {list(imageformats_path.glob('*.dll'))}")
+except Exception as e:
+    print(f"Warning: Could not find imageformats path: {e}")
+    # Fallback to common locations
+    imageformats_path = Path(r"C:\Python313\Lib\site-packages\PyQt6\Qt6\plugins\imageformats")
+    print(f"Using fallback path: {imageformats_path}")
 
 # Build with PyInstaller
 cmd = [
@@ -48,6 +72,8 @@ cmd = [
     "--hidden-import=qdarkstyle",
     "--hidden-import=qdarkstyle.dark",
     "--hidden-import=qdarkstyle.light",
+    "--hidden-import=PyQt6.QtSvg",
+    f"--add-data={imageformats_path};imageformats",
     "--icon=resources/icons/icon.ico",
     "main.py"
 ]
@@ -62,6 +88,18 @@ if result.returncode != 0:
 releases_dir = project_root / "releases"
 releases_dir.mkdir(exist_ok=True)
 dest = releases_dir / f"pan4dex-{VERSION}.exe"
-os.replace(project_root / "dist" / "pan4dex.exe", dest)
+
+# 确保 imageformats 被正确复制到 dist 目录
+dist_dir = project_root / "dist"
+dest_dist = dist_dir / "pan4dex.exe"
+if dest_dist.exists():
+    # 复制 imageformats 到 dist 目录（作为 --add-data 的备选）
+    dist_imageformats = dist_dir / "imageformats"
+    if imageformats_path.exists() and not dist_imageformats.exists():
+        import shutil
+        shutil.copytree(imageformats_path, dist_imageformats)
+        print(f"Copied imageformats to {dist_imageformats}")
+
+os.replace(dest_dist, dest)
 print(f"Build successful: {dest}")
 print(f"Size: {dest.stat().st_size} bytes")
