@@ -3,7 +3,7 @@
 Pan4dex 万格 — 跨平台四窗格文件管理器
 """
 
-__version__ = "0.9.563"
+__version__ = "0.9.600"
 __app_name__ = "Pan4dex"
 __app_name_cn__ = "万格"
 __build_time__ = "2026-08-30 06:01:16"  # 构建时自动注入，格式：YYYY-MM-DD HH:MM:SS
