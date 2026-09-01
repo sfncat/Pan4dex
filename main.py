@@ -3,7 +3,7 @@
 Pan4dex 万格 — 跨平台四窗格文件管理器
 """
 
-__version__ = "0.9.600"
+__version__ = "0.9.617"
 __app_name__ = "Pan4dex"
 __app_name_cn__ = "万格"
 __build_time__ = "2026-08-30 06:01:16"  # 构建时自动注入，格式：YYYY-MM-DD HH:MM:SS
@@ -196,6 +196,12 @@ def install_qt_plugin_path():
 def _cli_output():
     """windowed 模式下把输出挂到调用方的控制台"""
     import sys
+    import os
+    
+    # 初始化文件描述符变量（避免 NameError）
+    stdout_fd = None
+    stderr_fd = None
+    stdin_fd = None
     
     if "--version" in sys.argv or "-V" in sys.argv:
         output = f"{__app_name__} v{__version__} (build {__build_time__})"
@@ -209,31 +215,43 @@ def _cli_output():
             f"  --help, -h      显示此帮助信息\n"
         )
     else:
+        # 显示可执行文件所在目录，不是临时解压目录
+        if getattr(sys, 'frozen', False):
+            exec_dir = os.path.dirname(os.path.abspath(sys.executable))
+        else:
+            exec_dir = BASE_DIR
         lines = [
             f"version: {__version__}",
             f"build_time: {__build_time__}",
             f"platform: {sys.platform}",
             f"python: {sys.version}",
             f"frozen: {getattr(sys, 'frozen', False)}",
-            f"base_dir: {BASE_DIR}",
+            f"base_dir: {exec_dir}",
         ]
         output = "\n".join(lines)
     
-    # sys.stdout is None 是判断 windowed 模式最可靠的信号
-    if sys.stdout is None and sys.platform == "win32":
+    # Windows --windowed 模式：尝试挂到父进程控制台
+    if sys.platform == "win32" and getattr(sys, 'frozen', False):
         import ctypes
         kernel32 = ctypes.windll.kernel32
-        # -1 即 ATTACH_PARENT_PROCESS：挂到启动它的那个控制台
+        
+        # 先释放可能存在的控制台，再附加到父进程
+        kernel32.FreeConsole()
         attached = kernel32.AttachConsole(-1)
-        if not attached:
-            # 兜底：没有父控制台就新建一个
-            kernel32.AllocConsole()
-        # windowed 模式下 stdout/stderr 是 None，必须先恢复
-        import os
-        if sys.stdout is None:
-            sys.stdout = os.fdopen(os.open("CONOUT$", os.O_WRONLY), "w")
-        if sys.stderr is None:
-            sys.stderr = os.fdopen(os.open("CONOUT$", os.O_WRONLY), "w")
+        
+        if attached:
+            # 附加成功，输出到父控制台
+            sys.stdout = open("CONOUT$", "w", encoding="utf-8")
+            sys.stderr = open("CONOUT$", "w", encoding="utf-8")
+            sys.stdin = open("CONIN$", "r", encoding="utf-8")
+        else:
+            # 没有父控制台，尝试新建
+            if kernel32.AllocConsole():
+                kernel32.SetConsoleCP(65001)
+                kernel32.SetConsoleOutputCP(65001)
+                sys.stdout = open("CONOUT$", "w", encoding="utf-8")
+                sys.stderr = open("CONOUT$", "w", encoding="utf-8")
+                sys.stdin = open("CONIN$", "r", encoding="utf-8")
     
     print(output, flush=True)
     
@@ -241,11 +259,11 @@ def _cli_output():
     if sys.platform == "win32" and getattr(sys, 'frozen', False):
         import ctypes
         kernel32 = ctypes.windll.kernel32
-        # 检查是否是挂载到父控制台（如果是，不需要等待）
-        # 通过检查标准句柄来判断
-        stdin_handle = kernel32.GetStdHandle(-10)  # STD_INPUT_HANDLE
-        if stdin_handle == -1 or stdin_handle is None:
-            # 没有标准输入，说明是新建的控制台，需要等待
+        # 检查是否是挂载到父控制台
+        # 通过 GetConsoleWindow 判断：如果返回 0，说明是新建的控制台
+        console_window = kernel32.GetConsoleWindow()
+        if console_window:
+            # 有控制台窗口，等待用户按键
             try:
                 input("\n按 Enter 键退出...")
             except:

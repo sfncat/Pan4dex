@@ -263,8 +263,9 @@ class Pane(QWidget):
             
             self.current_path = path
             self.path_bar.set_path(path)
-            index = self.model.setRootPath(path)
-            self.tree_view.setRootIndex(index)
+            index = self.model.index(path)
+            if index.isValid():
+                self.tree_view.setRootIndex(index)
             self.pane_tree_view.expand_to_path(path)
             self.update_status_bar()
         
@@ -289,8 +290,13 @@ class Pane(QWidget):
             self.current_path = path
             self.path_bar.set_path(path)
 
-            index = self.model.setRootPath(path)
-            self.tree_view.setRootIndex(index)
+            # 不使用 setRootPath（会改变共享模型的根），直接用 index + setRootIndex
+            index = self.model.index(path)
+            if index.isValid():
+                self.tree_view.setRootIndex(index)
+            else:
+                # 模型还没加载完，等加载完再设置
+                self.model.directoryLoaded.connect(lambda p: self._on_dir_loaded_for_nav(path, p))
 
             # 同步展开内嵌目录树到当前路径
             self.pane_tree_view.expand_to_path(path)
@@ -303,13 +309,24 @@ class Pane(QWidget):
 
             # 更新导航历史
             if self._nav_history[self._nav_index] != path:
-                # 截断前进历史
                 self._nav_history = self._nav_history[:self._nav_index + 1]
                 self._nav_history.append(path)
                 self._nav_index = len(self._nav_history) - 1
 
             self.update_status_bar()
             self.path_changed.emit(path)
+
+    def _on_dir_loaded_for_nav(self, target_path, loaded_path):
+        """目录加载完成后设置 root index"""
+        if loaded_path == target_path or target_path.startswith(loaded_path):
+            index = self.model.index(target_path)
+            if index.isValid():
+                self.tree_view.setRootIndex(index)
+            # 断开连接避免重复触发
+            try:
+                self.model.directoryLoaded.disconnect(self._on_dir_loaded_for_nav)
+            except:
+                pass
 
     def go_back(self):
         """后退到上一个目录"""
@@ -331,9 +348,9 @@ class Pane(QWidget):
         if os.path.isdir(path):
             self.current_path = path
             self.path_bar.set_path(path)
-
-            index = self.model.setRootPath(path)
-            self.tree_view.setRootIndex(index)
+            index = self.model.index(path)
+            if index.isValid():
+                self.tree_view.setRootIndex(index)
 
             self.pane_tree_view.expand_to_path(path)
 
@@ -431,8 +448,9 @@ class Pane(QWidget):
                 # 更新当前路径并刷新文件列表
                 self.current_path = path
                 self.path_bar.set_path(path)
-                idx = self.model.setRootPath(path)
-                self.tree_view.setRootIndex(idx)
+                idx = self.model.index(path)
+                if idx.isValid():
+                    self.tree_view.setRootIndex(idx)
                 self.pane_tree_view.expand_to_path(path)
                 self.update_status_bar()
 
@@ -780,6 +798,13 @@ class Pane(QWidget):
                 # 超大图标模式 - 使用独立的 ThumbnailView
                 self.tree_view.setVisible(False)
                 self.thumbnail_view.setVisible(True)
+                # 强制刷新布局
+                self.thumbnail_view.show()
+                self.thumbnail_view.updateGeometry()
+                self.file_list_widget.updateGeometry()
+                self.file_list_layout.activate()
+                self.file_list_widget.repaint()
+                QApplication.processEvents()
                 logger.info(f"[DEBUG] Calling thumbnail_view.load_directory({self.current_path})")
                 self.thumbnail_view.load_directory(self.current_path)
             else:

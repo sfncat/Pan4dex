@@ -2,37 +2,58 @@
 Pan4dex 万格 — 窗格内嵌目录树
 """
 import os
-from PyQt6.QtWidgets import QTreeView, QWidget, QVBoxLayout, QHBoxLayout, QPushButton
-from PyQt6.QtCore import Qt, QDir, pyqtSignal, QModelIndex
+import logging
+from PyQt6.QtWidgets import QTreeView, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QCheckBox
+from PyQt6.QtCore import Qt, QDir, pyqtSignal, QModelIndex, QTimer
 from PyQt6.QtGui import QFileSystemModel
+
+logger = logging.getLogger("pan4dex.pane_tree_view")
 
 
 class PaneTreeView(QWidget):
-    """窗格内嵌目录树 - 每个窗格左侧的独立目录树"""
+    """窗格内嵌目录树"""
     
-    folder_clicked = pyqtSignal(str)  # 文件夹点击信号
+    folder_clicked = pyqtSignal(str)
+    auto_expand = True
+    
+    _pending_path = None
+    _expand_queue = []
     
     def __init__(self, parent=None):
         super().__init__(parent)
         
-        self.setMinimumWidth(150)
+        self._pane_ref = None
+        p = parent
+        while p:
+            if hasattr(p, 'current_path'):
+                self._pane_ref = p
+                break
+            p = p.parent()
+        
+        self.setMinimumWidth(180)
         self.setMaximumWidth(300)
         
-        # 布局
         self.main_layout = QVBoxLayout(self)
         self.main_layout.setContentsMargins(0, 0, 0, 0)
         self.main_layout.setSpacing(0)
         
         # 工具栏
         self.toolbar = QHBoxLayout()
+        self.toolbar.setSpacing(1)
         
-        # 跟随当前位置按钮
-        self.follow_btn = QPushButton("📍 跟随")
-        self.follow_btn.setToolTip("展开目录树到当前目录")
+        self.follow_btn = QPushButton("📍")
+        self.follow_btn.setFixedSize(32, 20)
+        self.follow_btn.setToolTip("📍 跟随当前目录")
         self.follow_btn.clicked.connect(self.on_follow_clicked)
         self.toolbar.addWidget(self.follow_btn)
         
         self.toolbar.addStretch()
+        
+        self.auto_chk = QCheckBox("自动")
+        self.auto_chk.setChecked(True)
+        self.auto_chk.toggled.connect(self._toggled_auto)
+        self.toolbar.addWidget(self.auto_chk)
+        
         self.main_layout.addLayout(self.toolbar)
         
         # 树视图
@@ -40,80 +61,73 @@ class PaneTreeView(QWidget):
         self.tree_view.setHeaderHidden(True)
         self.tree_view.setSortingEnabled(True)
         self.tree_view.setItemsExpandable(True)
-        self.tree_view.setAllColumnsShowFocus(True)
         self.tree_view.doubleClicked.connect(self.on_item_clicked)
-        
         self.main_layout.addWidget(self.tree_view)
         
-        # 模型
         self.init_model()
-        
-        # 样式
+        logger.info("[DEBUG] PaneTreeView init done")
+    
+    def _toggled_auto(self, checked):
+        self.auto_expand = checked
     
     def init_model(self):
-        """初始化文件系统模型"""
         self.model = QFileSystemModel()
         self.model.setRootPath("")
         self.model.setFilter(
-            QDir.Filter.AllDirs | 
-            QDir.Filter.NoDotAndDotDot |
-            QDir.Filter.Hidden
+            QDir.Filter.AllDirs | QDir.Filter.NoDotAndDotDot
         )
-        
+        self.model.directoryLoaded.connect(self._on_directory_loaded)
         self.tree_view.setModel(self.model)
-        
-        # 隐藏除名称外的所有列
-        self.tree_view.setColumnHidden(1, True)  # 大小
-        self.tree_view.setColumnHidden(2, True)  # 类型
-        self.tree_view.setColumnHidden(3, True)  # 修改时间
-        
-        # 设置根目录
-        root_index = self.model.index(QDir.homePath())
+        self.tree_view.setColumnHidden(1, True)
+        self.tree_view.setColumnHidden(2, True)
+        self.tree_view.setColumnHidden(3, True)
+        root_index = self.model.index("")
         self.tree_view.setRootIndex(root_index)
     
-    def set_root_path(self, path: str):
-        """设置根目录"""
-        if os.path.isdir(path):
-            root_index = self.model.index(path)
-            self.tree_view.setRootIndex(root_index)
+    def _on_directory_loaded(self, path):
+        if self._pending_path:
+            parts = getattr(self, '_expand_queue', [])
+            if parts and self._pending_path in parts:
+                QTimer.singleShot(50, lambda: self._expand_parts(parts, 0))
+            self._pending_path = None
     
     def on_item_clicked(self, index: QModelIndex):
-        """项目点击"""
         path = self.model.filePath(index)
         if os.path.isdir(path):
             self.folder_clicked.emit(path)
     
     def on_follow_clicked(self):
-        """跟随当前位置按钮点击"""
-        # 从父级 Pane 获取当前路径
-        pane = self.parent()
-        while pane and not hasattr(pane, 'current_path'):
-            pane = pane.parent()
-        
+        pane = self._pane_ref
         if pane and hasattr(pane, 'current_path'):
-            self.expand_to_path_recursive(pane.current_path)
-    
-    def expand_to_path_recursive(self, path: str):
-        """递归展开到指定路径（展开所有父级）"""
-        if os.path.isdir(path):
-            # 从根路径开始，逐级展开
-            parts = []
-            current = path
-            while current and current != os.path.dirname(current):
-                parts.append(current)
-                current = os.path.dirname(current)
-            
-            # 从根到叶逐级展开
-            for p in reversed(parts):
-                index = self.model.index(p)
-                if index.isValid():
-                    self.tree_view.expand(index)
-            
-            # 设置当前选中项
-            leaf_index = self.model.index(path)
-            if leaf_index.isValid():
-                self.tree_view.setCurrentIndex(leaf_index)
+            path = pane.current_path
+            logger.info(f"[DEBUG] PaneTreeView.follow: path={path}")
+            self.expand_to_path(path)
     
     def expand_to_path(self, path: str):
-        """递归展开到指定路径（展开所有父级）"""
-        self.expand_to_path_recursive(path)
+        if not path or not os.path.isdir(path):
+            return
+        parts = []
+        current = path
+        while current and current != os.path.dirname(current):
+            parts.append(current)
+            current = os.path.dirname(current)
+        parts.reverse()
+        logger.info(f"[DEBUG] PaneTreeView.expand: parts={parts}")
+        self._expand_queue = parts
+        self._expand_parts(parts, 0)
+    
+    def _expand_parts(self, parts: list, idx: int):
+        if idx >= len(parts):
+            leaf = self.model.index(parts[-1])
+            if leaf.isValid():
+                self.tree_view.setCurrentIndex(leaf)
+                self.tree_view.scrollTo(leaf)
+            return
+        p = parts[idx]
+        index = self.model.index(p)
+        if index.isValid():
+            self.tree_view.expand(index)
+            QTimer.singleShot(100, lambda: self._expand_parts(parts, idx + 1))
+        else:
+            self._pending_path = p
+            QTimer.singleShot(300, lambda: self._expand_parts(parts, idx))
