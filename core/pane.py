@@ -7,7 +7,8 @@ logger = logging.getLogger("pan4dex.pane")
 from PyQt6.QtGui import QFileSystemModel, QAction, QKeySequence, QCursor
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QTreeView, QProgressBar,
-    QLabel, QMenu, QMessageBox, QInputDialog, QLineEdit, QHBoxLayout, QTabWidget
+    QLabel, QMenu, QMessageBox, QInputDialog, QLineEdit, QHBoxLayout, QTabWidget,
+    QApplication
 )
 from PyQt6.QtCore import Qt, QDir, QMimeData, pyqtSignal, QThread, QPoint, QEvent
 import os
@@ -75,13 +76,25 @@ class Pane(QWidget):
             elif et == QEvent.Type.FocusIn:
                 self.activated.emit(self)
         
-        # 标签栏双击检测
-        if hasattr(self, '_tab_bar') and et == QEvent.Type.MouseButtonDblClick:
-            if obj == self._tab_bar:
-                logger.info("Tab bar double click -> new tab")
-                # 双击标签栏新建标签页
-                self.add_pane_tab(self.current_path)
+        # 标签栏双击检测：双击标签关闭，双击空白新建
+        if et == QEvent.Type.MouseButtonDblClick:
+            pos = event.position().toPoint() if hasattr(event, 'position') else event.pos()
+            if hasattr(self, '_tab_bar') and obj == self._tab_bar:
+                # 事件直接到达 tab bar：tabAt 判断标签/空白
+                tab_index = self._tab_bar.tabAt(pos)
+                if tab_index >= 0:
+                    self.close_pane_tab(tab_index)
+                else:
+                    self.add_pane_tab(self.current_path)
                 return True
+            elif hasattr(self, 'pane_tabs') and obj == self.pane_tabs:
+                # 事件到达 QTabWidget：可能是 tab bar 未覆盖的空白区域
+                if hasattr(self, '_tab_bar'):
+                    tab_bar_pos = self._tab_bar.mapFrom(self.pane_tabs, pos)
+                    if not self._tab_bar.rect().contains(tab_bar_pos):
+                        # 在 tab bar 几何区域外 → 空白区域 → 新建标签
+                        self.add_pane_tab(self.current_path)
+                        return True
         
         return False
 
@@ -295,8 +308,9 @@ class Pane(QWidget):
             if index.isValid():
                 self.tree_view.setRootIndex(index)
             else:
-                # 模型还没加载完，等加载完再设置
-                self.model.directoryLoaded.connect(lambda p: self._on_dir_loaded_for_nav(path, p))
+                # 模型还没加载完，用 QTimer 延迟重试（避免重复连接 directoryLoaded 信号导致泄漏）
+                from PyQt6.QtCore import QTimer
+                QTimer.singleShot(50, lambda: self._retry_set_root_index(path, 0))
 
             # 同步展开内嵌目录树到当前路径
             self.pane_tree_view.expand_to_path(path)
@@ -315,18 +329,22 @@ class Pane(QWidget):
 
             self.update_status_bar()
             self.path_changed.emit(path)
+            # 超大图标模式下同步刷新缩略图视图
+            if hasattr(self, 'thumbnail_view') and self.thumbnail_view.isVisible():
+                self.thumbnail_view.load_directory(path)
 
-    def _on_dir_loaded_for_nav(self, target_path, loaded_path):
-        """目录加载完成后设置 root index"""
-        if loaded_path == target_path or target_path.startswith(loaded_path):
-            index = self.model.index(target_path)
-            if index.isValid():
-                self.tree_view.setRootIndex(index)
-            # 断开连接避免重复触发
-            try:
-                self.model.directoryLoaded.disconnect(self._on_dir_loaded_for_nav)
-            except:
-                pass
+    def _retry_set_root_index(self, path, attempt):
+        """延迟重试设置 root index，直到模型加载完成或超时"""
+        if attempt > 20:  # 最多重试 20 次（约 1 秒）
+            return
+        if self.current_path != path:
+            return  # 用户已导航到其他路径，放弃
+        index = self.model.index(path)
+        if index.isValid():
+            self.tree_view.setRootIndex(index)
+        else:
+            from PyQt6.QtCore import QTimer
+            QTimer.singleShot(50, lambda: self._retry_set_root_index(path, attempt + 1))
 
     def go_back(self):
         """后退到上一个目录"""
@@ -390,13 +408,9 @@ class Pane(QWidget):
         self.path_bar.set_tabs_button_checked(not visible)
 
     def _on_tab_bar_double_clicked(self, index):
-        """双击标签栏"""
-        if index == -1:
-            # 双击空白处新建标签
-            self.add_pane_tab()
-        else:
-            # 双击标签重命名
-            self._rename_pane_tab(index)
+        """双击标签 → 关闭标签页（重命名请用右键菜单）"""
+        if index >= 0:
+            self.close_pane_tab(index)
 
     def _rename_pane_tab(self, index):
         """重命名标签页"""
@@ -422,15 +436,23 @@ class Pane(QWidget):
                 background-color: #404040;
             }
         """)
-        
+
+        # 定位右键点中的标签
+        tab_index = self.pane_tabs.tabBar().tabAt(position)
+
         new_tab_action = QAction("新建标签页(&N)", self)
         new_tab_action.triggered.connect(lambda: self.add_pane_tab())
         menu.addAction(new_tab_action)
-        
-        close_tab_action = QAction("关闭标签页(&C)", self)
-        close_tab_action.triggered.connect(lambda: self.close_pane_tab(self.pane_tabs.currentIndex()))
-        menu.addAction(close_tab_action)
-        
+
+        if tab_index >= 0:
+            rename_tab_action = QAction("重命名标签页(&R)", self)
+            rename_tab_action.triggered.connect(lambda: self._rename_pane_tab(tab_index))
+            menu.addAction(rename_tab_action)
+
+            close_tab_action = QAction("关闭标签页(&C)", self)
+            close_tab_action.triggered.connect(lambda: self.close_pane_tab(tab_index))
+            menu.addAction(close_tab_action)
+
         menu.exec(QCursor.pos())
 
     def close_pane_tab(self, index):
@@ -453,6 +475,9 @@ class Pane(QWidget):
                     self.tree_view.setRootIndex(idx)
                 self.pane_tree_view.expand_to_path(path)
                 self.update_status_bar()
+                # 超大图标模式下同步刷新缩略图视图
+                if hasattr(self, 'thumbnail_view') and self.thumbnail_view.isVisible():
+                    self.thumbnail_view.load_directory(path)
 
     def add_pane_tab(self, path: str = None):
         """添加窗格内标签页"""
