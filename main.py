@@ -456,7 +456,7 @@ def main():
             except Exception:
                 pass
         try:
-            from PyQt6.QtGui import QIcon
+            from core.icon_utils import load_app_icon
 
             _icon_name = ICON_FILE
             if getattr(sys, 'frozen', False):
@@ -467,7 +467,8 @@ def main():
             else:
                 _icon_path = os.path.join(BASE_DIR, "resources", "icons", _icon_name)
             if os.path.exists(_icon_path):
-                app.setWindowIcon(QIcon(_icon_path))
+                # 从 icon.png 生成多尺寸图标，Windows 任务栏避免 1024→32 大缩放
+                app.setWindowIcon(load_app_icon(_icon_path))
         except Exception as e:
             logger.warning(f"Failed to set window icon: {e}")
         app.setOrganizationName(ORG_NAME)

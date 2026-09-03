@@ -15,8 +15,8 @@
 # ---- 发布元数据 ----
 APP_NAME = "Pan4dex"                  # 应用英文名
 APP_NAME_CN = "万格"                    # 应用中文名
-VERSION = "0.9.645"                    # 版本号（发布前手动修改）
-BUILD_TIME = "2026-09-03 23:00:55"     # 编译时间（YYYY-MM-DD HH:MM:SS），构建时自动写入；源码运行留空
+VERSION = "0.9.646"                    # 版本号（发布前手动修改）
+BUILD_TIME = "2026-09-04 07:08:28"     # 编译时间（YYYY-MM-DD HH:MM:SS），构建时自动写入；源码运行留空
 
 # ---- 应用级常量 ----
 ORG_NAME = "sfncat"                    # QSettings 组织名（决定配置写入位置）
