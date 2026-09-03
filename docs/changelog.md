@@ -19,6 +19,28 @@
 
 ## 更新记录
 
+### v0.9.645 — 2026-09-03
+
+#### 🚀 功能增强
+- 新增 `--install-menu` 命令：Linux 下一条命令即可把 Pan4dex 注册到开始菜单/应用菜单——自动把图标安装到 `~/.local/share/icons/hicolor`、生成 `.desktop` 启动器到 `~/.local/share/applications` 并刷新桌面数据库。打包版（onefile / AppImage）直接运行 `pan4dex --install-menu` 即可，无需再手动拷贝 install-linux.sh
+
+#### 🐛 缺陷修复
+- 修复 `--help` 参数未被 CLI 分发识别（此前只认 `-h`，单独传 `--help` 会误入 GUI 启动）的问题
+- 修复 Linux `--install-menu` 注册后开始菜单/文件管理器仍不显示图标的根因：`~/.local/share/icons/hicolor` 缺少 `index.theme`，`gtk-update-icon-cache` 报 "No theme index file"、无法生成图标缓存，桌面环境因此找不到图标；同时安装的图标/desktop 文件被 `shutil.copy2` 保留了源文件 600 权限导致无法读取。修复：`--install-menu` 自动创建 `index.theme`（声明 256/512 尺寸目录）、图标与 desktop 统一 `chmod 644`、刷新缓存兼容 GNOME/KDE（`update-desktop-database` + `gtk-update-icon-cache` + `kbuildsycoca6`），并提示注册后注销重登或重启桌面
+
+#### 🎨 UI/UX
+- 应用图标统一与圆角化：Windows/Linux 运行时统一使用 `icon.png`（圆角），不再按平台区分 `icon.ico`/`icon.png`；`icon.png` 四角改为圆角（半径约 200px），视觉更柔和；`icon.ico` 同步重新生成多尺寸圆角版本（Windows exe 内嵌图标仍用 `.ico`，PyInstaller 平台限制，两者视觉一致）
+
+### v0.9.644 — 2026-09-03
+
+#### 🐛 缺陷修复
+- 修复任务栏图标反复消失的问题：`MainWindow` 用单张 1024×1024 的 `icon.png` 作为窗口图标，覆盖了 `main.py` 设置的 `icon.ico`。Windows 任务栏/标题栏对窗口图标只兼容多尺寸 ICO，用大 PNG 会缩放异常甚至显示为默认/空白图标，叠加 Windows 图标缓存后表现为“反复消失”。修复：`MainWindow` 改用与 app 级一致的 `icon.ico`（含 16/24/32/48/64/128/256 七种尺寸），并给 frozen 模式的图标路径增加兜底（`_MEIPASS` 与 exe 同目录的 `resources/icons/icon.ico`）
+
+#### 🔧 工程
+- 版本号与编译时间从代码中抽离到独立配置文件 `config/app_config.py`：此前 `__version__`/`__app_name__`/`__build_time__` 硬编码在 `main.py`，构建脚本 `build_windows.py` 甚至用正则直接改写 `main.py` 注入编译时间，导致“改个版本号就得动源码、每次构建都会污染工作区”。现在 `main.py`/`core/main_window.py` 仅从 `config/app_config.py` 读取 `VERSION`/`BUILD_TIME`；改版本号只需编辑该配置文件；构建脚本改为从配置读取版本号、并把编译时间写入配置，不再改动任何源码文件。源码运行（未打包）时版本显示 `(build dev)`
+- 组织名、默认窗口几何、默认主题、Qt 样式、图标文件名也统一收进 `config/app_config.py`（`ORG_NAME`/`DEFAULT_WINDOW_MIN_*`/`DEFAULT_THEME`/`APP_STYLE`/`ICON_FILE_*`），`main.py`、`core/main_window.py`、`config/theme_manager.py`、`widgets/settings_dialog.py` 均改为从配置读取，消除 `"sfncat"`、`"dark"`、`1024, 768` 等散落硬编码；图标按平台选择（Windows 用多尺寸 `icon.ico`，Linux 等平台用 `icon.png`）
+- Linux 构建与图标修复：`build-linux-docker.sh` 改为从 `config/app_config.py` 读取版本号、把编译时间写入配置（不再 sed 改写 main.py），并补上 `--add-data resources:resources`（此前 Linux 构建未打包图标等资源，是 Linux 下窗口/任务栏图标不显示的根因）；`packaging/Dockerfile-linux` 补装 Qt6 运行时库（`libxcb-cursor0`、`libgtk-3-0`、`libgdk-pixbuf-2.0-0`、`libatk1.0-0`、`libglib2.0-0`），PyInstaller 将这些库收集进 onefile，目标机器无需另装；新增 `scripts/install-linux.sh` + `packaging/pan4dex.desktop`：把图标安装到 `~/.local/share/icons/hicolor`、把启动器安装到 `~/.local/share/applications`，解决 Linux 文件管理器/应用菜单中图标不显示的问题。已产出 `releases/pan4dex-0.9.644-linux`（onefile，约 69MB），xvfb 下 GUI 启动正常、图标加载无警告
+
 ### v0.9.643 — 2026-09-03
 
 #### 🐛 缺陷修复

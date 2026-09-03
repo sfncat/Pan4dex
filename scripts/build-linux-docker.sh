@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-VERSION=${1:-$(python3 -c "exec(open('main.py').read().split('__version__ = ')[1].split(chr(34))[1]); print(__version__)")}
+VERSION=${1:-$(python3 -c "import re; m=re.search(r'^VERSION\s*=\s*\"([^\"]+)\"', open('config/app_config.py', encoding='utf-8').read(), re.M); print(m.group(1))")}
 RELEASES_DIR="$(pwd)/releases"
 DOCKER_IMAGE="pan4dex-builder-linux"
 CONTAINER_NAME="pan4dex-build-linux"
@@ -36,12 +36,14 @@ sudo docker run --name ${CONTAINER_NAME} \
     bash -c "
         cd /app
         
-        # 注入构建时间
+        # 更新全局配置中的编译时间（写入 config/app_config.py，不再改写 main.py）
         export PYBUILD_TIME=\$(date '+%Y-%m-%d %H:%M:%S')
-        sed -i \"s/__build_time__ = \\\"\\\"/__build_time__ = \\\"\${PYBUILD_TIME}\\\"/\" main.py
+        sed -i \"s/^BUILD_TIME = \\\"[^\\\"]*\\\"/BUILD_TIME = \\\"\${PYBUILD_TIME}\\\"/\" config/app_config.py
         
-        # 构建
-        pyinstaller --onefile --windowed --name=pan4dex main.py
+        # 构建：必须打包 resources（图标/主题资源），否则运行时图标缺失、任务栏显示默认图标
+        pyinstaller --onefile --windowed --name=pan4dex \
+            --add-data resources:resources \
+            main.py
         
         # 移动到 releases
         mkdir -p /app/releases

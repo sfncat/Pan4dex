@@ -13,9 +13,11 @@ os.chdir(project_root)
 
 VERSION = sys.argv[1] if len(sys.argv) > 1 else None
 if not VERSION:
-    with open(project_root / "main.py") as f:
+    # 从全局配置 config/app_config.py 读取版本号（不再解析 main.py）
+    cfg_file = project_root / "config" / "app_config.py"
+    with open(cfg_file, encoding="utf-8") as f:
         for line in f:
-            if line.startswith("__version__"):
+            if line.startswith("VERSION"):
                 VERSION = line.split('"')[1]
                 break
 
@@ -23,18 +25,17 @@ print(f"Building Pan4dex {VERSION} for Windows...")
 print(f"Working dir: {os.getcwd()}")
 print(f"Script: {script_path}")
 
-# Inject build time
+# 更新全局配置 config/app_config.py 中的编译时间（不再改写 main.py）
 import re
 build_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-main_py = project_root / "main.py"
-raw = main_py.read_bytes()
+cfg_file = project_root / "config" / "app_config.py"
+raw = cfg_file.read_bytes()
 try:
     content = raw.decode("utf-8")
 except UnicodeDecodeError:
     content = raw.decode("gbk", errors="ignore")
-# 替换任意值的 __build_time__
-content = re.sub(r'__build_time__\s*=\s*"[^"]*"', f'__build_time__ = "{build_time}"', content)
-main_py.write_text(content, encoding="utf-8", newline="")  # newline="" 保持原行尾，避免 CRLF 文件在 Windows 下累积 \r
+content = re.sub(r'^BUILD_TIME\s*=\s*"[^"]*"', f'BUILD_TIME = "{build_time}"', content, flags=re.M)
+cfg_file.write_text(content, encoding="utf-8", newline="")  # newline="" 保持原行尾，避免 CRLF 文件在 Windows 下累积 \r
 print(f"Build time: {build_time}")
 
 # Find imageformats path dynamically

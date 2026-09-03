@@ -9,6 +9,8 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtGui import QFont, QColor
 from PyQt6.QtCore import Qt
 
+from config.app_config import DEFAULT_THEME
+
 
 class SettingsDialog(QDialog):
     """设置对话框"""
@@ -20,7 +22,7 @@ class SettingsDialog(QDialog):
         self.setMinimumSize(400, 300)
         
         # 当前设置
-        self.current_theme = "dark"
+        self.current_theme = DEFAULT_THEME
         self.current_font_family = "系统默认"
         self.current_font_size = 9
         

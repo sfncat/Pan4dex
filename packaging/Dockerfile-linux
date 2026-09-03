@@ -3,6 +3,8 @@ FROM python:3.10-bullseye
 ENV QT_QPA_PLATFORM=offscreen
 
 # 安装 Qt6 运行时库（glibc 2.31 ≤ gti 2.35，兼容）
+# libxcb-cursor0 是 Qt6 xcb 平台插件的硬依赖；libgtk-3/gdk-pixbuf/atk/glib 供 qgtk3 主题插件使用
+# 这些库在构建容器中存在，PyInstaller 会把它们收集进 onefile，避免目标机器缺库
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libgl1-mesa-dev \
     libxkbcommon-dev \
@@ -27,8 +29,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxcb-shape0-dev \
     libxcb-randr0-dev \
     libxcb-render-util0-dev \
+    libxcb-cursor0 \
     libdbus-1-dev \
     libssl-dev \
+    libgtk-3-0 \
+    libgdk-pixbuf-2.0-0 \
+    libatk1.0-0 \
+    libglib2.0-0 \
     xvfb \
     && rm -rf /var/lib/apt/lists/*
 

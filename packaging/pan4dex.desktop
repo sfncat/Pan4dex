@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Pan4dex 万格
+Name[en]=Pan4dex
+GenericName=File Manager
+Comment=跨平台四窗格文件管理器
+Comment[en]=Cross-platform quad-pane file manager
+Exec=__EXEC_PATH__
+Icon=pan4dex
+Terminal=false
+Categories=Utility;FileManager;System;
+Keywords=file;manager;pane;quad;browser;
+StartupWMClass=pan4dex

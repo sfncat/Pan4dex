@@ -51,6 +51,16 @@ from widgets.bookmark_sidebar import BookmarkSidebar
 from widgets.tree_sidebar import TreeSidebar
 from config.file_associations import FileAssociations
 from config.theme_manager import ThemeManager
+from config.app_config import (
+    APP_NAME,
+    ORG_NAME,
+    VERSION,
+    BUILD_TIME,
+    DEFAULT_THEME,
+    DEFAULT_WINDOW_MIN_WIDTH,
+    DEFAULT_WINDOW_MIN_HEIGHT,
+    ICON_FILE,
+)
 
 
 class MainWindow(QMainWindow):
@@ -60,23 +70,26 @@ class MainWindow(QMainWindow):
         super().__init__()
         
         self.setWindowTitle("Pan4dex 万格")
-        self.setMinimumSize(1024, 768)
+        self.setMinimumSize(DEFAULT_WINDOW_MIN_WIDTH, DEFAULT_WINDOW_MIN_HEIGHT)
         
-        # 设置应用图标
+        # 设置应用图标：统一使用 icon.png（圆角 PNG，Windows/Linux 一致）
         from PyQt6.QtGui import QIcon
         import sys
         import os
+        _icon_name = ICON_FILE
         if getattr(sys, 'frozen', False):
-            # PyInstaller 打包后
+            # PyInstaller 打包后：_MEIPASS 指向 _internal，兜底到 exe 同目录
             base_dir = sys._MEIPASS
         else:
             base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        icon_path = os.path.join(base_dir, 'resources', 'icons', 'icon.png')
+        icon_path = os.path.join(base_dir, 'resources', 'icons', _icon_name)
+        if not os.path.exists(icon_path) and getattr(sys, 'frozen', False):
+            icon_path = os.path.join(os.path.dirname(os.path.abspath(sys.executable)), 'resources', 'icons', _icon_name)
         if os.path.exists(icon_path):
             self.setWindowIcon(QIcon(icon_path))
         
         # 恢复窗口位置和大小
-        self.settings = QSettings("sfncat", "Pan4dex")
+        self.settings = QSettings(ORG_NAME, APP_NAME)
         self.restore_geometry()
         
         # 文件关联
@@ -123,7 +136,7 @@ class MainWindow(QMainWindow):
         _t0 = time.perf_counter()
         
         # 应用默认主题
-        self.theme_manager.apply_theme("dark")
+        self.theme_manager.apply_theme(DEFAULT_THEME)
         logger.info(f"[启动计时] 主题应用: {(time.perf_counter()-_t0)*1000:.1f}ms")
         
         # 自动恢复上次的布局
@@ -752,14 +765,13 @@ class MainWindow(QMainWindow):
         import sys
         import os
         
-        # 动态获取版本号和编译时间
+        # 版本号和编译时间（来自全局配置，顶部已导入）
         try:
-            from main import __version__, __build_time__
-            if __build_time__:
-                version_str = f"版本: {__version__} ({__build_time__})"
+            if BUILD_TIME:
+                version_str = f"版本: {VERSION} ({BUILD_TIME})"
             else:
-                version_str = f"版本: {__version__}"
-            build_str = f"<p>编译时间: {__build_time__}</p>" if __build_time__ else ""
+                version_str = f"版本: {VERSION}"
+            build_str = f"<p>编译时间: {BUILD_TIME}</p>" if BUILD_TIME else ""
         except ImportError:
             version_str = "版本: 0.9.4"
             build_str = ""
@@ -783,7 +795,7 @@ class MainWindow(QMainWindow):
             settings = dialog.get_settings()
             
             # 应用主题
-            theme = settings.get('theme', 'dark')
+            theme = settings.get('theme', DEFAULT_THEME)
             self.theme_manager.apply_theme(theme)
             
             # 应用字体

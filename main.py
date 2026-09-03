@@ -4,10 +4,16 @@
 Pan4dex 万格 — 跨平台四窗格文件管理器
 """
 
-__version__ = "0.9.643"
-__app_name__ = "Pan4dex"
-__app_name_cn__ = "万格"
-__build_time__ = "2026-09-03 14:49:20"  # 构建时自动注入，格式：YYYY-MM-DD HH:MM:SS
+
+from config.app_config import (
+    APP_NAME,
+    APP_NAME_CN,
+    VERSION,
+    BUILD_TIME,
+    ORG_NAME,
+    APP_STYLE,
+    ICON_FILE,
+)
 
 import sys
 import os
@@ -69,8 +75,8 @@ def write_crash_log(error_msg: str):
         with open(crash_file, "w", encoding="utf-8") as f:
             f.write(f"=== Pan4dex Crash Log ===\n")
             f.write(f"Time: {datetime.datetime.now().isoformat()}\n")
-            f.write(f"Version: {__version__}\n")
-            f.write(f"Build: {__build_time__}\n")
+            f.write(f"Version: {VERSION}\n")
+            f.write(f"Build: {BUILD_TIME}\n")
             f.write(f"Platform: {sys.platform}\n")
             f.write(f"Exe dir: {exe_dir}\n")
             f.write(f"Base dir: {BASE_DIR}\n")
@@ -116,8 +122,8 @@ def install_crash_handler():
             with open(crash_file, "w", encoding="utf-8") as f:
                 f.write(f"=== Pan4dex Crash Log ===\n")
                 f.write(f"Time: {datetime.datetime.now().isoformat()}\n")
-                f.write(f"Version: {__version__}\n")
-                f.write(f"Build: {__build_time__}\n")
+                f.write(f"Version: {VERSION}\n")
+                f.write(f"Build: {BUILD_TIME}\n")
                 f.write(f"Platform: {sys.platform}\n")
                 f.write(f"Type: {exc_type.__name__}\n")
                 f.write(f"\n--- Error ---\n")
@@ -186,14 +192,17 @@ def _cli_output():
     import os
 
     if "--version" in sys.argv or "-V" in sys.argv:
-        output = f"{__app_name__} v{__version__} (build {__build_time__})"
+        # 源码运行（未打包）时 BUILD_TIME 为空，显示 dev 标记
+        _build = BUILD_TIME or "dev"
+        output = f"{APP_NAME} v{VERSION} (build {_build})"
     elif "--help" in sys.argv or "-h" in sys.argv:
         output = (
-            f"{__app_name_cn__} — 跨平台四窗格文件管理器\n\n"
+            f"{APP_NAME_CN} — 跨平台四窗格文件管理器\n\n"
             f"用法: pan4dex [选项]\n\n"
             f"选项:\n"
             f"  --version, -V   显示版本信息\n"
             f"  --info          显示详细版本和构建信息\n"
+            f"  --install-menu  Linux: 注册应用到开始菜单/应用菜单（安装 .desktop + 图标）\n"
             f"  --help, -h      显示此帮助信息\n"
             f"  --verbose, -v   保留控制台窗口显示日志（调试用）\n"
         )
@@ -203,8 +212,8 @@ def _cli_output():
         else:
             exec_dir = BASE_DIR
         lines = [
-            f"version: {__version__}",
-            f"build_time: {__build_time__}",
+            f"version: {VERSION}",
+            f"build_time: {BUILD_TIME}",
             f"platform: {sys.platform}",
             f"python: {sys.version}",
             f"frozen: {getattr(sys, 'frozen', False)}",
@@ -212,6 +221,110 @@ def _cli_output():
         ]
         output = "\n".join(lines)
     print(output, flush=True)
+
+
+def _install_menu_linux():
+    """Linux：把应用注册到开始菜单/应用菜单（安装 .desktop 启动器 + 图标）。
+
+    用法: pan4dex --install-menu
+    - 把图标安装到 ~/.local/share/icons/hicolor（文件管理器/应用菜单识别）
+    - 把 .desktop 启动器安装到 ~/.local/share/applications（开始菜单/应用菜单入口）
+    适合打包后的 onefile / AppImage 版本；源码运行时也可用（Exec 指向 python main.py）。
+    """
+    if sys.platform != "linux":
+        print("--install-menu 仅支持 Linux。")
+        return 1
+    import shutil
+    import subprocess
+
+    home = os.path.expanduser("~")
+    icons_base = os.path.join(home, ".local", "share", "icons", "hicolor")
+    apps_dir = os.path.join(home, ".local", "share", "applications")
+
+    # 0) 确保 hicolor 有 index.theme——没有它 GTK 不认这是有效图标主题，
+    #    gtk-update-icon-cache 会报 "No theme index file"，桌面环境找不到图标
+    index_theme = os.path.join(icons_base, "index.theme")
+    os.makedirs(icons_base, exist_ok=True)
+    if not os.path.exists(index_theme):
+        with open(index_theme, "w", encoding="utf-8") as f:
+            f.write(
+                "[Icon Theme]\n"
+                "Name=Hicolor\n"
+                "Comment=Fallback icon theme\n"
+                "Hidden=true\n"
+                "Directories=256x256/apps,512x512/apps\n"
+                "\n"
+                "[256x256/apps]\n"
+                "Size=256\n"
+                "Type=Directories\n"
+                "Context=Apps\n"
+                "\n"
+                "[512x512/apps]\n"
+                "Size=512\n"
+                "Type=Directories\n"
+                "Context=Apps\n"
+            )
+        os.chmod(index_theme, 0o644)
+
+    # 图标源：Linux 用 icon.png
+    if getattr(sys, "frozen", False):
+        icon_src = os.path.join(sys._MEIPASS, "resources", "icons", "icon.png")
+    else:
+        icon_src = os.path.join(BASE_DIR, "resources", "icons", "icon.png")
+    if not os.path.exists(icon_src):
+        print(f"错误: 找不到图标 {icon_src}")
+        return 1
+
+    # 1) 安装图标到 hicolor 图标主题（chmod 644：源文件可能被 copy2 保留 600，桌面环境读不了）
+    for size in ("256", "512"):
+        dest = os.path.join(icons_base, f"{size}x{size}", "apps")
+        os.makedirs(dest, exist_ok=True)
+        icon_dst = os.path.join(dest, "pan4dex.png")
+        shutil.copy2(icon_src, icon_dst)
+        os.chmod(icon_dst, 0o644)
+    print(f"[1/3] 图标已安装: ~/.local/share/icons/hicolor/{{256,512}}x{{256,512}}/apps/pan4dex.png")
+
+    # 2) 生成 .desktop 启动器
+    if getattr(sys, "frozen", False):
+        exec_path = os.path.abspath(sys.executable)
+    else:
+        exec_path = f"{sys.executable} {os.path.join(BASE_DIR, 'main.py')}"
+    desktop = (
+        "[Desktop Entry]\n"
+        "Type=Application\n"
+        f"Name={APP_NAME} {APP_NAME_CN}\n"
+        f"Name[en]={APP_NAME}\n"
+        "GenericName=File Manager\n"
+        "Comment=跨平台四窗格文件管理器\n"
+        "Comment[en]=Cross-platform quad-pane file manager\n"
+        f"Exec={exec_path}\n"
+        "Icon=pan4dex\n"
+        "Terminal=false\n"
+        "Categories=Utility;FileManager;System;\n"
+        "Keywords=file;manager;pane;quad;browser;\n"
+        "StartupWMClass=pan4dex\n"
+    )
+    os.makedirs(apps_dir, exist_ok=True)
+    desktop_path = os.path.join(apps_dir, "pan4dex.desktop")
+    with open(desktop_path, "w", encoding="utf-8") as f:
+        f.write(desktop)
+    os.chmod(desktop_path, 0o644)
+    print(f"[2/3] 启动器已安装: {desktop_path}")
+
+    # 3) 刷新桌面/图标数据库（兼容 GNOME/KDE，命令缺失时忽略）
+    for cmd in (
+        ["update-desktop-database", apps_dir],
+        ["gtk-update-icon-cache", "-f", "-q", icons_base],
+        ["kbuildsycoca6", "--nosignal"],
+    ):
+        try:
+            subprocess.run(cmd, capture_output=True, timeout=20)
+        except Exception:
+            pass
+    print("[3/3] 注册完成。")
+    print("提示: 若应用菜单/文件管理器仍未显示图标，请注销重登或重启桌面"
+          "（或运行: gtk-update-icon-cache -f ~/.local/share/icons/hicolor）。")
+    return 0
 
 
 def free_console_in_gui_mode():
@@ -291,7 +404,9 @@ def main():
 
     _t0 = time.perf_counter()
     # 处理 CLI 参数（在 import GUI 库之前，秒开）
-    if "--version" in sys.argv or "--info" in sys.argv or "-V" in sys.argv or "-h" in sys.argv:
+    if "--install-menu" in sys.argv:
+        sys.exit(_install_menu_linux())
+    if "--version" in sys.argv or "--info" in sys.argv or "-V" in sys.argv or "-h" in sys.argv or "--help" in sys.argv:
         _cli_output()
         sys.exit(0)
     free_console_in_gui_mode()
@@ -303,9 +418,9 @@ def main():
         from PyQt6.QtWidgets import QApplication
         from PyQt6.QtCore import Qt
 
-        logger.info(f"Pan4dex v{__version__} starting...")
+        logger.info(f"Pan4dex v{VERSION} starting...")
         logger.info(f"Platform: {sys.platform}")
-        logger.info(f"Build time: {__build_time__ or 'N/A'}")
+        logger.info(f"Build time: {BUILD_TIME or 'N/A'}")
         logger.info(f"Base dir: {BASE_DIR}")
         logger.info(f"Frozen: {getattr(sys, 'frozen', False)}")
         logger.info(f"[启动计时] Python 模块导入耗时: {(time.perf_counter()-_t0)*1000:.1f}ms")
@@ -330,8 +445,8 @@ def main():
         )
         app = QApplication(sys.argv)
         logger.info(f"[启动计时] QApplication 创建: {(time.perf_counter()-_t0)*1000:.1f}ms")
-        app.setApplicationName(__app_name__)
-        app.setApplicationVersion(__version__)
+        app.setApplicationName(APP_NAME)
+        app.setApplicationVersion(VERSION)
         # Windows 任务栏图标支持：设置 AppUserModelID + 窗口图标
         if sys.platform == "win32":
             try:
@@ -343,17 +458,21 @@ def main():
         try:
             from PyQt6.QtGui import QIcon
 
+            _icon_name = ICON_FILE
             if getattr(sys, 'frozen', False):
-                _icon_path = os.path.join(sys._MEIPASS, "resources", "icons", "icon.ico")
+                _icon_path = os.path.join(sys._MEIPASS, "resources", "icons", _icon_name)
+                # onedir 下 _MEIPASS 指向 _internal，兜底到 exe 同目录的 resources
+                if not os.path.exists(_icon_path):
+                    _icon_path = os.path.join(os.path.dirname(os.path.abspath(sys.executable)), "resources", "icons", _icon_name)
             else:
-                _icon_path = os.path.join(BASE_DIR, "resources", "icons", "icon.ico")
+                _icon_path = os.path.join(BASE_DIR, "resources", "icons", _icon_name)
             if os.path.exists(_icon_path):
                 app.setWindowIcon(QIcon(_icon_path))
         except Exception as e:
             logger.warning(f"Failed to set window icon: {e}")
-        app.setOrganizationName("sfncat")
-        # 设置默认样式为 Fusion（跨平台一致性最好）
-        app.setStyle("Fusion")
+        app.setOrganizationName(ORG_NAME)
+        # 设置默认样式（跨平台一致性最好，取自全局配置）
+        app.setStyle(APP_STYLE)
         # Windows 字体修复
         if sys.platform == "win32":
             from PyQt6.QtGui import QFont

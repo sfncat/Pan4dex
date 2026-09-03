@@ -10,6 +10,8 @@ from PyQt6.QtGui import QFont
 
 logger = logging.getLogger("pan4dex.theme")
 
+from .app_config import DEFAULT_THEME
+
 
 class ThemeManager:
     """主题管理器 - 基于 qdarkstyle（缓存解析结果，避免每次加载 CSS）"""
@@ -27,7 +29,7 @@ class ThemeManager:
             return
         
         self._initialized = True
-        self.current_theme = "dark"
+        self.current_theme = DEFAULT_THEME
         self.current_font_family = "系统默认"
         self.current_font_size = 9
         
