@@ -7,14 +7,44 @@ logger = logging.getLogger("pan4dex.pane")
 from PyQt6.QtGui import QFileSystemModel, QAction, QKeySequence, QCursor
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QTreeView, QProgressBar,
-    QLabel, QMenu, QMessageBox, QInputDialog, QLineEdit, QHBoxLayout, QTabWidget
+    QLabel, QMenu, QMessageBox, QInputDialog, QLineEdit, QHBoxLayout, QTabWidget,
+    QApplication
 )
-from PyQt6.QtCore import Qt, QDir, QMimeData, pyqtSignal, QThread, QPoint, QEvent
+from PyQt6.QtCore import Qt, QDir, QMimeData, pyqtSignal, QThread, QPoint, QEvent, QSortFilterProxyModel
 import os
 
 from widgets.path_bar import PathBar
 from widgets.pane_tree_view import PaneTreeView
 from core.file_operations import FileOperations, FileOperationType, FileOperationResult
+
+
+class PaneSortProxyModel(QSortFilterProxyModel):
+    """每个窗格独立的排序代理模型。
+
+    四个窗格共享同一个 QFileSystemModel 作为数据源（性能考虑），
+    但排序状态若直接作用在共享模型上，任意窗格点表头都会让所有窗格一起重排。
+    通过本代理模型，让每个窗格持有独立的排序状态：点哪个窗格，只排哪个窗格。
+    同时保持“目录优先”的文件管理器习惯排序。
+    """
+
+    def lessThan(self, left, right):
+        source_model = self.sourceModel()
+        if source_model is None:
+            return super().lessThan(left, right)
+        li = left
+        ri = right
+        if not li.isValid() or not ri.isValid():
+            return super().lessThan(left, right)
+        # 目录始终排在文件前面
+        left_is_dir = source_model.isDir(li)
+        right_is_dir = source_model.isDir(ri)
+        if left_is_dir != right_is_dir:
+            return left_is_dir
+        # 名称列：不区分大小写
+        if left.column() == 0:
+            return left.data(Qt.ItemDataRole.DisplayRole).lower() < right.data(Qt.ItemDataRole.DisplayRole).lower()
+        # 其他列（大小/类型/修改时间）用默认比较
+        return super().lessThan(left, right)
 
 
 class Pane(QWidget):
@@ -75,13 +105,25 @@ class Pane(QWidget):
             elif et == QEvent.Type.FocusIn:
                 self.activated.emit(self)
         
-        # 标签栏双击检测
-        if hasattr(self, '_tab_bar') and et == QEvent.Type.MouseButtonDblClick:
-            if obj == self._tab_bar:
-                logger.info("Tab bar double click -> new tab")
-                # 双击标签栏新建标签页
-                self.add_pane_tab(self.current_path)
+        # 标签栏双击检测：双击标签关闭，双击空白新建
+        if et == QEvent.Type.MouseButtonDblClick:
+            pos = event.position().toPoint() if hasattr(event, 'position') else event.pos()
+            if hasattr(self, '_tab_bar') and obj == self._tab_bar:
+                # 事件直接到达 tab bar：tabAt 判断标签/空白
+                tab_index = self._tab_bar.tabAt(pos)
+                if tab_index >= 0:
+                    self.close_pane_tab(tab_index)
+                else:
+                    self.add_pane_tab(self.current_path)
                 return True
+            elif hasattr(self, 'pane_tabs') and obj == self.pane_tabs:
+                # 事件到达 QTabWidget：可能是 tab bar 未覆盖的空白区域
+                if hasattr(self, '_tab_bar'):
+                    tab_bar_pos = self._tab_bar.mapFrom(self.pane_tabs, pos)
+                    if not self._tab_bar.rect().contains(tab_bar_pos):
+                        # 在 tab bar 几何区域外 → 空白区域 → 新建标签
+                        self.add_pane_tab(self.current_path)
+                        return True
         
         return False
 
@@ -215,11 +257,28 @@ class Pane(QWidget):
             Pane._shared_file_model = model
         
         self.model = Pane._shared_file_model
-        self.tree_view.setModel(self.model)
-        
+        # 每个窗格独立的排序代理：点表头只排序本窗格，不影响其他窗格
+        self.sort_proxy = PaneSortProxyModel(self)
+        self.sort_proxy.setSourceModel(self.model)
+        self.tree_view.setModel(self.sort_proxy)
+
         # 设置根索引
-        index = self.model.setRootPath(self.current_path)
-        self.tree_view.setRootIndex(index)
+        self._set_root_index(self.current_path)
+
+    def _map_to_source(self, index):
+        """把视图/代理模型索引映射回共享源模型索引"""
+        if index is None or not index.isValid():
+            return index
+        return self.sort_proxy.mapToSource(index)
+
+    def _set_root_index(self, path: str) -> bool:
+        """经排序代理设置当前目录的根索引，成功返回 True"""
+        source_index = self.model.index(path)
+        if source_index.isValid():
+            proxy_index = self.sort_proxy.mapFromSource(source_index)
+            self.tree_view.setRootIndex(proxy_index)
+            return True
+        return False
         
 
     
@@ -263,9 +322,7 @@ class Pane(QWidget):
             
             self.current_path = path
             self.path_bar.set_path(path)
-            index = self.model.index(path)
-            if index.isValid():
-                self.tree_view.setRootIndex(index)
+            self._set_root_index(path)
             self.pane_tree_view.expand_to_path(path)
             self.update_status_bar()
         
@@ -290,13 +347,11 @@ class Pane(QWidget):
             self.current_path = path
             self.path_bar.set_path(path)
 
-            # 不使用 setRootPath（会改变共享模型的根），直接用 index + setRootIndex
-            index = self.model.index(path)
-            if index.isValid():
-                self.tree_view.setRootIndex(index)
-            else:
-                # 模型还没加载完，等加载完再设置
-                self.model.directoryLoaded.connect(lambda p: self._on_dir_loaded_for_nav(path, p))
+            # 不使用 setRootPath（会改变共享模型的根），直接用 index + setRootIndex（经排序代理映射）
+            if not self._set_root_index(path):
+                # 模型还没加载完，用 QTimer 延迟重试（避免重复连接 directoryLoaded 信号导致泄漏）
+                from PyQt6.QtCore import QTimer
+                QTimer.singleShot(50, lambda: self._retry_set_root_index(path, 0))
 
             # 同步展开内嵌目录树到当前路径
             self.pane_tree_view.expand_to_path(path)
@@ -315,18 +370,20 @@ class Pane(QWidget):
 
             self.update_status_bar()
             self.path_changed.emit(path)
+            # 超大图标模式下同步刷新缩略图视图
+            if hasattr(self, 'thumbnail_view') and self.thumbnail_view.isVisible():
+                self.thumbnail_view.load_directory(path)
 
-    def _on_dir_loaded_for_nav(self, target_path, loaded_path):
-        """目录加载完成后设置 root index"""
-        if loaded_path == target_path or target_path.startswith(loaded_path):
-            index = self.model.index(target_path)
-            if index.isValid():
-                self.tree_view.setRootIndex(index)
-            # 断开连接避免重复触发
-            try:
-                self.model.directoryLoaded.disconnect(self._on_dir_loaded_for_nav)
-            except:
-                pass
+    def _retry_set_root_index(self, path, attempt):
+        """延迟重试设置 root index，直到模型加载完成或超时"""
+        if attempt > 20:  # 最多重试 20 次（约 1 秒）
+            return
+        if self.current_path != path:
+            return  # 用户已导航到其他路径，放弃
+        if self._set_root_index(path):
+            return
+        from PyQt6.QtCore import QTimer
+        QTimer.singleShot(50, lambda: self._retry_set_root_index(path, attempt + 1))
 
     def go_back(self):
         """后退到上一个目录"""
@@ -348,9 +405,7 @@ class Pane(QWidget):
         if os.path.isdir(path):
             self.current_path = path
             self.path_bar.set_path(path)
-            index = self.model.index(path)
-            if index.isValid():
-                self.tree_view.setRootIndex(index)
+            self._set_root_index(path)
 
             self.pane_tree_view.expand_to_path(path)
 
@@ -390,13 +445,9 @@ class Pane(QWidget):
         self.path_bar.set_tabs_button_checked(not visible)
 
     def _on_tab_bar_double_clicked(self, index):
-        """双击标签栏"""
-        if index == -1:
-            # 双击空白处新建标签
-            self.add_pane_tab()
-        else:
-            # 双击标签重命名
-            self._rename_pane_tab(index)
+        """双击标签 → 关闭标签页（重命名请用右键菜单）"""
+        if index >= 0:
+            self.close_pane_tab(index)
 
     def _rename_pane_tab(self, index):
         """重命名标签页"""
@@ -422,15 +473,23 @@ class Pane(QWidget):
                 background-color: #404040;
             }
         """)
-        
+
+        # 定位右键点中的标签
+        tab_index = self.pane_tabs.tabBar().tabAt(position)
+
         new_tab_action = QAction("新建标签页(&N)", self)
         new_tab_action.triggered.connect(lambda: self.add_pane_tab())
         menu.addAction(new_tab_action)
-        
-        close_tab_action = QAction("关闭标签页(&C)", self)
-        close_tab_action.triggered.connect(lambda: self.close_pane_tab(self.pane_tabs.currentIndex()))
-        menu.addAction(close_tab_action)
-        
+
+        if tab_index >= 0:
+            rename_tab_action = QAction("重命名标签页(&R)", self)
+            rename_tab_action.triggered.connect(lambda: self._rename_pane_tab(tab_index))
+            menu.addAction(rename_tab_action)
+
+            close_tab_action = QAction("关闭标签页(&C)", self)
+            close_tab_action.triggered.connect(lambda: self.close_pane_tab(tab_index))
+            menu.addAction(close_tab_action)
+
         menu.exec(QCursor.pos())
 
     def close_pane_tab(self, index):
@@ -448,11 +507,12 @@ class Pane(QWidget):
                 # 更新当前路径并刷新文件列表
                 self.current_path = path
                 self.path_bar.set_path(path)
-                idx = self.model.index(path)
-                if idx.isValid():
-                    self.tree_view.setRootIndex(idx)
+                self._set_root_index(path)
                 self.pane_tree_view.expand_to_path(path)
                 self.update_status_bar()
+                # 超大图标模式下同步刷新缩略图视图
+                if hasattr(self, 'thumbnail_view') and self.thumbnail_view.isVisible():
+                    self.thumbnail_view.load_directory(path)
 
     def add_pane_tab(self, path: str = None):
         """添加窗格内标签页"""
@@ -476,7 +536,7 @@ class Pane(QWidget):
     
     def on_item_double_clicked(self, index):
         """双击项目处理"""
-        path = self.model.filePath(index)
+        path = self.model.filePath(self._map_to_source(index))
         import os
         if os.path.isdir(path):
             self.navigate_to(path)
@@ -515,7 +575,7 @@ class Pane(QWidget):
         """选择变化时更新预览"""
         indexes = self.tree_view.selectedIndexes()
         if indexes:
-            path = self.model.filePath(indexes[0])
+            path = self.model.filePath(self._map_to_source(indexes[0]))
             main_window = self.window()
             if hasattr(main_window, 'preview_panel') and main_window.preview_panel.isVisible():
                 main_window.preview_panel.preview_file(path)
@@ -584,7 +644,7 @@ class Pane(QWidget):
             selected_path = None
             for idx in indexes:
                 if idx.column() == 0:
-                    path = self.model.filePath(idx)
+                    path = self.model.filePath(self._map_to_source(idx))
                     if os.path.isdir(path):
                         selected_path = path
                         break
@@ -636,7 +696,7 @@ class Pane(QWidget):
         """打开选中项"""
         indexes = self.tree_view.selectedIndexes()
         if indexes:
-            path = self.model.filePath(indexes[0])
+            path = self.model.filePath(self._map_to_source(indexes[0]))
             import os
             if os.path.isdir(path):
                 self.navigate_to(path)
@@ -652,7 +712,7 @@ class Pane(QWidget):
         paths = []
         for index in indexes:
             if index.column() == 0:
-                paths.append(self.model.filePath(index))
+                paths.append(self.model.filePath(self._map_to_source(index)))
         
         if paths:
             self.clipboard = paths
@@ -668,7 +728,7 @@ class Pane(QWidget):
         paths = []
         for index in indexes:
             if index.column() == 0:
-                paths.append(self.model.filePath(index))
+                paths.append(self.model.filePath(self._map_to_source(index)))
         
         if paths:
             self.clipboard = paths
@@ -708,7 +768,7 @@ class Pane(QWidget):
         paths = []
         for index in indexes:
             if index.column() == 0:
-                paths.append(self.model.filePath(index))
+                paths.append(self.model.filePath(self._map_to_source(index)))
         
         if not paths:
             return
@@ -738,7 +798,7 @@ class Pane(QWidget):
         if not indexes:
             return
         
-        path = self.model.filePath(indexes[0])
+        path = self.model.filePath(self._map_to_source(indexes[0]))
         old_name = os.path.basename(path)
         
         new_name, ok = QInputDialog.getText(
@@ -1021,7 +1081,7 @@ class Pane(QWidget):
         paths = []
         for index in indexes:
             if index.column() == 0:
-                paths.append(self.model.filePath(index))
+                paths.append(self.model.filePath(self._map_to_source(index)))
         
         if not paths:
             super().mouseMoveEvent(event)

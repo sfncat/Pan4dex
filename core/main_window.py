@@ -4,13 +4,46 @@ Pan4dex 万格 — 主窗口
 import logging
 from PyQt6.QtWidgets import (
     QMainWindow, QTabWidget, QSplitter, QWidget, 
-    QVBoxLayout, QStatusBar, QMenuBar,
+    QVBoxLayout, QStatusBar, QMenuBar, QTabBar,
     QToolBar, QLabel, QApplication, QMenu, QDialog
 )
 from PyQt6.QtCore import Qt, QSettings, QSize, QPoint, pyqtSignal
 from PyQt6.QtGui import QAction, QKeySequence, QCursor
 
 logger = logging.getLogger("pan4dex.window")
+
+
+class CollapsibleTabBar(QTabBar):
+    """可折叠标签栏：隐藏时 sizeHint 返回 0 + sizePolicy Ignored，确保 QTabWidget 内部布局不留空隙"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._collapsed = False
+        self._normal_size_policy = self.sizePolicy()
+
+    def setCollapsed(self, collapsed: bool):
+        self._collapsed = collapsed
+        if collapsed:
+            from PyQt6.QtWidgets import QSizePolicy
+            self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
+            self.setFixedHeight(0)
+            self.setMaximumHeight(0)
+            self.setMinimumHeight(0)
+        else:
+            self.setSizePolicy(self._normal_size_policy)
+            self.setMinimumHeight(0)
+            self.setMaximumHeight(16777215)
+        self.updateGeometry()
+
+    def sizeHint(self):
+        if self._collapsed:
+            return QSize(0, 0)
+        return super().sizeHint()
+
+    def minimumSizeHint(self):
+        if self._collapsed:
+            return QSize(0, 0)
+        return super().minimumSizeHint()
 
 from core.pane import Pane
 from widgets.preview_panel import PreviewPanel
@@ -63,9 +96,6 @@ class MainWindow(QMainWindow):
         # 创建 UI
         self.create_menu_bar()
         logger.info(f"[启动计时] 菜单栏: {(time.perf_counter()-_t0)*1000:.1f}ms")
-        
-        self.create_tool_bar()
-        logger.info(f"[启动计时] 工具栏: {(time.perf_counter()-_t0)*1000:.1f}ms")
         
         self.create_status_bar()
         logger.info(f"[启动计时] 状态栏: {(time.perf_counter()-_t0)*1000:.1f}ms")
@@ -296,7 +326,14 @@ class MainWindow(QMainWindow):
         preview_action.triggered.connect(self.toggle_preview)
         view_menu.addAction(preview_action)
         self.preview_action = preview_action
-        
+
+        tab_bar_action = QAction("标签页栏(&B)", self)
+        tab_bar_action.setCheckable(True)
+        tab_bar_action.setChecked(False)
+        tab_bar_action.triggered.connect(self.toggle_tab_bar)
+        view_menu.addAction(tab_bar_action)
+        self.tab_bar_action = tab_bar_action
+
         view_menu.addSeparator()
         
         dark_theme_action = QAction("深色主题(&D)", self)
@@ -365,6 +402,12 @@ class MainWindow(QMainWindow):
         """创建中央 widget"""
         self.tab_widget = QTabWidget()
         self.tab_widget.setTabsClosable(True)
+        # 使用可折叠自定义 TabBar，隐藏时不留空隙
+        self._custom_tab_bar = CollapsibleTabBar()
+        self.tab_widget.setTabBar(self._custom_tab_bar)
+        # 默认隐藏标签栏，可通过视图菜单显示
+        self._tab_bar_visible = False
+        self._apply_tab_bar_visibility()
         self.tab_widget.tabCloseRequested.connect(self.close_tab)
         self.tab_widget.currentChanged.connect(self.on_tab_changed)
         
@@ -372,7 +415,8 @@ class MainWindow(QMainWindow):
         self.tab_widget.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.tab_widget.customContextMenuRequested.connect(self.show_tab_context_menu)
         
-        # 双击空白区域创建新标签页
+        # 双击标签关闭，双击空白新建
+        self.tab_widget.installEventFilter(self)
         self.tab_widget.tabBarDoubleClicked.connect(self.on_tab_bar_double_clicked)
         
         self.setCentralWidget(self.tab_widget)
@@ -405,12 +449,25 @@ class MainWindow(QMainWindow):
         """关闭当前标签页"""
         self.close_tab(self.tab_widget.currentIndex())
     
+    def eventFilter(self, obj, event):
+        """事件过滤器：检测标签栏空白区域双击"""
+        if obj == self.tab_widget and event.type() == event.Type.MouseButtonDblClick:
+            tab_bar = self.tab_widget.tabBar()
+            pos = event.position().toPoint()
+            # 映射到 tab bar 坐标
+            tab_bar_pos = tab_bar.mapFrom(self.tab_widget, pos)
+            if tab_bar.rect().contains(tab_bar_pos):
+                tab_index = tab_bar.tabAt(tab_bar_pos)
+                if tab_index == -1:
+                    # 双击空白区域 → 新建标签
+                    self.new_tab()
+                    return True
+        return super().eventFilter(obj, event)
+
     def on_tab_bar_double_clicked(self, index):
-        """双击标签栏空白区域创建新标签页，双击标签则重命名"""
-        if index == -1:
-            self.new_tab()
-        else:
-            self.rename_tab(index)
+        """双击标签 → 关闭标签页（重命名请用右键菜单）"""
+        if index >= 0:
+            self.close_tab(index)
     
     def show_tab_context_menu(self, position):
         """显示标签栏右键菜单"""
@@ -531,6 +588,17 @@ class MainWindow(QMainWindow):
         self._tree_toggle = not current
         self.tree_sidebar.setVisible(self._tree_toggle)
         self.tree_action.setChecked(self._tree_toggle)
+
+    def _apply_tab_bar_visibility(self):
+        """应用标签栏显示/隐藏状态"""
+        self._custom_tab_bar.setCollapsed(not self._tab_bar_visible)
+        self._custom_tab_bar.setVisible(self._tab_bar_visible)
+
+    def toggle_tab_bar(self):
+        """切换标签页栏显示/隐藏"""
+        self._tab_bar_visible = not self._tab_bar_visible
+        self._apply_tab_bar_visibility()
+        self.tab_bar_action.setChecked(self._tab_bar_visible)
     
     def set_theme(self, name: str):
         """设置主题"""
@@ -552,7 +620,7 @@ class MainWindow(QMainWindow):
                 files = []
                 for index in indexes:
                     if index.column() == 0:
-                        files.append(pane.model.filePath(index))
+                        files.append(pane.model.filePath(pane._map_to_source(index)))
                 
                 if files:
                     dialog = BatchRenameDialog(files, self)

@@ -92,9 +92,14 @@ QWidget {
     font-size: 9pt;
 }
 
-/* 主窗口 */
+/* 主窗口背景 — 比窗格略深，营造层次感 */
 QMainWindow {
-    background-color: #f8f9fa;
+    background-color: #e8eaed;
+}
+
+/* 中央部件背景 */
+QMainWindow > QWidget {
+    background-color: #e8eaed;
 }
 
 /* 菜单栏 */
@@ -137,33 +142,35 @@ QToolBar {
     spacing: 4px;
 }
 
-/* 按钮 */
+/* 按钮 — 扁平无边框，hover 才显底色（Q-Dir 风格） */
 QToolButton, QPushButton {
-    background-color: #ffffff;
-    border: 1px solid #dadce0;
-    border-radius: 6px;
-    padding: 4px 8px;
+    background-color: transparent;
+    color: #3c4043;
+    border: none;
+    border-radius: 4px;
+    padding: 4px 6px;
     min-height: 20px;
+    icon-size: 20px;
 }
 QToolButton:hover, QPushButton:hover {
-    background-color: #f1f3f4;
-    border-color: #1a73e8;
+    background-color: #e8f0fe;
+    color: #1967d2;
 }
 QToolButton:pressed, QPushButton:pressed {
-    background-color: #e8f0fe;
+    background-color: #d2e3fc;
+    color: #1967d2;
 }
 QToolButton:checked {
-    background-color: #e8f0fe;
-    border-color: #1a73e8;
-    color: #1a73e8;
+    background-color: #d2e3fc;
+    color: #1967d2;
 }
 
 /* 输入框 */
 QLineEdit, QComboBox {
     background-color: #ffffff;
-    border: 1px solid #dadce0;
-    border-radius: 6px;
-    padding: 4px 8px;
+    border: 1px solid #d0d0d0;
+    border-radius: 2px;
+    padding: 2px 6px;
     min-height: 24px;
 }
 QLineEdit:focus, QComboBox:focus {
@@ -173,50 +180,65 @@ QLineEdit:focus, QComboBox:focus {
 /* 树视图 */
 QTreeView {
     background-color: #ffffff;
-    border: 1px solid #e0e0e0;
-    border-radius: 6px;
+    border: 1px solid #d0d0d0;
+    border-radius: 0;
     outline: 0;
-    padding: 4px;
+    padding: 2px;
 }
 QTreeView::item {
-    padding: 4px 8px;
-    border-radius: 4px;
+    padding: 3px 6px;
+    border-radius: 0;
 }
 QTreeView::item:hover {
     background-color: #f1f3f4;
 }
 QTreeView::item:selected {
-    background-color: #e8f0fe;
-    color: #1a73e8;
+    background-color: #cfe2fc;
+    color: #1967d2;
 }
 QTreeView::branch {
     background: transparent;
 }
 
+/* 表头 */
+QHeaderView::section {
+    background-color: #f5f5f5;
+    color: #3c4043;
+    border: none;
+    border-bottom: 1px solid #d0d0d0;
+    border-right: 1px solid #e0e0e0;
+    padding: 4px 8px;
+    font-weight: normal;
+}
+QHeaderView::section:hover {
+    background-color: #e8eaed;
+}
+
 /* 列表视图（QListWidget） */
 QListWidget {
     background-color: #ffffff;
-    border: 1px solid #e0e0e0;
-    border-radius: 6px;
+    border: 1px solid #d0d0d0;
+    border-radius: 0;
     outline: 0;
-    padding: 8px;
+    padding: 4px;
 }
 QListWidget::item {
-    padding: 4px;
-    border-radius: 6px;
+    padding: 2px;
+    border-radius: 0;
 }
 QListWidget::item:hover {
     background-color: #f1f3f4;
 }
 QListWidget::item:selected {
-    background-color: #e8f0fe;
-    color: #1a73e8;
+    background-color: #cfe2fc;
+    color: #1967d2;
 }
 
 /* 状态栏 */
 QStatusBar {
-    background-color: #ffffff;
-    border-top: 1px solid #e0e0e0;
+    background-color: #e8eaed;
+    color: #5f6368;
+    border-top: 1px solid #dadce0;
 }
 
 /* 滚动条 */
@@ -253,25 +275,42 @@ QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
     width: 0;
 }
 
+/* 分隔条 — 窗格之间的可见分隔 */
+QSplitter::handle {
+    background-color: #dadce0;
+}
+QSplitter::handle:horizontal {
+    width: 2px;
+}
+QSplitter::handle:vertical {
+    height: 2px;
+}
+QSplitter::handle:hover {
+    background-color: #1a73e8;
+}
+
 /* 标签页 */
 QTabWidget::pane {
-    border: 1px solid #e0e0e0;
-    border-radius: 6px;
+    border: 1px solid #d0d0d0;
+    border-radius: 0;
     background: #ffffff;
+    top: -1px;
 }
 QTabBar::tab {
     background: transparent;
     border: none;
-    padding: 6px 16px;
-    margin-right: 2px;
-    border-radius: 6px;
+    padding: 4px 12px;
+    margin-right: 1px;
+    border-radius: 0;
 }
 QTabBar::tab:hover {
     background: #f1f3f4;
 }
 QTabBar::tab:selected {
-    background: #e8f0fe;
-    color: #1a73e8;
+    background: #ffffff;
+    color: #1967d2;
+    border: 1px solid #d0d0d0;
+    border-bottom: none;
 }
 
 /* 分组框 */

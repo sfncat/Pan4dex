@@ -35,79 +35,87 @@ class PathBar(QWidget):
         
         # 后退按钮（默认隐藏，可在设置中显示）
         self.back_btn = QToolButton()
-        self.back_btn.setText("◀")
+        self.back_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowBack))
+        self.back_btn.setIconSize(QSize(20, 20))
         self.back_btn.setToolTip("后退")
-        self.back_btn.setFixedSize(24, 24)
+        self.back_btn.setFixedSize(28, 28)
         self.back_btn.setVisible(False)
         self.layout.addWidget(self.back_btn)
-        
+
         # 前进按钮（默认隐藏，可在设置中显示）
         self.forward_btn = QToolButton()
-        self.forward_btn.setText("▶")
+        self.forward_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowForward))
+        self.forward_btn.setIconSize(QSize(20, 20))
         self.forward_btn.setToolTip("前进")
-        self.forward_btn.setFixedSize(24, 24)
+        self.forward_btn.setFixedSize(28, 28)
         self.forward_btn.setVisible(False)
         self.layout.addWidget(self.forward_btn)
-        
+
         # 上级目录按钮
         self.up_btn = QToolButton()
-        self.up_btn.setText("▲")
+        self.up_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowUp))
+        self.up_btn.setIconSize(QSize(20, 20))
         self.up_btn.setToolTip("上级目录")
-        self.up_btn.setFixedSize(24, 24)
+        self.up_btn.setFixedSize(28, 28)
         self.up_btn.clicked.connect(self.go_up)
         self.layout.addWidget(self.up_btn)
-        
+
         # 刷新按钮
         self.refresh_btn = QToolButton()
-        self.refresh_btn.setText("🔄")
+        self.refresh_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload))
+        self.refresh_btn.setIconSize(QSize(20, 20))
         self.refresh_btn.setToolTip("刷新")
-        self.refresh_btn.setFixedSize(24, 24)
+        self.refresh_btn.setFixedSize(28, 28)
         self.layout.addWidget(self.refresh_btn)
-        
+
         # 目录树按钮
         self.tree_btn = QToolButton()
-        self.tree_btn.setText("🌲")
+        self.tree_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DirIcon))
+        self.tree_btn.setIconSize(QSize(20, 20))
         self.tree_btn.setToolTip("目录树")
-        self.tree_btn.setFixedSize(24, 24)
+        self.tree_btn.setFixedSize(28, 28)
         self.tree_btn.setCheckable(True)
         self.tree_btn.clicked.connect(self.on_tree_clicked)
         self.layout.addWidget(self.tree_btn)
-        
+
         # 标签页按钮
         self.tabs_btn = QToolButton()
-        self.tabs_btn.setText("📑")
+        self.tabs_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogDetailedView))
+        self.tabs_btn.setIconSize(QSize(20, 20))
         self.tabs_btn.setToolTip("标签页")
-        self.tabs_btn.setFixedSize(24, 24)
+        self.tabs_btn.setFixedSize(28, 28)
         self.tabs_btn.setCheckable(True)
         self.tabs_btn.clicked.connect(self.on_tabs_clicked)
         self.layout.addWidget(self.tabs_btn)
-        
+
         # 查看模式按钮（图标/超大图标/列表循环切换）
         self.view_btn = QToolButton()
-        self.view_btn.setText("▦")
+        self.view_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogContentsView))
+        self.view_btn.setIconSize(QSize(20, 20))
         self.view_btn.setToolTip("查看模式：图标 → 超大图标 → 列表")
-        self.view_btn.setFixedSize(24, 24)
+        self.view_btn.setFixedSize(28, 28)
         self.view_btn.setCheckable(False)
         self._view_mode = 'icon'  # icon / xlarge / list
         self.view_btn.clicked.connect(self.on_view_clicked)
         self.layout.addWidget(self.view_btn)
-        
+
         # 新建文件夹按钮（用标准文件夹图标）
         self.new_folder_btn = QToolButton()
         self.new_folder_btn.setIcon(
-            self.style().standardIcon(QStyle.StandardPixmap.SP_DirIcon)
+            self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogNewFolder)
         )
-        self.new_folder_btn.setIconSize(QSize(16, 16))
+        self.new_folder_btn.setIconSize(QSize(20, 20))
         self.new_folder_btn.setToolTip("新建文件夹")
-        self.new_folder_btn.setFixedSize(24, 24)
+        self.new_folder_btn.setFixedSize(28, 28)
         self.new_folder_btn.clicked.connect(self.on_new_folder_clicked)
         self.layout.addWidget(self.new_folder_btn)
-        
-        # 终端按钮（终端提示符风格 >_）
+
+        # 终端按钮
         self.terminal_btn = QToolButton()
-        self.terminal_btn.setText(">_")
+        self.terminal_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_CommandLink))
+        self.terminal_btn.setIconSize(QSize(20, 20))
         self.terminal_btn.setToolTip("打开终端")
-        self.terminal_btn.setFixedSize(24, 24)
+        self.terminal_btn.setFixedSize(28, 28)
         self.terminal_btn.clicked.connect(self.on_terminal_clicked)
         self.layout.addWidget(self.terminal_btn)
         
@@ -115,7 +123,7 @@ class PathBar(QWidget):
         self.combo_box = QComboBox()
         self.combo_box.setEditable(True)
         self.combo_box.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
-        self.combo_box.setMinimumHeight(24)
+        self.combo_box.setMinimumHeight(28)
 
         # 设置自动补全（共享模型）
         self._setup_shared_completer()
@@ -190,13 +198,13 @@ class PathBar(QWidget):
         self.view_mode_requested.emit(self._view_mode)
         
         if self._view_mode == 'icon':
-            self.view_btn.setText("▦")
+            self.view_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogContentsView))
             self.view_btn.setToolTip("当前：图标，点击切换超大图标")
         elif self._view_mode == 'xlarge':
-            self.view_btn.setText("▣")
+            self.view_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogInfoView))
             self.view_btn.setToolTip("当前：超大图标（图片预览），点击切换列表")
         else:
-            self.view_btn.setText("☰")
+            self.view_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogDetailedView))
             self.view_btn.setToolTip("当前：列表，点击切换图标")
 
     def on_new_folder_clicked(self):
@@ -219,13 +227,13 @@ class PathBar(QWidget):
         """设置查看模式（更新按钮状态）"""
         self._view_mode = mode
         if mode == 'icon':
-            self.view_btn.setText("▦")
+            self.view_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogContentsView))
             self.view_btn.setToolTip("当前：图标，点击切换超大图标")
         elif mode == 'xlarge':
-            self.view_btn.setText("▣")
+            self.view_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogInfoView))
             self.view_btn.setToolTip("当前：超大图标（图片预览），点击切换列表")
         elif mode == 'list':
-            self.view_btn.setText("☰")
+            self.view_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogDetailedView))
             self.view_btn.setToolTip("当前：列表，点击切换图标")
 
     def set_button_visibility(self, button_name: str, visible: bool):

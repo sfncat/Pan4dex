@@ -232,7 +232,9 @@ class TestLayoutSaveLoadRegression:
         # 临时修改配置目录
         import os
         old_home = os.environ.get('HOME')
+        old_profile = os.environ.get('USERPROFILE')
         os.environ['HOME'] = str(tmpdir)
+        os.environ['USERPROFILE'] = str(tmpdir)
         
         try:
             window._auto_save_layout()
@@ -246,6 +248,12 @@ class TestLayoutSaveLoadRegression:
         finally:
             if old_home:
                 os.environ['HOME'] = old_home
+            else:
+                os.environ.pop('HOME', None)
+            if old_profile:
+                os.environ['USERPROFILE'] = old_profile
+            else:
+                os.environ.pop('USERPROFILE', None)
     
     def test_load_layout_no_crash(self, qtbot, tmpdir):
         """测试加载布局不崩溃"""
@@ -257,7 +265,9 @@ class TestLayoutSaveLoadRegression:
         
         import os
         old_home = os.environ.get('HOME')
+        old_profile = os.environ.get('USERPROFILE')
         os.environ['HOME'] = str(tmpdir)
+        os.environ['USERPROFILE'] = str(tmpdir)
         
         try:
             # 创建一个无效的布局文件
@@ -280,6 +290,12 @@ class TestLayoutSaveLoadRegression:
         finally:
             if old_home:
                 os.environ['HOME'] = old_home
+            else:
+                os.environ.pop('HOME', None)
+            if old_profile:
+                os.environ['USERPROFILE'] = old_profile
+            else:
+                os.environ.pop('USERPROFILE', None)
 
 
 class TestPathBarButtonsRegression:

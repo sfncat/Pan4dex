@@ -1,0 +1,21 @@
+[project]
+name = "pan4dex"
+version = "0.9.619"
+description = "Pan4dex 万格 — 跨平台四窗格文件管理器"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "PyQt6>=6.6.0",
+    "send2trash>=1.8.0",
+    "Pillow>=10.0.0",
+    "pillow-heif>=0.16.0",
+    "qdarkstyle>=3.2.0",
+]
+
+[project.optional-dependencies]
+build = [
+    "pyinstaller>=6.0",
+]
+
+[tool.uv]
+package = false

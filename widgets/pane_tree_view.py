@@ -84,11 +84,18 @@ class PaneTreeView(QWidget):
         root_index = self.model.index("")
         self.tree_view.setRootIndex(root_index)
     
+    def _schedule_expand(self, msec: int, fn):
+        """延迟执行展开回调。定时器挂在本控件下，控件销毁时自动取消，避免回调访问已删除对象。"""
+        timer = QTimer(self)
+        timer.setSingleShot(True)
+        timer.timeout.connect(lambda: (fn(), timer.deleteLater()))
+        timer.start(msec)
+
     def _on_directory_loaded(self, path):
         if self._pending_path:
             parts = getattr(self, '_expand_queue', [])
             if parts and self._pending_path in parts:
-                QTimer.singleShot(50, lambda: self._expand_parts(parts, 0))
+                self._schedule_expand(50, lambda: self._expand_parts(parts, 0))
             self._pending_path = None
     
     def on_item_clicked(self, index: QModelIndex):
@@ -127,7 +134,7 @@ class PaneTreeView(QWidget):
         index = self.model.index(p)
         if index.isValid():
             self.tree_view.expand(index)
-            QTimer.singleShot(100, lambda: self._expand_parts(parts, idx + 1))
+            self._schedule_expand(100, lambda: self._expand_parts(parts, idx + 1))
         else:
             self._pending_path = p
-            QTimer.singleShot(300, lambda: self._expand_parts(parts, idx))
+            self._schedule_expand(300, lambda: self._expand_parts(parts, idx))

@@ -1,18 +1,20 @@
 #!/usr/bin/env python3
+
 """
 Pan4dex 万格 — 跨平台四窗格文件管理器
 """
 
-__version__ = "0.9.617"
+__version__ = "0.9.643"
 __app_name__ = "Pan4dex"
 __app_name_cn__ = "万格"
-__build_time__ = "2026-08-30 06:01:16"  # 构建时自动注入，格式：YYYY-MM-DD HH:MM:SS
+__build_time__ = "2026-09-03 14:49:20"  # 构建时自动注入，格式：YYYY-MM-DD HH:MM:SS
 
 import sys
 import os
 import logging
-
 # 日志配置
+
+
 def setup_logging():
     """初始化日志 - 跨平台"""
     if sys.platform == "win32":
@@ -21,34 +23,28 @@ def setup_logging():
     else:
         # Linux/macOS: ~/.config/pan4dex/logs
         log_dir = os.path.expanduser("~/.config/pan4dex/logs")
-    
     os.makedirs(log_dir, exist_ok=True)
     log_file = os.path.join(log_dir, "pan4dex.log")
-    
     # 日志格式
     fmt = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
     datefmt = "%Y-%m-%d %H:%M:%S"
-    
     # 文件处理器（记录所有级别）
     file_handler = logging.FileHandler(log_file, encoding="utf-8")
     file_handler.setLevel(logging.DEBUG)
     file_handler.setFormatter(logging.Formatter(fmt, datefmt))
-    
     # 控制台处理器（只显示 INFO 以上）
     console_handler = logging.StreamHandler()
     console_handler.setLevel(logging.INFO)
     console_handler.setFormatter(logging.Formatter(fmt, datefmt))
-    
     # 根日志器
     root = logging.getLogger("pan4dex")
     root.setLevel(logging.DEBUG)
     root.addHandler(file_handler)
     root.addHandler(console_handler)
-    
     return root
 
-logger = setup_logging()
 
+logger = setup_logging()
 # 支持 PyInstaller 打包后的资源路径
 if getattr(sys, 'frozen', False):
     BASE_DIR = sys._MEIPASS
@@ -63,16 +59,13 @@ def write_crash_log(error_msg: str):
         import datetime
         import os
         import sys
-        
+
         if getattr(sys, 'frozen', False):
             exe_dir = os.path.dirname(os.path.abspath(sys.executable))
         else:
             exe_dir = os.path.dirname(os.path.abspath(__file__))
-        
         crash_file = os.path.join(exe_dir, "pan4dex_crash.log")
-        
         frozen_info = f"frozen=True, _MEIPASS={sys._MEIPASS}" if getattr(sys, 'frozen', False) else "frozen=False"
-        
         with open(crash_file, "w", encoding="utf-8") as f:
             f.write(f"=== Pan4dex Crash Log ===\n")
             f.write(f"Time: {datetime.datetime.now().isoformat()}\n")
@@ -87,11 +80,11 @@ def write_crash_log(error_msg: str):
             f.write(error_msg)
             f.write(f"\n\n--- Traceback ---\n")
             f.write(traceback.format_exc())
-        
         # Windows: 弹出错误对话框
         if sys.platform == "win32":
             try:
                 import ctypes
+
                 ctypes.windll.user32.MessageBoxW(
                     0,
                     f"启动失败，错误已写入：\n{crash_file}\n\n错误信息：\n{error_msg[:500]}",
@@ -100,7 +93,6 @@ def write_crash_log(error_msg: str):
                 )
             except:
                 pass
-        
         return crash_file
     except Exception as e:
         return None
@@ -112,18 +104,15 @@ def install_crash_handler():
     import traceback
     import datetime
     import os
-    
+
     def excepthook(exc_type, exc_value, exc_tb):
         try:
             error_msg = ''.join(traceback.format_exception(exc_type, exc_value, exc_value))
-            
             if getattr(sys, 'frozen', False):
                 exe_dir = os.path.dirname(os.path.abspath(sys.executable))
             else:
                 exe_dir = os.path.dirname(os.path.abspath(__file__))
-            
             crash_file = os.path.join(exe_dir, "pan4dex_crash.log")
-            
             with open(crash_file, "w", encoding="utf-8") as f:
                 f.write(f"=== Pan4dex Crash Log ===\n")
                 f.write(f"Time: {datetime.datetime.now().isoformat()}\n")
@@ -133,11 +122,11 @@ def install_crash_handler():
                 f.write(f"Type: {exc_type.__name__}\n")
                 f.write(f"\n--- Error ---\n")
                 f.write(error_msg)
-            
             # Windows: 弹出错误对话框
             if sys.platform == "win32":
                 try:
                     import ctypes
+
                     ctypes.windll.user32.MessageBoxW(
                         0,
                         f"发生错误，已写入：\n{crash_file}\n\n{exc_type.__name__}: {str(exc_value)[:200]}",
@@ -150,7 +139,6 @@ def install_crash_handler():
             pass
         # 调用默认处理
         sys.__excepthook__(exc_type, exc_value, exc_tb)
-    
     sys.excepthook = excepthook
 
 
@@ -159,12 +147,11 @@ def install_signal_handlers():
     import faulthandler
     import os
     import sys
-    
+
     if getattr(sys, 'frozen', False):
         exe_dir = os.path.dirname(os.path.abspath(sys.executable))
     else:
         exe_dir = os.path.dirname(os.path.abspath(__file__))
-    
     crash_file = os.path.join(exe_dir, "pan4dex_crash.log")
     # 启用 faulthandler，将段错误写入崩溃日志
     faulthandler.enable(file=open(crash_file, 'w', encoding='utf-8'), all_threads=True)
@@ -174,7 +161,7 @@ def install_qt_plugin_path():
     """设置 Qt 插件路径，确保能找到图片格式插件"""
     import os
     import sys
-    
+
     if getattr(sys, 'frozen', False):
         # onefile 模式：文件解压到 _MEIPASS 临时目录
         plugin_path = os.path.join(sys._MEIPASS, "imageformats")
@@ -194,15 +181,10 @@ def install_qt_plugin_path():
 
 
 def _cli_output():
-    """windowed 模式下把输出挂到调用方的控制台"""
+    """控制台子系统下直接 print 输出（--version/--help/--info）"""
     import sys
     import os
-    
-    # 初始化文件描述符变量（避免 NameError）
-    stdout_fd = None
-    stderr_fd = None
-    stdin_fd = None
-    
+
     if "--version" in sys.argv or "-V" in sys.argv:
         output = f"{__app_name__} v{__version__} (build {__build_time__})"
     elif "--help" in sys.argv or "-h" in sys.argv:
@@ -213,9 +195,9 @@ def _cli_output():
             f"  --version, -V   显示版本信息\n"
             f"  --info          显示详细版本和构建信息\n"
             f"  --help, -h      显示此帮助信息\n"
+            f"  --verbose, -v   保留控制台窗口显示日志（调试用）\n"
         )
     else:
-        # 显示可执行文件所在目录，不是临时解压目录
         if getattr(sys, 'frozen', False):
             exec_dir = os.path.dirname(os.path.abspath(sys.executable))
         else:
@@ -229,133 +211,175 @@ def _cli_output():
             f"base_dir: {exec_dir}",
         ]
         output = "\n".join(lines)
-    
-    # Windows --windowed 模式：尝试挂到父进程控制台
-    if sys.platform == "win32" and getattr(sys, 'frozen', False):
-        import ctypes
-        kernel32 = ctypes.windll.kernel32
-        
-        # 先释放可能存在的控制台，再附加到父进程
-        kernel32.FreeConsole()
-        attached = kernel32.AttachConsole(-1)
-        
-        if attached:
-            # 附加成功，输出到父控制台
-            sys.stdout = open("CONOUT$", "w", encoding="utf-8")
-            sys.stderr = open("CONOUT$", "w", encoding="utf-8")
-            sys.stdin = open("CONIN$", "r", encoding="utf-8")
-        else:
-            # 没有父控制台，尝试新建
-            if kernel32.AllocConsole():
-                kernel32.SetConsoleCP(65001)
-                kernel32.SetConsoleOutputCP(65001)
-                sys.stdout = open("CONOUT$", "w", encoding="utf-8")
-                sys.stderr = open("CONOUT$", "w", encoding="utf-8")
-                sys.stdin = open("CONIN$", "r", encoding="utf-8")
-    
     print(output, flush=True)
-    
-    # 如果是新建的控制台（不是挂载的），等待用户按 Enter 后再关闭
-    if sys.platform == "win32" and getattr(sys, 'frozen', False):
+
+
+def free_console_in_gui_mode():
+    """GUI 模式下释放控制台窗口。
+    控制台子系统 exe 启动时会继承/创建控制台。GUI 模式下不需要控制台，
+    调用 FreeConsole() 释放：
+    - 从终端启动：断开与父控制台的关联，终端立即返回不阻塞
+    - 双击启动：释放新建的控制台窗口，窗口自动关闭
+    --verbose/-v 参数保留控制台用于调试。
+    """
+    import sys
+    import os
+    import logging
+
+    if sys.platform != "win32":
+        return
+    if "--verbose" in sys.argv or "-v" in sys.argv:
+        return  # 调试模式保留控制台
+    try:
         import ctypes
+
         kernel32 = ctypes.windll.kernel32
-        # 检查是否是挂载到父控制台
-        # 通过 GetConsoleWindow 判断：如果返回 0，说明是新建的控制台
-        console_window = kernel32.GetConsoleWindow()
-        if console_window:
-            # 有控制台窗口，等待用户按键
+        # 1. 最先释放控制台 — 这是最关键的一步
+        result = kernel32.FreeConsole()
+        if not result:
+            # FreeConsole 失败时，尝试隐藏窗口（仅新建控制台，不隐藏父终端）
             try:
-                input("\n按 Enter 键退出...")
-            except:
+                hwnd = kernel32.GetConsoleWindow()
+                if hwnd:
+                    import ctypes.wintypes
+
+                    process_list = (ctypes.wintypes.DWORD * 4)()
+                    count = kernel32.GetConsoleProcessList(process_list, 4)
+                    if count <= 1:
+                        # 只有自己一个进程 → 是新建控制台，可以安全隐藏
+                        ctypes.windll.user32.ShowWindow(hwnd, 0)  # SW_HIDE
+            except Exception:
                 pass
+        # 2. 移除控制台日志 handler（FreeConsole 后 stdout 无效）
+        try:
+            root = logging.getLogger("pan4dex")
+            for h in list(root.handlers):
+                if isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler):
+                    root.removeHandler(h)
+        except Exception:
+            pass
+        # 3. 重定向 stdout 到空设备
+        try:
+            sys.stdout = open(os.devnull, "w")
+        except Exception:
+            pass
+        # 4. stderr 重定向到日志文件，保留崩溃诊断
+        try:
+            _log_dir = os.path.expanduser("~/.config/pan4dex/logs")
+            os.makedirs(_log_dir, exist_ok=True)
+            sys.stderr = open(os.path.join(_log_dir, "pan4dex.log"), "a", encoding="utf-8")
+        except Exception:
+            try:
+                sys.stderr = open(os.devnull, "w")
+            except Exception:
+                pass
+    except Exception as e:
+        # 最后兜底：写日志文件
+        try:
+            _log_dir = os.path.expanduser("~/.config/pan4dex/logs")
+            os.makedirs(_log_dir, exist_ok=True)
+            with open(os.path.join(_log_dir, "pan4dex.log"), "a", encoding="utf-8") as f:
+                f.write(f"[free_console] Error: {e}\n")
+        except Exception:
+            pass
 
 
 def main():
     """程序入口"""
     import sys
     import time
+
     _t0 = time.perf_counter()
-    
     # 处理 CLI 参数（在 import GUI 库之前，秒开）
     if "--version" in sys.argv or "--info" in sys.argv or "-V" in sys.argv or "-h" in sys.argv:
         _cli_output()
         sys.exit(0)
-    
+    free_console_in_gui_mode()
     # 安装全局异常处理器
     install_crash_handler()
     install_signal_handlers()
     install_qt_plugin_path()
-    
     try:
         from PyQt6.QtWidgets import QApplication
         from PyQt6.QtCore import Qt
-        
+
         logger.info(f"Pan4dex v{__version__} starting...")
         logger.info(f"Platform: {sys.platform}")
         logger.info(f"Build time: {__build_time__ or 'N/A'}")
         logger.info(f"Base dir: {BASE_DIR}")
         logger.info(f"Frozen: {getattr(sys, 'frozen', False)}")
         logger.info(f"[启动计时] Python 模块导入耗时: {(time.perf_counter()-_t0)*1000:.1f}ms")
-        
         # Windows DPI 适配 - 必须在创建 QApplication 之前设置
         if sys.platform == "win32":
             import os
+
             os.environ["QT_AUTO_SCREEN_SCALE_FACTOR"] = "1"
             os.environ["QT_ENABLE_HIGHDPI_SCALING"] = "1"
             try:
                 import ctypes
+
                 ctypes.windll.shcore.SetProcessDpiAwareness(2)  # PerMonitorV2
             except:
                 try:
                     ctypes.windll.user32.SetProcessDPIAware()
                 except:
                     pass
-        
         # 启用高 DPI 支持
         QApplication.setHighDpiScaleFactorRoundingPolicy(
             Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
         )
-        
         app = QApplication(sys.argv)
         logger.info(f"[启动计时] QApplication 创建: {(time.perf_counter()-_t0)*1000:.1f}ms")
-        
         app.setApplicationName(__app_name__)
         app.setApplicationVersion(__version__)
+        # Windows 任务栏图标支持：设置 AppUserModelID + 窗口图标
+        if sys.platform == "win32":
+            try:
+                import ctypes
+
+                ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("com.pan4dex.app")
+            except Exception:
+                pass
+        try:
+            from PyQt6.QtGui import QIcon
+
+            if getattr(sys, 'frozen', False):
+                _icon_path = os.path.join(sys._MEIPASS, "resources", "icons", "icon.ico")
+            else:
+                _icon_path = os.path.join(BASE_DIR, "resources", "icons", "icon.ico")
+            if os.path.exists(_icon_path):
+                app.setWindowIcon(QIcon(_icon_path))
+        except Exception as e:
+            logger.warning(f"Failed to set window icon: {e}")
         app.setOrganizationName("sfncat")
-        
         # 设置默认样式为 Fusion（跨平台一致性最好）
         app.setStyle("Fusion")
-        
         # Windows 字体修复
         if sys.platform == "win32":
             from PyQt6.QtGui import QFont
+
             font = QFont("Microsoft YaHei UI", 9)
             font.setStyleStrategy(QFont.StyleStrategy.PreferAntialias)
             font.setHintingPreference(QFont.HintingPreference.PreferFullHinting)
             app.setFont(font)
-        
         from core.main_window import MainWindow
+
         logger.info(f"[启动计时] MainWindow 导入: {(time.perf_counter()-_t0)*1000:.1f}ms")
-        
         window = MainWindow()
         logger.info(f"[启动计时] MainWindow 实例化: {(time.perf_counter()-_t0)*1000:.1f}ms")
-        
         window.show()
         logger.info(f"[启动计时] window.show() 完成: {(time.perf_counter()-_t0)*1000:.1f}ms")
         logger.info("Main window shown, entering event loop")
         sys.exit(app.exec())
-    
     except Exception as e:
         error_msg = str(e)
         logger.error(f"启动失败: {error_msg}", exc_info=True)
-        
         # 写入崩溃日志到可执行文件旁边
         crash_file = write_crash_log(error_msg)
         if crash_file:
             print(f"\n启动失败！崩溃日志已写入: {crash_file}\n错误: {error_msg}", file=sys.stderr)
         else:
             print(f"\n启动失败！错误: {error_msg}", file=sys.stderr)
-        
         # 确保退出
         os._exit(1)
 

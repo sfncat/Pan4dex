@@ -20,7 +20,7 @@ class TestPane:
         qtbot.addWidget(pane)
         
         assert pane.pane_id == "test_pane"
-        assert pane.current_path == os.path.expanduser("~")
+        assert os.path.normpath(pane.current_path) == os.path.normpath(os.path.expanduser("~"))
     
     def test_navigate_to_directory(self, qtbot, tmp_dir):
         """测试导航到目录"""
