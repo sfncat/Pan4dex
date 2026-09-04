@@ -234,7 +234,7 @@ class Pane(QWidget):
         self.h_layout.setContentsMargins(0, 0, 0, 0)
         self.h_layout.setSpacing(0)
 
-        # 内嵌目录树
+        # 内嵌目录树（独立模型，延迟启动扫描）
         self.pane_tree_view = PaneTreeView()
         self.pane_tree_view.folder_clicked.connect(self.on_pane_tree_clicked)
         self.pane_tree_view.setVisible(False)  # 默认隐藏
@@ -535,8 +535,9 @@ class Pane(QWidget):
                 from PyQt6.QtCore import QTimer
                 QTimer.singleShot(50, lambda: self._retry_set_root_index(path, 0))
 
-            # 同步展开内嵌目录树到当前路径
-            self.pane_tree_view.expand_to_path(path)
+            # 同步展开内嵌目录树到当前路径（树不可见时不扫描磁盘，显示时会重新定位）
+            if self.pane_tree_view.isVisible():
+                self.pane_tree_view.expand_to_path(path)
 
             # 更新当前标签页的名称和路径
             current_idx = self.pane_tabs.currentIndex()
@@ -591,7 +592,8 @@ class Pane(QWidget):
             self.path_bar.set_path(path)
             self._set_root_index(path)
 
-            self.pane_tree_view.expand_to_path(path)
+            if self.pane_tree_view.isVisible():
+                self.pane_tree_view.expand_to_path(path)
 
             current_idx = self.pane_tabs.currentIndex()
             if self.pane_tabs.isVisible() and 0 <= current_idx < len(self._pane_tab_paths):
@@ -613,6 +615,8 @@ class Pane(QWidget):
             self.pane_tree_view.setFixedWidth(200)
             self.h_layout.setStretch(0, 0)
             self.h_layout.setStretch(1, 1)
+            # 显示后重新定位并居中当前目录（树刚显示时滚动才生效）
+            self.pane_tree_view.expand_to_path(self.current_path)
         else:
             self.h_layout.setStretch(0, 0)
             self.h_layout.setStretch(1, 1)
@@ -692,7 +696,8 @@ class Pane(QWidget):
                 self.current_path = path
                 self.path_bar.set_path(path)
                 self._set_root_index(path)
-                self.pane_tree_view.expand_to_path(path)
+                if self.pane_tree_view.isVisible():
+                    self.pane_tree_view.expand_to_path(path)
                 self.update_status_bar()
                 # 超大图标模式下同步刷新缩略图视图
                 if hasattr(self, 'thumbnail_view') and self.thumbnail_view.isVisible():

@@ -543,6 +543,27 @@ class MainWindow(QMainWindow):
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
         self.status_bar.showMessage("就绪")
+        # 状态栏右侧：剪贴板操作按钮（作用于当前活动窗格）
+        self.create_status_bar_actions()
+
+    def create_status_bar_actions(self):
+        """状态栏右侧按钮：复制 / 粘贴 / 剪切（作用于当前活动窗格）"""
+        from PyQt6.QtWidgets import QToolButton
+        for label, tip, handler in (
+            ("复制", "复制选中项 (Ctrl+C)", self.on_copy),
+            ("粘贴", "粘贴剪贴板 (Ctrl+V)", self.on_paste),
+            ("剪切", "剪切选中项 (Ctrl+X)", self.on_cut),
+        ):
+            btn = QToolButton()
+            btn.setText(label)
+            btn.setToolTip(tip)
+            btn.setAutoRaise(True)
+            btn.setStyleSheet(
+                "QToolButton { padding: 2px 8px; border: 1px solid transparent; border-radius: 3px; }"
+                "QToolButton:hover { border-color: #5A5A5A; }"
+            )
+            btn.clicked.connect(handler)
+            self.status_bar.addPermanentWidget(btn)
     
     def new_tab(self):
         """新建标签页"""
@@ -1010,6 +1031,8 @@ class QuadPaneWidget(QWidget):
     
     def create_quad_panes(self):
         """创建四窗格布局"""
+        # 目录树使用独立模型 + 延迟启动（隐藏的树不扫描磁盘），
+        # 避免 QFileSystemModel 共享给多视图时 Qt 内部崩溃/滚动失效
         # 主分割器（垂直）
         self.main_splitter = QSplitter(Qt.Orientation.Vertical)
         
