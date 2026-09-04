@@ -21,6 +21,10 @@ import threading
 
 logger = logging.getLogger("pan4dex.media_metadata")
 
+# Windows 下后台运行控制台子进程（exiftool）时不弹出终端黑窗：
+# 打包后为 windowed 应用（无控制台），默认会为控制台子进程新建窗口，一闪而过。
+_NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+
 # 全局状态
 _EXIFTOOL_PATH = None      # None=未探测，''=未找到，其他=路径
 _EXIFTOOL_VERSION = None   # None=未探测，''=未知
@@ -105,7 +109,7 @@ def exiftool_version():
             _EXIFTOOL_VERSION = ''
         return None
     try:
-        out = subprocess.run(_exiftool_cmd(['-ver']), capture_output=True, text=True, timeout=20)
+        out = subprocess.run(_exiftool_cmd(['-ver']), capture_output=True, text=True, timeout=20, creationflags=_NO_WINDOW)
         with _VERSION_LOCK:
             _EXIFTOOL_VERSION = out.stdout.strip() or ''
     except Exception as e:
@@ -131,7 +135,7 @@ def _run_exiftool(paths):
     if not cmd:
         return None
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30, creationflags=_NO_WINDOW)
         if proc.returncode != 0:
             logger.debug(f"exiftool rc={proc.returncode}: {proc.stderr[:200]}")
         if not proc.stdout.strip():

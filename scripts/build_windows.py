@@ -75,9 +75,11 @@ if linux_tool_src.exists():
     print("Excluded exiftool-linux from Windows build (temporarily moved)")
 
 # Build with PyInstaller (onedir mode — faster startup, no extraction overhead)
+# --windowed：GUI 应用不显示控制台黑窗（原 --console 会让每次启动都带终端窗口）；
+# 子进程控制台程序（exiftool）通过 CREATE_NO_WINDOW 静默运行，见 core/media_metadata.py
 cmd = [
     sys.executable, "-m", "PyInstaller",
-    "--onedir", "--console", "--noconfirm",
+    "--onedir", "--windowed", "--noconfirm",
     "--name=pan4dex",
     "--add-data=resources;resources",
     "--hidden-import=PyQt6.QtCore",
