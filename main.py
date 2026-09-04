@@ -57,6 +57,45 @@ if getattr(sys, 'frozen', False):
 else:
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
+# 持有 Windows 原生图标句柄，防止被 GC（进程退出时系统统一清理）
+_WIN_HICONS: list = []
+
+
+def apply_windows_native_icon(hwnd: int, ico_path: str):
+    """直接向窗口句柄发送 WM_SETICON（Windows 任务栏/标题栏/Alt-Tab 最底层取图通道）。
+
+    Qt 的 windowIcon 在少数系统/桌面环境下可能不被任务栏采纳，
+    WM_SETICON 是 Explorer 取任务栏按钮图标的直接来源，双保险。
+    """
+    try:
+        import ctypes
+        from ctypes import wintypes
+        if not hwnd or not os.path.isfile(ico_path):
+            return
+        global _WIN_HICONS
+        user32 = ctypes.windll.user32
+        user32.LoadImageW.restype = wintypes.HANDLE
+        user32.LoadImageW.argtypes = [
+            wintypes.HINSTANCE, wintypes.LPCWSTR, wintypes.UINT,
+            ctypes.c_int, ctypes.c_int, wintypes.UINT,
+        ]
+        user32.SendMessageW.restype = wintypes.LPARAM
+        user32.SendMessageW.argtypes = [
+            wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM,
+        ]
+        WM_SETICON, ICON_SMALL, ICON_BIG = 0x0080, 0, 1
+        IMAGE_ICON, LR_LOADFROMFILE = 1, 0x0010
+        h_big = user32.LoadImageW(None, ico_path, IMAGE_ICON, 32, 32, LR_LOADFROMFILE)
+        h_small = user32.LoadImageW(None, ico_path, IMAGE_ICON, 16, 16, LR_LOADFROMFILE)
+        if h_big:
+            user32.SendMessageW(wintypes.HWND(hwnd), WM_SETICON, ICON_BIG, h_big)
+            _WIN_HICONS.append(h_big)
+        if h_small:
+            user32.SendMessageW(wintypes.HWND(hwnd), WM_SETICON, ICON_SMALL, h_small)
+            _WIN_HICONS.append(h_small)
+    except Exception as e:
+        logger.warning(f"Native icon apply failed: {e}")
+
 
 def write_crash_log(error_msg: str):
     """写入启动崩溃日志到可执行文件旁边"""
@@ -455,6 +494,7 @@ def main():
                 ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("com.pan4dex.app")
             except Exception:
                 pass
+        _ico_for_native = ""
         try:
             from PyQt6.QtGui import QIcon
             # Windows 优先用 icon.ico（ICO 原生多尺寸，任务栏/标题栏/Alt-Tab 提取稳定）；
@@ -469,11 +509,11 @@ def main():
                 _icon_dirs = [os.path.join(BASE_DIR, "resources", "icons")]
             _icon_dir = next((d for d in _icon_dirs if os.path.isdir(d)), None)
             if _icon_dir:
+                _ico = os.path.join(_icon_dir, "icon.ico")
+                _ico_for_native = _ico
                 _app_icon = None
-                if sys.platform == "win32":
-                    _ico = os.path.join(_icon_dir, "icon.ico")
-                    if os.path.exists(_ico):
-                        _app_icon = QIcon(_ico)
+                if sys.platform == "win32" and os.path.exists(_ico):
+                    _app_icon = QIcon(_ico)
                 if _app_icon is None or _app_icon.isNull():
                     _png = os.path.join(_icon_dir, ICON_FILE)
                     if os.path.exists(_png):
@@ -500,8 +540,10 @@ def main():
         window = MainWindow()
         logger.info(f"[启动计时] MainWindow 实例化: {(time.perf_counter()-_t0)*1000:.1f}ms")
         window.show()
-        # Windows 任务栏图标加固：窗口显示后再延迟重设一次图标，
-        # 规避 Qt/Windows 初始化时序导致任务栏提取不到窗口图标的偶发问题
+        # Windows 任务栏图标加固（三重保险）：
+        # 1) app/window 级 QIcon（已设置）
+        # 2) show 后立即 + 延迟 200ms 再重设 Qt 窗口图标
+        # 3) 直接向窗口句柄发 WM_SETICON（Explorer 取任务栏按钮图标的底层通道）
         if sys.platform == "win32":
             from PyQt6.QtCore import QTimer
 
@@ -514,6 +556,11 @@ def main():
                         window.setWindowIcon(_icon)
                 except Exception:
                     pass
+                if _ico_for_native:
+                    apply_windows_native_icon(int(window.winId()), _ico_for_native)
+
+            if _ico_for_native:
+                apply_windows_native_icon(int(window.winId()), _ico_for_native)
             QTimer.singleShot(200, _reapply_window_icon)
         logger.info(f"[启动计时] window.show() 完成: {(time.perf_counter()-_t0)*1000:.1f}ms")
         logger.info("Main window shown, entering event loop")
