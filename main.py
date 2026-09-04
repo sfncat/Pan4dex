@@ -456,19 +456,31 @@ def main():
             except Exception:
                 pass
         try:
-            from core.icon_utils import load_app_icon
-
-            _icon_name = ICON_FILE
+            from PyQt6.QtGui import QIcon
+            # Windows 优先用 icon.ico（ICO 原生多尺寸，任务栏/标题栏/Alt-Tab 提取稳定）；
+            # 其他平台/无 ico 时用 icon.png 生成多尺寸 QIcon
+            _icon_dirs = []
             if getattr(sys, 'frozen', False):
-                _icon_path = os.path.join(sys._MEIPASS, "resources", "icons", _icon_name)
-                # onedir 下 _MEIPASS 指向 _internal，兜底到 exe 同目录的 resources
-                if not os.path.exists(_icon_path):
-                    _icon_path = os.path.join(os.path.dirname(os.path.abspath(sys.executable)), "resources", "icons", _icon_name)
+                _icon_dirs = [
+                    os.path.join(sys._MEIPASS, "resources", "icons"),
+                    os.path.join(os.path.dirname(os.path.abspath(sys.executable)), "resources", "icons"),
+                ]
             else:
-                _icon_path = os.path.join(BASE_DIR, "resources", "icons", _icon_name)
-            if os.path.exists(_icon_path):
-                # 从 icon.png 生成多尺寸图标，Windows 任务栏避免 1024→32 大缩放
-                app.setWindowIcon(load_app_icon(_icon_path))
+                _icon_dirs = [os.path.join(BASE_DIR, "resources", "icons")]
+            _icon_dir = next((d for d in _icon_dirs if os.path.isdir(d)), None)
+            if _icon_dir:
+                _app_icon = None
+                if sys.platform == "win32":
+                    _ico = os.path.join(_icon_dir, "icon.ico")
+                    if os.path.exists(_ico):
+                        _app_icon = QIcon(_ico)
+                if _app_icon is None or _app_icon.isNull():
+                    _png = os.path.join(_icon_dir, ICON_FILE)
+                    if os.path.exists(_png):
+                        from core.icon_utils import load_app_icon
+                        _app_icon = load_app_icon(_png)
+                if _app_icon is not None and not _app_icon.isNull():
+                    app.setWindowIcon(_app_icon)
         except Exception as e:
             logger.warning(f"Failed to set window icon: {e}")
         app.setOrganizationName(ORG_NAME)
@@ -488,6 +500,21 @@ def main():
         window = MainWindow()
         logger.info(f"[启动计时] MainWindow 实例化: {(time.perf_counter()-_t0)*1000:.1f}ms")
         window.show()
+        # Windows 任务栏图标加固：窗口显示后再延迟重设一次图标，
+        # 规避 Qt/Windows 初始化时序导致任务栏提取不到窗口图标的偶发问题
+        if sys.platform == "win32":
+            from PyQt6.QtCore import QTimer
+
+            def _reapply_window_icon():
+                try:
+                    _icon = window.windowIcon()
+                    if _icon.isNull():
+                        _icon = app.windowIcon()
+                    if not _icon.isNull():
+                        window.setWindowIcon(_icon)
+                except Exception:
+                    pass
+            QTimer.singleShot(200, _reapply_window_icon)
         logger.info(f"[启动计时] window.show() 完成: {(time.perf_counter()-_t0)*1000:.1f}ms")
         logger.info("Main window shown, entering event loop")
         sys.exit(app.exec())

@@ -341,11 +341,50 @@ class Pane(QWidget):
         self.sort_proxy.setSourceModel(self.model)
         self.tree_view.setModel(self.sort_proxy)
 
+        # 恢复列显示状态（拍摄日期列默认隐藏；用户勾选后持久化）
+        self._restore_column_visibility()
+
         # 目录异步加载完成后，若正好是当前目录则预读拍摄日期
         self.model.directoryLoaded.connect(self._on_directory_loaded_shot_dates)
 
         # 设置根索引
         self._set_root_index(self.current_path)
+
+    # ---- 列显示状态（QSettings 持久化）----
+    _COLUMN_VISIBILITY_KEY = "pane/column_visibility"  # 形如 "1,1,1,1,0"
+
+    def _get_settings(self):
+        from PyQt6.QtCore import QSettings
+        from config.app_config import ORG_NAME, APP_NAME
+        return QSettings(ORG_NAME, APP_NAME)
+
+    def _restore_column_visibility(self):
+        """恢复列可见性：无记录时默认隐藏「拍摄日期」列，其余显示。"""
+        try:
+            raw = self._get_settings().value(self._COLUMN_VISIBILITY_KEY, "")
+            vis = []
+            if raw:
+                vis = [x == "1" for x in str(raw).split(",")]
+            model = self.tree_view.model()
+            n = model.columnCount() if model else 0
+            default_hidden = getattr(model, 'SHOT_DATE_COLUMN', 4) if model else 4
+            for col in range(n):
+                visible = vis[col] if col < len(vis) else (col != default_hidden)
+                self.tree_view.setColumnHidden(col, not visible)
+        except Exception:
+            pass
+
+    def _save_column_visibility(self):
+        try:
+            model = self.tree_view.model()
+            n = model.columnCount() if model else 0
+            vis = ",".join(
+                "1" if not self.tree_view.isColumnHidden(c) else "0"
+                for c in range(n)
+            )
+            self._get_settings().setValue(self._COLUMN_VISIBILITY_KEY, vis)
+        except Exception:
+            pass
 
     def _on_directory_loaded_shot_dates(self, path):
         """共享模型目录加载完成：若是本窗格当前目录，则预读拍摄日期。"""
@@ -747,7 +786,10 @@ class Pane(QWidget):
             action = menu.addAction(str(title) if title else f"列 {col + 1}")
             action.setCheckable(True)
             action.setChecked(not self.tree_view.isColumnHidden(col))
-            action.toggled.connect(lambda checked, c=col: self.tree_view.setColumnHidden(c, not checked))
+            def _set_col_visible(checked, c=col):
+                self.tree_view.setColumnHidden(c, not checked)
+                self._save_column_visibility()
+            action.toggled.connect(_set_col_visible)
         menu.exec(self.tree_view.header().mapToGlobal(position))
 
     def show_context_menu(self, position):

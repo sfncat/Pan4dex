@@ -72,9 +72,9 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Pan4dex 万格")
         self.setMinimumSize(DEFAULT_WINDOW_MIN_WIDTH, DEFAULT_WINDOW_MIN_HEIGHT)
         
-        # 设置应用图标：统一使用 icon.png（圆角 PNG，Windows/Linux 一致），
-        # 从单张 PNG 生成多尺寸 QIcon，Windows 任务栏避免 1024→32 大缩放
-        from core.icon_utils import load_app_icon
+        # 设置应用图标：Windows 优先用 icon.ico（ICO 原生多尺寸，任务栏提取稳定），
+        # 否则用 icon.png 生成多尺寸 QIcon（Linux 等平台统一圆角 PNG）
+        from PyQt6.QtGui import QIcon
         import sys
         import os
         _icon_name = ICON_FILE
@@ -86,8 +86,16 @@ class MainWindow(QMainWindow):
         icon_path = os.path.join(base_dir, 'resources', 'icons', _icon_name)
         if not os.path.exists(icon_path) and getattr(sys, 'frozen', False):
             icon_path = os.path.join(os.path.dirname(os.path.abspath(sys.executable)), 'resources', 'icons', _icon_name)
-        if os.path.exists(icon_path):
-            self.setWindowIcon(load_app_icon(icon_path))
+        _win_icon = None
+        if sys.platform == 'win32':
+            _ico_path = os.path.join(os.path.dirname(icon_path), 'icon.ico')
+            if os.path.exists(_ico_path):
+                _win_icon = QIcon(_ico_path)
+        if (_win_icon is None or _win_icon.isNull()) and os.path.exists(icon_path):
+            from core.icon_utils import load_app_icon
+            _win_icon = load_app_icon(icon_path)
+        if _win_icon is not None and not _win_icon.isNull():
+            self.setWindowIcon(_win_icon)
         
         # 恢复窗口位置和大小
         self.settings = QSettings(ORG_NAME, APP_NAME)

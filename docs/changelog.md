@@ -25,6 +25,10 @@
 - 文件列表新增「拍摄日期」列（列标题右键勾选菜单中可开启）：照片读取 EXIF `DateTimeOriginal`（缺省回退 `CreateDate`）；视频读取 `CreateDate`（QuickTime mvhd.creation_time，即 exiftool 的 `QuickTime:CreateDate`），缺省回退 `DateTimeOriginal`；仅照片/视频显示，非媒体为空
 - 携带 ExifTool：Windows 随身携带 `resources/tools/exiftool/exiftool.exe`（v13.59，含 Perl 运行时解压即用）；Linux 随身携带 `resources/tools/exiftool-linux/`（Perl 包 v13.59，用系统 perl 运行，不依赖目标系统预装 exiftool）
 - 「关于」对话框显示携带的 ExifTool 版本号
+- 「拍摄日期」列**默认隐藏**，通过列标题右键勾选「拍摄日期」显示；勾选状态保存到 QSettings，重启后保持
+
+#### 🐛 缺陷修复
+- Windows 任务栏/窗口图标加固：优先加载 `icon.ico`（ICO 原生多尺寸，任务栏提取稳定），窗口显示后再延迟重设一次图标，规避 Qt/Windows 初始化时序导致任务栏图标偶发缺失
 
 #### 🐛 缺陷修复
 - 修复「拍摄日期」列排序时崩溃：排序代理 `lessThan` 收到的是源模型索引，此前对源索引调用 `mapToSource` 造成野指针访问
