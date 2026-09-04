@@ -350,8 +350,11 @@ class Pane(QWidget):
         # 设置根索引
         self._set_root_index(self.current_path)
 
-    # ---- 列显示状态（QSettings 持久化）----
-    _COLUMN_VISIBILITY_KEY = "pane/column_visibility"  # 形如 "1,1,1,1,0"
+    # ---- 列显示状态（QSettings 持久化，按窗格独立）----
+    _COLUMN_VISIBILITY_KEY = "pane/column_visibility"  # 形如 "1,1,1,1,0"，按窗格加后缀区分
+
+    def _column_visibility_key(self):
+        return f"{self._COLUMN_VISIBILITY_KEY}_{self.pane_id}"
 
     def _get_settings(self):
         from PyQt6.QtCore import QSettings
@@ -359,9 +362,9 @@ class Pane(QWidget):
         return QSettings(ORG_NAME, APP_NAME)
 
     def _restore_column_visibility(self):
-        """恢复列可见性：无记录时默认隐藏「拍摄日期」列，其余显示。"""
+        """恢复列可见性：无记录时默认隐藏「拍摄日期」列，其余显示。每窗格独立。"""
         try:
-            raw = self._get_settings().value(self._COLUMN_VISIBILITY_KEY, "")
+            raw = self._get_settings().value(self._column_visibility_key(), "")
             vis = []
             if raw:
                 vis = [x == "1" for x in str(raw).split(",")]
@@ -382,7 +385,7 @@ class Pane(QWidget):
                 "1" if not self.tree_view.isColumnHidden(c) else "0"
                 for c in range(n)
             )
-            self._get_settings().setValue(self._COLUMN_VISIBILITY_KEY, vis)
+            self._get_settings().setValue(self._column_visibility_key(), vis)
         except Exception:
             pass
 
