@@ -60,6 +60,7 @@ from config.app_config import (
     DEFAULT_WINDOW_MIN_WIDTH,
     DEFAULT_WINDOW_MIN_HEIGHT,
     ICON_FILE,
+    DEFAULT_LAUNCHER_APPS,
 )
 
 
@@ -144,9 +145,29 @@ class MainWindow(QMainWindow):
         import time
         _t0 = time.perf_counter()
         
-        # 应用默认主题
-        self.theme_manager.apply_theme(DEFAULT_THEME)
+        # 应用主题（QSettings 有记录则恢复，否则默认）
+        saved_theme = self.settings.value("theme", "")
+        theme = saved_theme if saved_theme else DEFAULT_THEME
+        self.theme_manager.apply_theme(theme)
         logger.info(f"[启动计时] 主题应用: {(time.perf_counter()-_t0)*1000:.1f}ms")
+
+        # 恢复字体设置
+        try:
+            ff = self.settings.value("font_family", "")
+            fs = int(self.settings.value("font_size", 9) or 9)
+            if ff and ff != "系统默认":
+                from PyQt6.QtGui import QFont
+                QApplication.instance().setFont(QFont(ff, fs))
+        except Exception:
+            pass
+
+        # 恢复工具栏按钮可见性
+        try:
+            tb = self.settings.value("toolbar_buttons", {})
+            if tb:
+                self.apply_toolbar_buttons(tb)
+        except Exception:
+            pass
         
         # 自动恢复上次的布局
         self._auto_load_layout()
@@ -411,6 +432,77 @@ class MainWindow(QMainWindow):
         about_action = QAction("关于(&A)", self)
         about_action.triggered.connect(self.show_about)
         help_menu.addAction(about_action)
+
+        # 菜单栏右侧：应用启动器按钮（可配置直接启动外部应用）
+        self.create_launcher_bar()
+
+    def create_launcher_bar(self):
+        """菜单栏右侧应用启动器：一组快捷启动外部应用的按钮。
+
+        配置来自 QSettings "launcher/apps"（JSON 数组），无配置时用
+        DEFAULT_LAUNCHER_APPS；设置对话框「启动器」页可增删改。
+        """
+        import json
+        from PyQt6.QtWidgets import QWidget, QHBoxLayout, QToolButton
+        apps = []
+        raw = self.settings.value("launcher/apps", "")
+        if raw:
+            try:
+                apps = json.loads(raw)
+            except Exception:
+                apps = []
+        if not apps:
+            apps = [dict(a) for a in DEFAULT_LAUNCHER_APPS]
+        container = QWidget()
+        lay = QHBoxLayout(container)
+        lay.setContentsMargins(4, 2, 6, 2)
+        lay.setSpacing(4)
+        self._launcher_container = container
+        self._launcher_layout = lay
+        self._launcher_apps = apps
+        for app in apps:
+            name = str(app.get("name", "")).strip()
+            cmd = str(app.get("command", "")).strip()
+            if not cmd:
+                continue
+            btn = QToolButton()
+            btn.setText(name[:2] if name else "…")
+            btn.setToolTip(f"{name}\n{cmd}" if name else cmd)
+            btn.setFixedSize(30, 24)
+            btn.setAutoRaise(True)
+            btn.clicked.connect(lambda checked=False, c=cmd: self._launch_app(c))
+            lay.addWidget(btn)
+        lay.addStretch()
+        self.menuBar().setCornerWidget(container, Qt.Corner.TopRightCorner)
+
+    def refresh_launcher_buttons(self):
+        """设置变更后重建启动器按钮（复用现有菜单栏 corner widget）"""
+        try:
+            old = self.menuBar().cornerWidget(Qt.Corner.TopRightCorner)
+            if old is not None:
+                old.deleteLater()
+            self.create_launcher_bar()
+        except Exception:
+            pass
+
+    def _launch_app(self, command: str):
+        """启动外部应用（命令名或路径）"""
+        import shutil
+        import subprocess
+        import os
+        try:
+            if os.name == "nt":
+                # ShellExecute：可解析 PATH 命令名与 .exe/.lnk 等关联
+                os.startfile(command)
+            else:
+                exe = shutil.which(command) or (command if os.path.exists(command) else None)
+                if not exe:
+                    self.status_bar.showMessage(f"找不到应用: {command}")
+                    return
+                subprocess.Popen([exe])
+            self.status_bar.showMessage(f"已启动: {command}")
+        except Exception as e:
+            self.status_bar.showMessage(f"启动失败: {command} ({e})")
     
     def create_tool_bar(self):
         """创建工具栏"""
@@ -811,7 +903,15 @@ class MainWindow(QMainWindow):
         if dialog.exec() == QDialog.DialogCode.Accepted:
             # 应用设置
             settings = dialog.get_settings()
-            
+
+            # 持久化到 QSettings（主题/字体/工具栏/启动器）
+            import json
+            self.settings.setValue("theme", settings.get('theme', DEFAULT_THEME))
+            self.settings.setValue("font_family", settings.get('font_family'))
+            self.settings.setValue("font_size", settings.get('font_size', 9))
+            self.settings.setValue("toolbar_buttons", settings.get('toolbar_buttons', {}))
+            self.settings.setValue("launcher/apps", json.dumps(settings.get('launcher_apps', [])))
+
             # 应用主题
             theme = settings.get('theme', DEFAULT_THEME)
             self.theme_manager.apply_theme(theme)
@@ -827,6 +927,9 @@ class MainWindow(QMainWindow):
             # 应用工具栏按钮可见性
             toolbar_buttons = settings.get('toolbar_buttons', {})
             self.apply_toolbar_buttons(toolbar_buttons)
+
+            # 刷新菜单栏右侧启动器按钮
+            self.refresh_launcher_buttons()
             
             self.status_bar.showMessage("设置已应用")
     

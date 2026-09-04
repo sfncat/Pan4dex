@@ -15,8 +15,8 @@
 # ---- 发布元数据 ----
 APP_NAME = "Pan4dex"                  # 应用英文名
 APP_NAME_CN = "万格"                    # 应用中文名
-VERSION = "0.9.651"                    # 版本号（发布前手动修改）
-BUILD_TIME = "2026-09-04 15:59:39"                      # 编译时间（YYYY-MM-DD HH:MM:SS），构建时自动写入；源码运行留空
+VERSION = "0.9.652"                    # 版本号（发布前手动修改）
+BUILD_TIME = "2026-09-04 17:41:41"                      # 编译时间（YYYY-MM-DD HH:MM:SS），构建时自动写入；源码运行留空
 
 # ---- 应用级常量 ----
 ORG_NAME = "sfncat"                    # QSettings 组织名（决定配置写入位置）
@@ -30,3 +30,16 @@ DEFAULT_WINDOW_MIN_HEIGHT = 768
 # 图标文件名：统一使用 icon.png（圆角 PNG，Windows/Linux 运行时一致；
 # Windows 的 exe 内嵌图标仍用 icon.ico，由构建脚本 --icon 指定，两者视觉一致）
 ICON_FILE = "icon.png"
+
+# 菜单栏右侧「应用启动器」默认配置（设置对话框可增删改，保存到 QSettings）
+# 每项: {"name": 按钮显示名, "command": 可执行文件/命令（Windows 可用命令名或 exe 路径）}
+import sys as _sys
+if _sys.platform == "win32":
+    DEFAULT_LAUNCHER_APPS = [
+        {"name": "记事本", "command": "notepad.exe"},
+        {"name": "计算器", "command": "calc.exe"},
+        {"name": "资源管理器", "command": "explorer.exe"},
+    ]
+else:
+    # Linux 无统一内置应用，默认留空，由用户在设置中自行添加
+    DEFAULT_LAUNCHER_APPS = []

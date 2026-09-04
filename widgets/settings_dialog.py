@@ -4,12 +4,13 @@ Pan4dex 万格 — 设置对话框（主题/字体）
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QComboBox,
     QPushButton, QFontDialog, QColorDialog, QGroupBox,
-    QFormLayout, QSpinBox, QTabWidget, QWidget, QCheckBox
+    QFormLayout, QSpinBox, QTabWidget, QWidget, QCheckBox,
+    QListWidget, QListWidgetItem, QInputDialog, QMessageBox
 )
 from PyQt6.QtGui import QFont, QColor
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QSettings
 
-from config.app_config import DEFAULT_THEME
+from config.app_config import DEFAULT_THEME, DEFAULT_LAUNCHER_APPS, ORG_NAME, APP_NAME
 
 
 class SettingsDialog(QDialog):
@@ -47,6 +48,10 @@ class SettingsDialog(QDialog):
         # 工具栏设置
         toolbar_tab = self.create_toolbar_tab()
         tabs.addTab(toolbar_tab, "工具栏")
+
+        # 应用启动器设置
+        launcher_tab = self.create_launcher_tab()
+        tabs.addTab(launcher_tab, "启动器")
 
         # 按钮
         btn_layout = QHBoxLayout()
@@ -154,6 +159,96 @@ class SettingsDialog(QDialog):
         layout.addStretch()
         return widget
 
+    def create_launcher_tab(self) -> QWidget:
+        """创建「应用启动器」设置标签页：菜单栏右侧快捷启动按钮"""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+
+        group = QGroupBox("菜单栏右侧应用启动器")
+        gl = QVBoxLayout(group)
+
+        hint = QLabel("点击按钮直接启动对应应用；可在此添加/编辑/删除。\n"
+                      "命令可以是可执行文件路径，也可以是系统 PATH 中的命令名（如 notepad.exe）。")
+        hint.setWordWrap(True)
+        gl.addWidget(hint)
+
+        self.launcher_list = QListWidget()
+        gl.addWidget(self.launcher_list)
+
+        # 读取现有配置（QSettings），无则用默认
+        self.launcher_apps: list = []
+        s = QSettings(ORG_NAME, APP_NAME)
+        raw = s.value("launcher/apps", "")
+        if raw:
+            try:
+                import json
+                self.launcher_apps = json.loads(raw)
+            except Exception:
+                self.launcher_apps = []
+        if not self.launcher_apps:
+            self.launcher_apps = [dict(a) for a in DEFAULT_LAUNCHER_APPS]
+        self._reload_launcher_list()
+
+        btn_row = QHBoxLayout()
+        add_btn = QPushButton("添加")
+        add_btn.clicked.connect(self._launcher_add)
+        edit_btn = QPushButton("编辑")
+        edit_btn.clicked.connect(self._launcher_edit)
+        del_btn = QPushButton("删除")
+        del_btn.clicked.connect(self._launcher_delete)
+        btn_row.addWidget(add_btn)
+        btn_row.addWidget(edit_btn)
+        btn_row.addWidget(del_btn)
+        btn_row.addStretch()
+        gl.addLayout(btn_row)
+
+        layout.addWidget(group)
+        layout.addStretch()
+        return widget
+
+    def _reload_launcher_list(self):
+        self.launcher_list.clear()
+        for app in self.launcher_apps:
+            name = app.get("name", "")
+            cmd = app.get("command", "")
+            item = QListWidgetItem(f"{name} — {cmd}" if name else cmd)
+            item.setData(Qt.ItemDataRole.UserRole, app)
+            self.launcher_list.addItem(item)
+
+    def _launcher_add(self):
+        name, ok = QInputDialog.getText(self, "添加启动器", "按钮名称（如：记事本）:")
+        if not ok or not name.strip():
+            return
+        cmd, ok2 = QInputDialog.getText(self, "添加启动器", "命令或程序路径（如：notepad.exe）:")
+        if not ok2 or not cmd.strip():
+            return
+        self.launcher_apps.append({"name": name.strip(), "command": cmd.strip()})
+        self._reload_launcher_list()
+
+    def _launcher_edit(self):
+        row = self.launcher_list.currentRow()
+        if row < 0 or row >= len(self.launcher_apps):
+            QMessageBox.information(self, "提示", "请先选中要编辑的项")
+            return
+        app = self.launcher_apps[row]
+        name, ok = QInputDialog.getText(self, "编辑启动器", "按钮名称:", text=app.get("name", ""))
+        if not ok:
+            return
+        cmd, ok2 = QInputDialog.getText(self, "编辑启动器", "命令或程序路径:", text=app.get("command", ""))
+        if not ok2:
+            return
+        app["name"] = name.strip()
+        app["command"] = cmd.strip()
+        self._reload_launcher_list()
+
+    def _launcher_delete(self):
+        row = self.launcher_list.currentRow()
+        if row < 0 or row >= len(self.launcher_apps):
+            QMessageBox.information(self, "提示", "请先选中要删除的项")
+            return
+        del self.launcher_apps[row]
+        self._reload_launcher_list()
+
     def on_theme_changed(self, index):
         """主题变化"""
         self.current_theme = self.theme_combo.itemData(index)
@@ -181,4 +276,7 @@ class SettingsDialog(QDialog):
             settings['toolbar_buttons'] = {
                 key: cb.isChecked() for key, cb in self.toolbar_checkboxes.items()
             }
+        # 应用启动器配置
+        if hasattr(self, 'launcher_apps'):
+            settings['launcher_apps'] = list(self.launcher_apps)
         return settings
