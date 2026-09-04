@@ -128,6 +128,7 @@ class Pane(QWidget):
     # 信号
     path_changed = pyqtSignal(str)  # 路径变更信号
     activated = pyqtSignal(object)  # 窗格被激活信号
+    shot_dates_ready = pyqtSignal()  # 后台 prefetch 拍摄日期完成（跨线程安全，自动投递主线程）
     
     def __init__(self, pane_id: str, parent=None):
         super().__init__(parent)
@@ -344,6 +345,9 @@ class Pane(QWidget):
         # 恢复列显示状态（拍摄日期列默认隐藏；用户勾选后持久化）
         self._restore_column_visibility()
 
+        # 后台 prefetch 完成后刷新视图（信号跨线程自动 QueuedConnection，安全）
+        self.shot_dates_ready.connect(self._refresh_shot_date_column)
+
         # 目录异步加载完成后，若正好是当前目录则预读拍摄日期
         self.model.directoryLoaded.connect(self._on_directory_loaded_shot_dates)
 
@@ -503,8 +507,9 @@ class Pane(QWidget):
             try:
                 from core.media_metadata import batch_get_shot_dates
                 batch_get_shot_dates(paths)
-                from PyQt6.QtCore import QTimer
-                QTimer.singleShot(0, self._refresh_shot_date_column)
+                # 用信号通知主线程刷新（QTimer.singleShot 在无事件循环的后台线程调用不生效，
+                # 会导致缓存已填充但视图不刷新、列一直空白的问题）
+                self.shot_dates_ready.emit()
             except Exception:
                 pass
 
@@ -792,6 +797,12 @@ class Pane(QWidget):
             def _set_col_visible(checked, c=col):
                 self.tree_view.setColumnHidden(c, not checked)
                 self._save_column_visibility()
+                # 勾选显示「拍摄日期」列时：立即刷新视口，并补一次 prefetch
+                # （目录可能已加载完导致 directoryLoaded 不再触发，或上次 prefetch 未完成）
+                if checked and c == getattr(self.tree_view.model(), 'SHOT_DATE_COLUMN', -1):
+                    from PyQt6.QtCore import QTimer
+                    QTimer.singleShot(0, self._prefetch_shot_dates)
+                self.tree_view.viewport().update()
             action.toggled.connect(_set_col_visible)
         menu.exec(self.tree_view.header().mapToGlobal(position))
 
