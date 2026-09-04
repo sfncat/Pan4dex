@@ -23,7 +23,7 @@
 
 #### 🚀 功能增强
 - 文件列表新增「拍摄日期」列（列标题右键勾选菜单中可开启）：照片读取 EXIF `DateTimeOriginal`（缺省回退 `CreateDate`）；视频读取 `CreateDate`（QuickTime mvhd.creation_time，即 exiftool 的 `QuickTime:CreateDate`），缺省回退 `DateTimeOriginal`；仅照片/视频显示，非媒体为空
-- 携带 ExifTool：Windows 随身携带 `resources/tools/exiftool/exiftool.exe`（v13.59，含 Perl 运行时解压即用）；Linux 随身携带 `resources/tools/exiftool-linux/`（Perl 包 v13.55，用系统 perl 运行，不依赖目标系统预装 exiftool）
+- 携带 ExifTool：Windows 随身携带 `resources/tools/exiftool/exiftool.exe`（v13.59，含 Perl 运行时解压即用）；Linux 随身携带 `resources/tools/exiftool-linux/`（Perl 包 v13.59，用系统 perl 运行，不依赖目标系统预装 exiftool）
 - 「关于」对话框显示携带的 ExifTool 版本号
 
 #### 🐛 缺陷修复
