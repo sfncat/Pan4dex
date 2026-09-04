@@ -2,14 +2,42 @@
 Pan4dex 万格 — 路径栏组件
 """
 import logging
-from PyQt6.QtGui import QFileSystemModel, QAction
+from PyQt6.QtGui import QFileSystemModel, QAction, QIcon, QPixmap, QPainter, QColor, QFont, QPen
 from PyQt6.QtWidgets import (
     QComboBox, QCompleter, QWidget,
     QHBoxLayout, QPushButton, QToolButton, QStyle
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QDir, QSize
+from PyQt6.QtCore import Qt, pyqtSignal, QDir, QSize, QRectF
 
 logger = logging.getLogger("pan4dex.path_bar")
+
+
+def _make_terminal_icon(size: int = 20) -> QIcon:
+    """绘制终端图标（圆角窗口 + >_ 提示符），替代 SP_CommandLink（形似前进箭头）。
+
+    size 为逻辑像素，按 2x 渲染保证高分屏清晰。
+    """
+    dpr = 2
+    px = QPixmap(size * dpr, size * dpr)
+    px.setDevicePixelRatio(dpr)
+    px.fill(Qt.GlobalColor.transparent)
+
+    p = QPainter(px)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    rect = QRectF(1.5, 1.5, size - 3.0, size - 3.0)
+    # 终端窗口主体
+    p.setPen(QPen(QColor(190, 205, 225), 1.3))
+    p.setBrush(QColor(42, 48, 60))
+    p.drawRoundedRect(rect, 3.5, 3.5)
+    # 提示符 >_
+    p.setPen(QColor(235, 240, 248))
+    f = QFont()
+    f.setBold(True)
+    f.setPixelSize(max(10, int(size * 0.58)))
+    p.setFont(f)
+    p.drawText(rect, Qt.AlignmentFlag.AlignCenter, ">_")
+    p.end()
+    return QIcon(px)
 
 
 class PathBar(QWidget):
@@ -110,9 +138,9 @@ class PathBar(QWidget):
         self.new_folder_btn.clicked.connect(self.on_new_folder_clicked)
         self.layout.addWidget(self.new_folder_btn)
 
-        # 终端按钮
+        # 终端按钮（自绘终端图标，避免 SP_CommandLink 形似前进箭头）
         self.terminal_btn = QToolButton()
-        self.terminal_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_CommandLink))
+        self.terminal_btn.setIcon(_make_terminal_icon())
         self.terminal_btn.setIconSize(QSize(20, 20))
         self.terminal_btn.setToolTip("打开终端")
         self.terminal_btn.setFixedSize(28, 28)

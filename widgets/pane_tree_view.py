@@ -3,7 +3,7 @@ Pan4dex 万格 — 窗格内嵌目录树
 """
 import os
 import logging
-from PyQt6.QtWidgets import QTreeView, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QCheckBox
+from PyQt6.QtWidgets import QTreeView, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QCheckBox, QAbstractItemView
 from PyQt6.QtCore import Qt, QDir, pyqtSignal, QModelIndex, QTimer
 from PyQt6.QtGui import QFileSystemModel
 
@@ -128,7 +128,8 @@ class PaneTreeView(QWidget):
             leaf = self.model.index(parts[-1])
             if leaf.isValid():
                 self.tree_view.setCurrentIndex(leaf)
-                self.tree_view.scrollTo(leaf)
+                # 滚动到目录树上下居中的位置，而不是只保证可见
+                self.tree_view.scrollTo(leaf, QAbstractItemView.ScrollHint.PositionAtCenter)
             return
         p = parts[idx]
         index = self.model.index(p)

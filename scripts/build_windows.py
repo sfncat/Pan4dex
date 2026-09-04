@@ -61,10 +61,23 @@ except Exception as e:
     imageformats_path = Path(r"C:\Python313\Lib\site-packages\PyQt6\Qt6\plugins\imageformats")
     print(f"Using fallback path: {imageformats_path}")
 
+# Windows 包不需要 Linux 版 exiftool（resources/tools/exiftool-linux，Perl 包）。
+# --add-data=resources;resources 会全量打入，构建前临时移出（移到 build/ 下，
+# 不能在 resources 内留备份，否则仍会被打包），构建后还原。
+tools_dir = project_root / "resources" / "tools"
+linux_tool_src = tools_dir / "exiftool-linux"
+linux_tool_bak = project_root / "build" / "exiftool-linux-build-bak"
+if linux_tool_src.exists():
+    import shutil as _sh
+    if linux_tool_bak.exists():
+        _sh.rmtree(linux_tool_bak)
+    _sh.move(str(linux_tool_src), str(linux_tool_bak))
+    print("Excluded exiftool-linux from Windows build (temporarily moved)")
+
 # Build with PyInstaller (onedir mode — faster startup, no extraction overhead)
 cmd = [
     sys.executable, "-m", "PyInstaller",
-    "--onedir", "--console",
+    "--onedir", "--console", "--noconfirm",
     "--name=pan4dex",
     "--add-data=resources;resources",
     "--hidden-import=PyQt6.QtCore",
@@ -110,6 +123,12 @@ result = subprocess.run(cmd)
 if result.returncode != 0:
     print("Build failed!")
     sys.exit(1)
+
+# 还原构建前临时移出的 exiftool-linux（构建完成后，避免被打进 Windows 包）
+if linux_tool_bak.exists():
+    import shutil as _sh2
+    _sh2.move(str(linux_tool_bak), str(linux_tool_src))
+    print("Restored exiftool-linux")
 
 # Copy to releases (onedir mode: copy entire folder + create zip)
 releases_dir = project_root / "releases"

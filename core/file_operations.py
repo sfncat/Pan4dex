@@ -116,10 +116,27 @@ class FileOperations:
             files_affected=files_copied
         )
     
+    def _unique_dest_path(self, destination: str, source_name: str) -> str:
+        """目标已存在时生成不冲突的目标路径：name (2).ext / name (3).ext …
+
+        解决同目录复制粘贴时 dest == source（shutil 抛 SameFileError）以及
+        目标目录已有同名文件时静默覆盖的问题。
+        """
+        dest_path = os.path.join(destination, source_name)
+        if not os.path.exists(dest_path):
+            return dest_path
+        base, ext = os.path.splitext(source_name)
+        counter = 2
+        while True:
+            candidate = os.path.join(destination, f"{base} ({counter}){ext}")
+            if not os.path.exists(candidate):
+                return candidate
+            counter += 1
+
     def _copy_single(self, source: str, destination: str, total: int, current: int) -> int | FileOperationResult:
         """复制单个文件/目录"""
         source_name = os.path.basename(source)
-        dest_path = os.path.join(destination, source_name)
+        dest_path = self._unique_dest_path(destination, source_name)
         
         if os.path.isdir(source):
             # 复制目录

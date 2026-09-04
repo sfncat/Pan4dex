@@ -51,3 +51,7 @@ htmlcov/
 
 # Releases (manual commit only)
 releases/
+/test_media/
+
+# 运行时工具（exiftool 等，构建机器本地部署，不进版本库）
+/resources/tools/

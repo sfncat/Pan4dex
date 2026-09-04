@@ -776,7 +776,15 @@ class MainWindow(QMainWindow):
         except ImportError:
             version_str = "版本: 0.9.4"
             build_str = ""
-        
+
+        # 携带/使用的 ExifTool 版本（用于拍摄日期列）
+        try:
+            from core.media_metadata import exiftool_version
+            _exif_ver = exiftool_version()
+            exif_str = f"<p>Exif 工具: ExifTool {_exif_ver}</p>" if _exif_ver else ""
+        except Exception:
+            exif_str = ""
+
         QMessageBox.about(
             self,
             "关于 Pan4dex 万格",
@@ -784,6 +792,7 @@ class MainWindow(QMainWindow):
             f"<p>跨平台四窗格文件管理器</p>"
             f"<p>{version_str}</p>"
             f"<p>{build_str}</p>"
+            f"{exif_str}"
             f"<p>许可证: MIT</p>"
         )
     

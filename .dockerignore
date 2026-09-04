@@ -1,0 +1,10 @@
+﻿test_media/
+releases/
+dist/
+build/
+.venv/
+.git/
+__pycache__/
+*.pyc
+.pytest_cache/
+.idea/

@@ -40,9 +40,15 @@ sudo docker run --name ${CONTAINER_NAME} \
         export PYBUILD_TIME=\$(date '+%Y-%m-%d %H:%M:%S')
         sed -i \"s/^BUILD_TIME = \\\"[^\\\"]*\\\"/BUILD_TIME = \\\"\${PYBUILD_TIME}\\\"/\" config/app_config.py
         
-        # 构建：必须打包 resources（图标/主题资源），否则运行时图标缺失、任务栏显示默认图标
+        # 构建：打包 resources/icons + resources/themes（图标/主题资源），
+        # 否则运行时图标缺失、任务栏显示默认图标。
+        # 同时打包 resources/tools/exiftool-linux（应用内携带的 ExifTool Perl 包，
+        # 用系统 perl 运行，避免目标系统未装 exiftool 时拍摄日期列不可用）。
+        # 注意：不打包 resources/tools/exiftool（Windows 专用 exe + Perl 运行时）。
         pyinstaller --onefile --windowed --name=pan4dex \
-            --add-data resources:resources \
+            --add-data resources/icons:resources/icons \
+            --add-data resources/themes:resources/themes \
+            --add-data resources/tools/exiftool-linux:resources/tools/exiftool-linux \
             main.py
         
         # 移动到 releases

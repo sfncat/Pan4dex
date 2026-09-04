@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import (
     QLabel, QMenu, QMessageBox, QInputDialog, QLineEdit, QHBoxLayout, QTabWidget,
     QApplication
 )
-from PyQt6.QtCore import Qt, QDir, QMimeData, pyqtSignal, QThread, QPoint, QEvent, QSortFilterProxyModel
+from PyQt6.QtCore import Qt, QDir, QMimeData, pyqtSignal, QThread, QPoint, QEvent, QSortFilterProxyModel, QModelIndex, QPersistentModelIndex
 import os
 
 from widgets.path_bar import PathBar
@@ -18,33 +18,108 @@ from widgets.pane_tree_view import PaneTreeView
 from core.file_operations import FileOperations, FileOperationType, FileOperationResult
 
 
+# 共享剪贴板：所有窗格（含四窗格/双窗格）共用一份，
+# 解决「A 窗格复制、B 窗格粘贴」时各窗格自带空剪贴板导致粘贴失效的问题。
+SHARED_CLIPBOARD: list = []
+SHARED_CLIPBOARD_ACTION = None  # 'copy' / 'cut' / None
+
+
+class ExifFileSystemModel(QFileSystemModel):
+    """在 QFileSystemModel 的 4 列（名称/大小/类型/修改日期）之后追加「拍摄日期」列。
+
+    直接子类化 QFileSystemModel 让源模型真正拥有 5 列，因此上层的
+    PaneSortProxyModel（QSortFilterProxyModel）可以完全用内建机制排序/映射，
+    无需自行实现列扩展（PyQt6 下 QSortFilterProxyModel 索引的 internalPointer()
+    访问会崩溃，且其 index() 对超出源列范围的列返回无效索引，不能直接加列）。
+
+    拍摄日期由 exiftool 读取：
+    - 照片：DateTimeOriginal -> CreateDate（EXIF 拍摄时间）
+    - 视频：CreateDate -> DateTimeOriginal（QuickTime mvhd.creation_time）
+    仅当文件是照片/视频（含 EXIF）时显示值，否则为空。
+    """
+
+    SHOT_DATE_COLUMN = 4  # 拍摄日期列
+
+    def columnCount(self, parent=None):
+        return super().columnCount() + 1
+
+    def headerData(self, section, orientation, role):
+        if orientation == Qt.Orientation.Horizontal and section == self.SHOT_DATE_COLUMN:
+            if role == Qt.ItemDataRole.DisplayRole:
+                return "拍摄日期"
+            if role == Qt.ItemDataRole.TextAlignmentRole:
+                return int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            return None
+        return super().headerData(section, orientation, role)
+
+    def data(self, index, role):
+        if index.isValid() and index.column() == self.SHOT_DATE_COLUMN:
+            if role == Qt.ItemDataRole.DisplayRole:
+                return self.shot_date(index) or ""
+            if role == Qt.ItemDataRole.TextAlignmentRole:
+                return int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            return None
+        return super().data(index, role)
+
+    def shot_date(self, index):
+        """读取拍摄日期（仅查缓存，避免渲染时逐文件启动 exiftool 卡顿 UI）。
+
+        缓存由 navigate_to 后的后台 prefetch 批量填充，完成后视图自动刷新。
+        """
+        if not index.isValid():
+            return None
+        path = self.filePath(index)
+        if not path:
+            return None
+        from core.media_metadata import get_shot_date_cached
+        return get_shot_date_cached(path)
+
+
 class PaneSortProxyModel(QSortFilterProxyModel):
     """每个窗格独立的排序代理模型。
 
-    四个窗格共享同一个 QFileSystemModel 作为数据源（性能考虑），
+    四个窗格共享同一个 ExifFileSystemModel（5 列）作为数据源（性能考虑），
     但排序状态若直接作用在共享模型上，任意窗格点表头都会让所有窗格一起重排。
     通过本代理模型，让每个窗格持有独立的排序状态：点哪个窗格，只排哪个窗格。
     同时保持“目录优先”的文件管理器习惯排序。
+
+    「拍摄日期」列（第 4 列）由源模型直接提供，本代理只需按字符串比较。
     """
 
+    SHOT_DATE_COLUMN = 4  # 拍摄日期列（源模型第 4 列）
+
     def lessThan(self, left, right):
-        source_model = self.sourceModel()
-        if source_model is None:
-            return super().lessThan(left, right)
-        li = left
-        ri = right
-        if not li.isValid() or not ri.isValid():
-            return super().lessThan(left, right)
-        # 目录始终排在文件前面
-        left_is_dir = source_model.isDir(li)
-        right_is_dir = source_model.isDir(ri)
-        if left_is_dir != right_is_dir:
-            return left_is_dir
+        col = left.column()
+        # 拍摄日期列：按字符串比较（无拍摄日期的排最后）
+        if col == self.SHOT_DATE_COLUMN:
+            l = left.data(Qt.ItemDataRole.DisplayRole) or ""
+            r = right.data(Qt.ItemDataRole.DisplayRole) or ""
+            if l != r:
+                return l < r
+        # 目录始终排在文件前面（任意列排序都保持）
+        l_is_dir = self._is_dir(left)
+        r_is_dir = self._is_dir(right)
+        if l_is_dir != r_is_dir:
+            return l_is_dir
         # 名称列：不区分大小写
-        if left.column() == 0:
+        if col == 0:
             return left.data(Qt.ItemDataRole.DisplayRole).lower() < right.data(Qt.ItemDataRole.DisplayRole).lower()
-        # 其他列（大小/类型/修改时间）用默认比较
+        # 其他列（大小/类型/修改时间/拍摄日期相同值）用默认比较
         return super().lessThan(left, right)
+
+    def _is_dir(self, index):
+        """判断是否为目录。
+
+        注意：QSortFilterProxyModel::lessThan 传入的 left/right 是「源模型索引」
+        （而非代理索引），因此直接经 sourceModel().filePath 取路径，不能 mapToSource。
+        """
+        try:
+            if self.sourceModel() is None or index is None or not index.isValid():
+                return False
+            path = self.sourceModel().filePath(index)
+            return bool(path) and os.path.isdir(path)
+        except Exception:
+            return False
 
 
 class Pane(QWidget):
@@ -60,8 +135,9 @@ class Pane(QWidget):
         self.pane_id = pane_id
         self.current_path = QDir.homePath()
         self.file_ops = FileOperations()
-        self.clipboard = []  # 剪贴板：存储复制的文件路径
-        self.clipboard_action = None  # 'copy' or 'cut'
+        # 剪贴板指向模块级共享对象（跨窗格复制/剪切/粘贴）
+        self.clipboard = SHARED_CLIPBOARD
+        self.clipboard_action = SHARED_CLIPBOARD_ACTION
         
         # 导航历史（支持前进/后退）
         self._nav_history = [self.current_path]
@@ -179,6 +255,9 @@ class Pane(QWidget):
         self.tree_view.doubleClicked.connect(self.on_item_double_clicked)
         self.tree_view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.tree_view.customContextMenuRequested.connect(self.show_context_menu)
+        # 列标题右键：弹出列选择菜单，不触发窗格右键菜单
+        self.tree_view.header().setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.tree_view.header().customContextMenuRequested.connect(self.show_column_menu)
         self.tree_view.viewport().installEventFilter(self)
 
         # 拖拽支持
@@ -244,7 +323,7 @@ class Pane(QWidget):
         if not hasattr(Pane, '_shared_file_model') or Pane._shared_file_model is None:
             import time
             t0 = time.perf_counter()
-            model = QFileSystemModel()
+            model = ExifFileSystemModel()
             model.setRootPath("")
             model.setFilter(
                 QDir.Filter.AllDirs | 
@@ -262,11 +341,22 @@ class Pane(QWidget):
         self.sort_proxy.setSourceModel(self.model)
         self.tree_view.setModel(self.sort_proxy)
 
+        # 目录异步加载完成后，若正好是当前目录则预读拍摄日期
+        self.model.directoryLoaded.connect(self._on_directory_loaded_shot_dates)
+
         # 设置根索引
         self._set_root_index(self.current_path)
 
+    def _on_directory_loaded_shot_dates(self, path):
+        """共享模型目录加载完成：若是本窗格当前目录，则预读拍摄日期。"""
+        try:
+            if os.path.normpath(path) == os.path.normpath(self.current_path):
+                self._prefetch_shot_dates()
+        except Exception:
+            pass
+
     def _map_to_source(self, index):
-        """把视图/代理模型索引映射回共享源模型索引"""
+        """把视图/代理模型索引映射回共享源模型（QFileSystemModel）索引"""
         if index is None or not index.isValid():
             return index
         return self.sort_proxy.mapToSource(index)
@@ -340,6 +430,51 @@ class Pane(QWidget):
             self.pane_tabs.setVisible(False)
             self.path_bar.set_tabs_button_checked(False)
 
+    def _prefetch_shot_dates(self):
+        """后台批量预读当前目录文件的拍摄日期，填充缓存后刷新视图。
+
+        注意：Qt 模型只能在主线程访问，因此目录枚举在主线程完成，
+        后台线程只调用 exiftool 子进程（纯 IO，不触碰 Qt 对象）。
+        """
+        try:
+            model = self.model
+            idx = model.index(self.current_path)
+            if not idx.isValid():
+                return
+            paths = []
+            for row in range(model.rowCount(idx)):
+                child = model.index(row, 0, idx)
+                # 目录/盘符不需要拍摄日期，也避免 exiftool 读取挂载点时卡住
+                if model.isDir(child):
+                    continue
+                p = model.filePath(child)
+                if p:
+                    paths.append(p)
+            if not paths:
+                return
+        except Exception:
+            return
+
+        import threading
+
+        def work():
+            try:
+                from core.media_metadata import batch_get_shot_dates
+                batch_get_shot_dates(paths)
+                from PyQt6.QtCore import QTimer
+                QTimer.singleShot(0, self._refresh_shot_date_column)
+            except Exception:
+                pass
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _refresh_shot_date_column(self):
+        """拍摄日期缓存就绪后重绘视图。"""
+        try:
+            self.tree_view.viewport().update()
+        except Exception:
+            pass
+
     def navigate_to(self, path: str):
         """导航到指定路径"""
         import os
@@ -370,6 +505,8 @@ class Pane(QWidget):
 
             self.update_status_bar()
             self.path_changed.emit(path)
+            # 后台预读当前目录文件的拍摄日期（exiftool 批量一次调用）
+            self._prefetch_shot_dates()
             # 超大图标模式下同步刷新缩略图视图
             if hasattr(self, 'thumbnail_view') and self.thumbnail_view.isVisible():
                 self.thumbnail_view.load_directory(path)
@@ -591,6 +728,28 @@ class Pane(QWidget):
         except PermissionError:
             self.status_label.setText("无权限访问")
     
+    def show_column_menu(self, position):
+        """列标题右键菜单：勾选要显示的列（名称/大小/类型/修改日期）"""
+        menu = QMenu(self)
+        menu.setStyleSheet("""
+            QMenu {
+                background-color: #2D2D2D;
+                color: #CCCCCC;
+                border: 1px solid #404040;
+            }
+            QMenu::item:selected {
+                background-color: #404040;
+            }
+        """)
+        model = self.tree_view.model()
+        for col in range(model.columnCount()):
+            title = model.headerData(col, Qt.Orientation.Horizontal, Qt.ItemDataRole.DisplayRole)
+            action = menu.addAction(str(title) if title else f"列 {col + 1}")
+            action.setCheckable(True)
+            action.setChecked(not self.tree_view.isColumnHidden(col))
+            action.toggled.connect(lambda checked, c=col: self.tree_view.setColumnHidden(c, not checked))
+        menu.exec(self.tree_view.header().mapToGlobal(position))
+
     def show_context_menu(self, position):
         """显示右键菜单"""
         menu = QMenu()
@@ -625,6 +784,11 @@ class Pane(QWidget):
             cut_action.setShortcut(QKeySequence("Ctrl+X"))
             cut_action.triggered.connect(self.cut_selected)
             menu.addAction(cut_action)
+            
+            paste_action = QAction("粘贴(&V)", self)
+            paste_action.setShortcut(QKeySequence("Ctrl+V"))
+            paste_action.triggered.connect(self.paste)
+            menu.addAction(paste_action)
             
             menu.addSeparator()
             
@@ -705,6 +869,7 @@ class Pane(QWidget):
     
     def copy_selected(self):
         """复制选中项"""
+        global SHARED_CLIPBOARD_ACTION
         indexes = self.tree_view.selectedIndexes()
         if not indexes:
             return
@@ -715,12 +880,14 @@ class Pane(QWidget):
                 paths.append(self.model.filePath(self._map_to_source(index)))
         
         if paths:
-            self.clipboard = paths
-            self.clipboard_action = 'copy'
+            SHARED_CLIPBOARD.clear()
+            SHARED_CLIPBOARD.extend(paths)
+            SHARED_CLIPBOARD_ACTION = 'copy'
             self.status_label.setText(f"已复制 {len(paths)} 个项目")
     
     def cut_selected(self):
         """剪切选中项"""
+        global SHARED_CLIPBOARD_ACTION
         indexes = self.tree_view.selectedIndexes()
         if not indexes:
             return
@@ -731,25 +898,27 @@ class Pane(QWidget):
                 paths.append(self.model.filePath(self._map_to_source(index)))
         
         if paths:
-            self.clipboard = paths
-            self.clipboard_action = 'cut'
+            SHARED_CLIPBOARD.clear()
+            SHARED_CLIPBOARD.extend(paths)
+            SHARED_CLIPBOARD_ACTION = 'cut'
             self.status_label.setText(f"已剪切 {len(paths)} 个项目")
     
     def paste(self):
         """粘贴"""
-        if not self.clipboard:
+        global SHARED_CLIPBOARD_ACTION
+        if not SHARED_CLIPBOARD:
             return
         
-        if self.clipboard_action == 'copy':
+        if SHARED_CLIPBOARD_ACTION == 'copy':
             self.file_ops.set_progress_callback(self._on_copy_progress)
-            self.file_ops.copy(self.clipboard, self.current_path)
+            self.file_ops.copy(SHARED_CLIPBOARD, self.current_path)
             self.file_ops.set_progress_callback(None)
-        elif self.clipboard_action == 'cut':
+        elif SHARED_CLIPBOARD_ACTION == 'cut':
             self.file_ops.set_progress_callback(self._on_copy_progress)
-            self.file_ops.move(self.clipboard, self.current_path)
+            self.file_ops.move(SHARED_CLIPBOARD, self.current_path)
             self.file_ops.set_progress_callback(None)
-            self.clipboard = []
-            self.clipboard_action = None
+            SHARED_CLIPBOARD.clear()
+            SHARED_CLIPBOARD_ACTION = None
         
         self.navigate_to(self.current_path)
         self.hide_progress()
