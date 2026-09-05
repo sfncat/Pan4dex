@@ -1,8 +1,16 @@
+# Pan4dex Docker 构建镜像（历史副本）
+#
+# ⚠️ canonical 位置：packaging/Dockerfile-linux
+# 本文件仅作为 docker/ 目录的历史副本保留，请以 packaging/Dockerfile-linux 为准。
+# 两者内容保持一致，但后续修改只改 packaging/Dockerfile-linux。
+
 FROM python:3.10-bullseye
 
 ENV QT_QPA_PLATFORM=offscreen
 
 # 安装 Qt6 运行时库（glibc 2.31 ≤ gti 2.35，兼容）
+# libxcb-cursor0 是 Qt6 xcb 平台插件的硬依赖；libgtk-3/gdk-pixbuf/atk/glib 供 qgtk3 主题插件使用
+# 这些库在构建容器中存在，PyInstaller 会把它们收集进 onefile，避免目标机器缺库
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libgl1-mesa-dev \
     libxkbcommon-dev \
@@ -27,21 +35,30 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxcb-shape0-dev \
     libxcb-randr0-dev \
     libxcb-render-util0-dev \
+    libxcb-cursor0 \
     libdbus-1-dev \
     libssl-dev \
+    libgtk-3-0 \
+    libgdk-pixbuf-2.0-0 \
+    libatk1.0-0 \
+    libglib2.0-0 \
     xvfb \
     && rm -rf /var/lib/apt/lists/*
 
 # 用 pip 安装 PyQt6 预编译 wheel（manylinux_2_28，glibc 2.28+ 可运行）
-RUN pip install --no-cache-dir --only-binary=:all: PyQt6 PyQt6-Qt6 PyQt6-sip && \
-    pip install --no-cache-dir PyInstaller send2trash Pillow qdarkstyle cairosvg
+RUN python -m pip install --upgrade pip && \
+    pip install --no-cache-dir --only-binary=:all: PyQt6 PyQt6-Qt6 PyQt6-sip && \
+    pip install --no-cache-dir PyInstaller send2trash Pillow qdarkstyle cairosvg pyte
 
 WORKDIR /app
 
 COPY . .
 
-COPY docker/entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+RUN echo '#!/bin/bash\n\
+Xvfb :99 -screen 0 1024x768x24 &>/dev/null &\n\
+export DISPLAY=:99\n\
+sleep 1\n\
+exec "$@"' > /entrypoint.sh && chmod +x /entrypoint.sh
 
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["/bin/bash"]
