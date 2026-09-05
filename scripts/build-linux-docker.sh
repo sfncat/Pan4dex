@@ -32,12 +32,17 @@ echo "[3/6] 运行构建容器..."
 sudo docker run --name ${CONTAINER_NAME} \
     -v "$(pwd):/app" \
     -e "VERSION=${VERSION}" \
+    -e "PYBUILD_TIME=$(TZ=Asia/Shanghai date '+%Y-%m-%d %H:%M:%S')" \
     ${DOCKER_IMAGE} \
     bash -c "
         cd /app
         
-        # 更新全局配置中的编译时间（写入 config/app_config.py，不再改写 main.py）
-        export PYBUILD_TIME=\$(date '+%Y-%m-%d %H:%M:%S')
+        # 版本号 + 编译时间写入 config/app_config.py：
+        # - VERSION 必须用传入的版本号覆盖（构建现场源码可能滞后，否则
+        #   打包进程序的版本号与产物名不一致）
+        # - BUILD_TIME 由宿主按东八区算好传入（容器内 date 是 UTC，直接
+        #   取会差 8 小时）
+        sed -i \"s/^VERSION = \\\"[^\\\"]*\\\"/VERSION = \\\"\${VERSION}\\\"/\" config/app_config.py
         sed -i \"s/^BUILD_TIME = \\\"[^\\\"]*\\\"/BUILD_TIME = \\\"\${PYBUILD_TIME}\\\"/\" config/app_config.py
         
         # 构建：打包 resources/icons + resources/themes（图标/主题资源），

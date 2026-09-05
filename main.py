@@ -436,9 +436,33 @@ def free_console_in_gui_mode():
             pass
 
 
+def _test_open_file(path: str):
+    """诊断入口：真实环境验证用默认应用打开文件（输出到日志）"""
+    import shutil
+
+    logger.info(f"TEST-OPEN path={path}")
+    try:
+        from config.file_associations import FileAssociations
+
+        fa = FileAssociations()
+        assoc = fa.get_association(path)
+        logger.info(f"TEST-OPEN assoc={assoc}")
+        logger.info(
+            f"TEST-OPEN which xdg-open={shutil.which('xdg-open')} "
+            f"gio={shutil.which('gio')}"
+        )
+        ok = fa.open_file(path)
+        logger.info(f"TEST-OPEN result={ok}")
+        sys.exit(0 if ok else 1)
+    except Exception:
+        logger.exception("TEST-OPEN exception")
+        sys.exit(2)
+
+
 def main():
     """程序入口"""
     import sys
+    import os
     import time
 
     _t0 = time.perf_counter()
@@ -447,6 +471,10 @@ def main():
         sys.exit(_install_menu_linux())
     if "--version" in sys.argv or "--info" in sys.argv or "-V" in sys.argv or "-h" in sys.argv or "--help" in sys.argv:
         _cli_output()
+        sys.exit(0)
+    # 隐藏诊断入口：真实环境验证"用默认应用打开文件"（--test-open <path>）
+    if "--test-open" in sys.argv:
+        _test_open_file(sys.argv[sys.argv.index("--test-open") + 1])
         sys.exit(0)
     free_console_in_gui_mode()
     # 安装全局异常处理器
@@ -465,8 +493,6 @@ def main():
         logger.info(f"[启动计时] Python 模块导入耗时: {(time.perf_counter()-_t0)*1000:.1f}ms")
         # Windows DPI 适配 - 必须在创建 QApplication 之前设置
         if sys.platform == "win32":
-            import os
-
             os.environ["QT_AUTO_SCREEN_SCALE_FACTOR"] = "1"
             os.environ["QT_ENABLE_HIGHDPI_SCALING"] = "1"
             try:

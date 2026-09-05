@@ -19,6 +19,19 @@
 
 ## 更新记录
 
+### v0.9.657 — 2026-09-05
+
+#### 🐛 缺陷修复
+- 修复 Linux 双击/右键打开文件无效（md/txt/图片等全部打不开）：
+  - **根因**：PyInstaller 打包版运行时注入 `LD_LIBRARY_PATH` 指向打包目录，子进程（gedit/eog 等系统应用）加载打包的旧版 glib/gtk 库与系统版本冲突（`symbol lookup error`）后立即退出；现在启动外部应用时剔除 `LD_LIBRARY_PATH`/`LD_PRELOAD`
+  - 打开顺序：用户关联 → **系统默认应用（xdg-open）** → **内置按类型候选**（gedit/gnome-text-editor/eog/evince/libreoffice/vlc 等，按常见度取第一个存在的）→ gio 兜底，不再依赖精简桌面的 xdg 关联（实测打包环境 xdg-open 返回退出码 4）
+  - 子进程 stderr 落盘 `/tmp/pan4dex_open_stderr.log`，打开失败时可定位具体原因
+- 修复 Windows 任务栏图标反复消失的隐患：`main.py` 函数作用域内 `os` 未绑定导致窗口图标设置失败（`local variable 'os' referenced before assignment`）
+- 修复 Linux 构建版本号/编译时间错误：构建脚本在容器内强制覆盖 `VERSION`（构建现场源码可能滞后），`BUILD_TIME` 由宿主按东八区注入（容器内 `date` 为 UTC，会差 8 小时）
+
+#### 🔧 工程
+- 新增隐藏诊断入口 `--test-open <path>`：真实环境验证"用默认应用打开文件"，输出关联/候选/结果到日志，便于远程排查
+
 ### v0.9.656 — 2026-09-05
 
 #### 🚀 功能增强

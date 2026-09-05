@@ -759,7 +759,37 @@ class Pane(QWidget):
             import os
             os.startfile(file_path)
         else:
-            subprocess.Popen(["xdg-open", file_path])
+            # xdg-open 等待默认应用就绪才返回（可能 >10s），不能阻塞等待；
+            # 短观察：存活视为启动中（成功），立即非零退出才回退 gio
+            import shutil
+            from config.file_associations import _clean_child_env
+            try:
+                if shutil.which("xdg-open"):
+                    p = subprocess.Popen(
+                        ["xdg-open", file_path],
+                        stdin=subprocess.DEVNULL,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        start_new_session=True,
+                        env=_clean_child_env(),
+                    )
+                    try:
+                        rc = p.wait(timeout=1.0)
+                    except subprocess.TimeoutExpired:
+                        return
+                    if rc == 0:
+                        return
+                if shutil.which("gio"):
+                    subprocess.Popen(
+                        ["gio", "open", file_path],
+                        stdin=subprocess.DEVNULL,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        start_new_session=True,
+                        env=_clean_child_env(),
+                    )
+            except Exception as e:
+                logger.warning("打开文件失败 %s: %s", file_path, e)
     
     def on_selection_changed(self):
         """选择变化时更新预览"""
