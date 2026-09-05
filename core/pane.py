@@ -459,7 +459,8 @@ class Pane(QWidget):
             self.current_path = path
             self.path_bar.set_path(path)
             self._set_root_index(path)
-            self.pane_tree_view.expand_to_path(path)
+            if self.pane_tree_view.isVisible():
+                self.pane_tree_view.expand_to_path(path)
             self.update_status_bar()
         
         # 恢复目录树可见性

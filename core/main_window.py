@@ -230,13 +230,25 @@ class MainWindow(QMainWindow):
         self.bookmark_sidebar.bookmark_clicked.connect(self.on_bookmark_clicked)
     
     def create_tree_sidebar(self):
-        """创建目录树侧边栏"""
+        """创建目录树侧边栏（延迟到事件循环后，避免阻塞首屏显示；约省 220ms）"""
+        self.tree_sidebar = None
+        self._tree_sidebar_ready = False
+        from PyQt6.QtCore import QTimer
+        QTimer.singleShot(300, self._create_tree_sidebar_lazy)
+    
+    def _create_tree_sidebar_lazy(self):
+        """延迟创建目录树侧边栏"""
+        if self._tree_sidebar_ready:
+            return
         self.tree_sidebar = TreeSidebar(self)
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.tree_sidebar)
         self.tree_sidebar.setVisible(False)
-        
         # 连接目录树点击信号 - 导航到当前活动窗格
         self.tree_sidebar.folder_clicked.connect(self.on_tree_folder_clicked)
+        self._tree_sidebar_ready = True
+        # 若在创建前用户已触发切换，补同步显示状态
+        if getattr(self, '_tree_toggle', False):
+            self.tree_sidebar.setVisible(True)
     
     def on_tree_folder_clicked(self, path: str):
         """目录树文件夹点击 - 导航到当前活动窗格"""
@@ -721,6 +733,8 @@ class MainWindow(QMainWindow):
         """切换目录树侧边栏"""
         current = getattr(self, '_tree_toggle', False)
         self._tree_toggle = not current
+        if self.tree_sidebar is None:
+            self._create_tree_sidebar_lazy()
         self.tree_sidebar.setVisible(self._tree_toggle)
         self.tree_action.setChecked(self._tree_toggle)
 
@@ -960,6 +974,8 @@ class MainWindow(QMainWindow):
             quad = self.tab_widget.widget(tab_index)
             if hasattr(quad, 'pane1'):
                 for pane in [quad.pane1, quad.pane2, quad.pane3, quad.pane4]:
+                    if pane is None:
+                        continue
                     for btn_name, visible in config.items():
                         pane.set_button_visibility(btn_name, visible)
 
@@ -1041,23 +1057,25 @@ class QuadPaneWidget(QWidget):
         # 下部分割器（水平）
         self.bottom_splitter = QSplitter(Qt.Orientation.Horizontal)
         
-        # 创建四个窗格
+        # 首屏只创建 pane1（加快窗口显示）；pane2/3/4 在事件循环启动后
+        # 延迟创建（Pane 构造含 PathBar/文件模型/排序代理等，单个约 80ms）
         self.pane1 = Pane(pane_id="pane_1", parent=self)
-        self.pane2 = Pane(pane_id="pane_2", parent=self)
-        self.pane3 = Pane(pane_id="pane_3", parent=self)
-        self.pane4 = Pane(pane_id="pane_4", parent=self)
-        
-        # 连接激活信号
         self.pane1.activated.connect(self.on_pane_activated)
-        self.pane2.activated.connect(self.on_pane_activated)
-        self.pane3.activated.connect(self.on_pane_activated)
-        self.pane4.activated.connect(self.on_pane_activated)
+        self.pane2 = None
+        self.pane3 = None
+        self.pane4 = None
+        self._all_panes_created = False
+        
+        # 占位控件：延迟创建时用 replaceWidget 替换为真实窗格
+        self._placeholder2 = QWidget()
+        self._placeholder3 = QWidget()
+        self._placeholder4 = QWidget()
         
         # 添加到分割器
         self.top_splitter.addWidget(self.pane1)
-        self.top_splitter.addWidget(self.pane2)
-        self.bottom_splitter.addWidget(self.pane3)
-        self.bottom_splitter.addWidget(self.pane4)
+        self.top_splitter.addWidget(self._placeholder2)
+        self.bottom_splitter.addWidget(self._placeholder3)
+        self.bottom_splitter.addWidget(self._placeholder4)
         
         self.main_splitter.addWidget(self.top_splitter)
         self.main_splitter.addWidget(self.bottom_splitter)
@@ -1068,6 +1086,37 @@ class QuadPaneWidget(QWidget):
         self.bottom_splitter.setSizes([50, 50])
         
         self.layout.addWidget(self.main_splitter)
+        
+        # 事件循环启动后延迟创建其余窗格
+        from PyQt6.QtCore import QTimer
+        QTimer.singleShot(250, self._create_remaining_panes)
+    
+    def _create_remaining_panes(self):
+        """延迟创建 pane2/3/4（首屏显示后执行）"""
+        if getattr(self, '_all_panes_created', False):
+            return
+        import time
+        _t0 = time.perf_counter()
+        self.pane2 = Pane(pane_id="pane_2", parent=self)
+        self.pane3 = Pane(pane_id="pane_3", parent=self)
+        self.pane4 = Pane(pane_id="pane_4", parent=self)
+        self.pane2.activated.connect(self.on_pane_activated)
+        self.pane3.activated.connect(self.on_pane_activated)
+        self.pane4.activated.connect(self.on_pane_activated)
+        # 用真实窗格替换占位
+        self.top_splitter.replaceWidget(1, self.pane2)
+        self.bottom_splitter.replaceWidget(0, self.pane3)
+        self.bottom_splitter.replaceWidget(1, self.pane4)
+        self._placeholder2.deleteLater()
+        self._placeholder3.deleteLater()
+        self._placeholder4.deleteLater()
+        self._all_panes_created = True
+        logger.info(f"[启动计时] 延迟创建 pane2-4: {(time.perf_counter()-_t0)*1000:.1f}ms")
+    
+    def _ensure_all_panes(self):
+        """确保四个窗格都已创建（四窗格/双窗格切换等立即操作时调用）"""
+        if not getattr(self, '_all_panes_created', False):
+            self._create_remaining_panes()
     
     def on_pane_activated(self, pane):
         """窗格被激活"""
@@ -1078,12 +1127,13 @@ class QuadPaneWidget(QWidget):
         # 返回最后激活的窗格
         focus_widget = QApplication.focusWidget()
         for pane in [self.pane1, self.pane2, self.pane3, self.pane4]:
-            if pane == focus_widget or pane.isAncestorOf(focus_widget):
+            if pane is not None and (pane == focus_widget or pane.isAncestorOf(focus_widget)):
                 return pane
         return self.pane1
     
     def switch_to_quad(self):
         """切换到四窗格模式"""
+        self._ensure_all_panes()
         self.pane1.show()
         self.pane2.show()
         self.pane3.show()
@@ -1091,6 +1141,7 @@ class QuadPaneWidget(QWidget):
     
     def switch_to_dual(self):
         """切换到双窗格模式"""
+        self._ensure_all_panes()
         self.pane1.show()
         self.pane3.show()
         self.pane2.hide()
