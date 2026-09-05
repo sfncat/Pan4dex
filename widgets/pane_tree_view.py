@@ -39,7 +39,6 @@ class PaneTreeView(QWidget):
         self._stable_timer = None
         
         self.setMinimumWidth(180)
-        self.setMaximumWidth(300)
         
         self.main_layout = QVBoxLayout(self)
         self.main_layout.setContentsMargins(0, 0, 0, 0)

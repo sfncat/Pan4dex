@@ -8,7 +8,7 @@ from PyQt6.QtGui import QFileSystemModel, QAction, QKeySequence, QCursor
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QTreeView, QProgressBar,
     QLabel, QMenu, QMessageBox, QInputDialog, QLineEdit, QHBoxLayout, QTabWidget,
-    QApplication
+    QApplication, QSplitter
 )
 from PyQt6.QtCore import Qt, QDir, QMimeData, pyqtSignal, QThread, QPoint, QEvent, QSortFilterProxyModel, QModelIndex, QPersistentModelIndex
 import os
@@ -224,21 +224,24 @@ class Pane(QWidget):
         self.path_bar.view_mode_requested.connect(self.on_view_mode_changed)
         self.path_bar.new_folder_requested.connect(self.new_folder)
         self.layout.addWidget(self.path_bar)
+        # 固定路径栏高度：窗格较高时 QVBoxLayout 会把多余空间均分给各控件，
+        # 导致 PathBar 被拉高（内部控件停在顶部、下方大片空白）
+        self.path_bar.setFixedHeight(36)
 
         # 设置焦点策略，让 focusInEvent 能触发
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
-        # 水平容器：左侧目录树 + 右侧文件列表
-        self.h_container = QWidget()
-        self.h_layout = QHBoxLayout(self.h_container)
-        self.h_layout.setContentsMargins(0, 0, 0, 0)
-        self.h_layout.setSpacing(0)
+        # 水平容器：左侧目录树 + 右侧文件列表（QSplitter 支持拖动调宽）
+        self.h_container = QSplitter(Qt.Orientation.Horizontal)
+        self.h_container.setChildrenCollapsible(False)
+        self.h_container.setHandleWidth(4)
+        self._tree_width = 0  # 目录树宽度持久化（隐藏时记录，显示时恢复）
 
         # 内嵌目录树（独立模型，延迟启动扫描）
         self.pane_tree_view = PaneTreeView()
         self.pane_tree_view.folder_clicked.connect(self.on_pane_tree_clicked)
         self.pane_tree_view.setVisible(False)  # 默认隐藏
-        self.h_layout.addWidget(self.pane_tree_view)
+        self.h_container.addWidget(self.pane_tree_view)
 
         # 文件列表容器
         self.file_list_widget = QWidget()
@@ -276,9 +279,12 @@ class Pane(QWidget):
         self.thumbnail_view.itemDoubleClicked.connect(self.on_thumbnail_item_double_clicked)
         self.file_list_layout.addWidget(self.thumbnail_view)
 
-        self.h_layout.addWidget(self.file_list_widget, 1)  # 文件列表占据剩余空间
+        self.h_container.addWidget(self.file_list_widget)
+        self.h_container.setStretchFactor(0, 0)  # 目录树不随窗口伸缩
+        self.h_container.setStretchFactor(1, 1)  # 文件列表占据剩余空间
+        self.h_container.setSizes([200, 800])
 
-        self.layout.addWidget(self.h_container)
+        self.layout.addWidget(self.h_container, 1)  # 文件列表独占剩余空间
 
         # 进度条
         self.progress_bar = QProgressBar()
@@ -290,6 +296,7 @@ class Pane(QWidget):
         # 状态栏
         self.status_label = QLabel()
         self.status_label.setContentsMargins(5, 2, 5, 2)
+        self.status_label.setFixedHeight(24)  # 固定高度：避免窗格高时被拉伸
         self.layout.addWidget(self.status_label)
 
         # 窗格内标签页栏（默认隐藏）
@@ -610,17 +617,20 @@ class Pane(QWidget):
 
     def set_tree_visible(self, visible: bool):
         """设置内嵌目录树可见性"""
+        if not visible:
+            # 先记录当前树宽度再隐藏（splitter 隐藏后尺寸会变化）
+            sizes = self.h_container.sizes()
+            if sizes and sizes[0] > 20:
+                self._tree_width = sizes[0]
         self.pane_tree_view.setVisible(visible)
         self.path_bar.set_tree_button_checked(visible)
         if visible:
-            self.pane_tree_view.setFixedWidth(200)
-            self.h_layout.setStretch(0, 0)
-            self.h_layout.setStretch(1, 1)
-            # 显示后重新定位并居中当前目录（树刚显示时滚动才生效）
+            # 恢复上次宽度（默认 200），树刚显示时滚动定位才生效
+            total = max(400, self.width())
+            tree_w = self._tree_width or 200
+            tree_w = max(180, min(tree_w, total - 200))
+            self.h_container.setSizes([tree_w, total - tree_w])
             self.pane_tree_view.expand_to_path(self.current_path)
-        else:
-            self.h_layout.setStretch(0, 0)
-            self.h_layout.setStretch(1, 1)
 
     def toggle_tree(self):
         """切换本窗格的目录树"""
