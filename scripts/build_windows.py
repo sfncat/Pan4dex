@@ -91,6 +91,9 @@ cmd = [
     "--hidden-import=PyQt6.QtSvg",
     f"--add-data={imageformats_path};imageformats",
     "--icon=resources/icons/icon.ico",
+    # 内嵌终端依赖：pywinpty 需要 winpty-agent.exe / OpenConsole.exe（PyInstaller
+    # 默认只收集 pyd/dll，两个 exe 必须显式收集，否则终端进程启动失败）
+    "--collect-data=winpty",
     # 排除未使用的 PyQt6 模块，减小体积加快加载
     "--exclude-module=PyQt6.QtNetwork",
     "--exclude-module=PyQt6.QtSql",

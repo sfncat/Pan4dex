@@ -22,7 +22,7 @@ fi
 
 # 构建镜像
 echo "[2/6] 构建 Docker 镜像..."
-sudo docker build -t ${DOCKER_IMAGE} -f packaging/Dockerfile-linux .
+sudo docker build --network=host -t ${DOCKER_IMAGE} -f packaging/Dockerfile-linux .
 
 # 清理旧容器
 sudo docker rm -f ${CONTAINER_NAME} 2>/dev/null || true

@@ -135,6 +135,9 @@ class MainWindow(QMainWindow):
         self.create_tree_sidebar()
         logger.info(f"[启动计时] 目录树侧栏: {(time.perf_counter()-_t0)*1000:.1f}ms")
 
+        # 终端面板延迟创建（见 create_terminal_panel，事件循环后 400ms）
+        self.create_terminal_panel()
+
         # 延迟应用主题和恢复布局（避免阻塞启动）
         from PyQt6.QtCore import QTimer
         QTimer.singleShot(0, self._deferred_init)
@@ -264,7 +267,83 @@ class MainWindow(QMainWindow):
         """预览面板可见性变化"""
         if not visible:
             self.preview_panel.clear_preview()
-    
+
+    # ------------------------------------------------------------------
+    # 内嵌终端面板（延迟创建；位置与可见性持久化到 QSettings）
+    # ------------------------------------------------------------------
+    def create_terminal_panel(self):
+        """创建终端面板（延迟到事件循环后，不阻塞首屏）"""
+        self.terminal_panel = None
+        self._terminal_ready = False
+        from PyQt6.QtCore import QTimer
+        QTimer.singleShot(400, self._create_terminal_panel_lazy)
+
+    def _create_terminal_panel_lazy(self):
+        """延迟创建终端面板"""
+        if getattr(self, '_terminal_ready', False):
+            return
+        from widgets.terminal_panel import TerminalPanel
+        # 用户配置的终端程序（terminal/program，空 = 系统默认 shell）
+        cfg_program = self.settings.value("terminal/program", "") or None
+        self.terminal_panel = TerminalPanel(program=cfg_program, parent=self)
+        pos = str(self.settings.value("terminal/position", "bottom") or "bottom")
+        area = (Qt.DockWidgetArea.BottomDockWidgetArea if pos == "bottom"
+                else Qt.DockWidgetArea.RightDockWidgetArea)
+        self.addDockWidget(area, self.terminal_panel)
+        self.terminal_panel.setVisible(False)
+        self._terminal_ready = True
+        # 用户直接点 dock 的 X 关闭时同步菜单勾选与配置
+        self.terminal_panel.visibilityChanged.connect(self.on_terminal_visibility_changed)
+        # 恢复上次可见状态
+        saved_vis = self.settings.value("terminal/visible", False)
+        if saved_vis in (True, "true", "True", "1"):
+            self.terminal_panel.setVisible(True)
+            if hasattr(self, 'terminal_action'):
+                self.terminal_action.setChecked(True)
+
+    def on_terminal_visibility_changed(self, visible):
+        """终端面板可见性变化（含 dock 关闭按钮）"""
+        if hasattr(self, 'terminal_action'):
+            self.terminal_action.setChecked(visible)
+        self.settings.setValue("terminal/visible", visible)
+
+    def configure_terminal_program(self):
+        """配置终端程序（空 = 系统默认 shell），保存并重启终端会话"""
+        from PyQt6.QtWidgets import QInputDialog
+        current = str(self.settings.value("terminal/program", "") or "")
+        text, ok = QInputDialog.getText(
+            self, "更改终端程序",
+            "输入终端程序命令（留空 = 系统默认终端）：\n"
+            "例：bash、zsh、/bin/fish、\"C:\\Program Files\\Git\\bin\\bash.exe\"",
+            text=current,
+        )
+        if not ok:
+            return
+        program = text.strip()
+        self.settings.setValue("terminal/program", program)
+        if getattr(self, 'terminal_panel', None) is not None:
+            self.terminal_panel.set_program(program or None)
+
+    def toggle_terminal(self):
+        """切换终端面板显示"""
+        if getattr(self, 'terminal_panel', None) is None:
+            self._create_terminal_panel_lazy()
+        vis = not self.terminal_panel.isVisible()
+        self.terminal_panel.setVisible(vis)
+        self.settings.setValue("terminal/visible", vis)
+        self.terminal_action.setChecked(vis)
+
+    def set_terminal_position(self, pos: str):
+        """终端停靠右侧/底部（配置持久化）"""
+        if getattr(self, 'terminal_panel', None) is None:
+            self._create_terminal_panel_lazy()
+        self.settings.setValue("terminal/position", pos)
+        area = (Qt.DockWidgetArea.BottomDockWidgetArea if pos == "bottom"
+                else Qt.DockWidgetArea.RightDockWidgetArea)
+        self.addDockWidget(area, self.terminal_panel)
+        if self.terminal_panel.isVisible():
+            self.terminal_panel.show()
+
     def create_menu_bar(self):
         """创建菜单栏"""
         menubar = self.menuBar()
@@ -381,6 +460,33 @@ class MainWindow(QMainWindow):
         preview_action.triggered.connect(self.toggle_preview)
         view_menu.addAction(preview_action)
         self.preview_action = preview_action
+
+        terminal_action = QAction("终端面板(&M)", self)
+        terminal_action.setShortcut(QKeySequence("F4"))
+        terminal_action.setCheckable(True)
+        terminal_action.triggered.connect(self.toggle_terminal)
+        view_menu.addAction(terminal_action)
+        self.terminal_action = terminal_action
+
+        # 终端停靠位置子菜单（右侧/底部，配置持久化）
+        term_pos_menu = view_menu.addMenu("终端位置(&L)")
+        act_right = QAction("停靠右侧(&R)", self)
+        act_right.setCheckable(True)
+        act_bottom = QAction("停靠底部(&B)", self)
+        act_bottom.setCheckable(True)
+        _saved_pos = str(self.settings.value("terminal/position", "bottom") or "bottom")
+        act_right.setChecked(_saved_pos == "right")
+        act_bottom.setChecked(_saved_pos == "bottom")
+        act_right.triggered.connect(lambda: (act_bottom.setChecked(False), self.set_terminal_position("right")))
+        act_bottom.triggered.connect(lambda: (act_right.setChecked(False), self.set_terminal_position("bottom")))
+        term_pos_menu.addAction(act_right)
+        term_pos_menu.addAction(act_bottom)
+        self.term_pos_actions = (act_right, act_bottom)
+
+        # 配置终端程序（默认系统终端，配置持久化）
+        term_prog_action = QAction("更改终端程序…(&P)", self)
+        term_prog_action.triggered.connect(self.configure_terminal_program)
+        view_menu.addAction(term_prog_action)
 
         tab_bar_action = QAction("标签页栏(&B)", self)
         tab_bar_action.setCheckable(True)
