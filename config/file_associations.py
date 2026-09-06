@@ -188,6 +188,12 @@ class FileAssociations:
             logger.warning("打开失败：文件不存在 %s", file_path)
             return False
         
+        if sys.platform == "win32":
+            # 统一转反斜杠规范化：Qt 返回的 UNC 网络盘路径是正斜杠
+            # （//server/share/...），os.startfile（ShellExecute）对正斜杠
+            # UNC 解析失败报 WinError 2，反斜杠标准 UNC 则可正常打开
+            file_path = os.path.normpath(file_path)
+        
         # 1) 用户配置的文件关联
         assoc = self.get_association(file_path)
         
@@ -256,7 +262,7 @@ class FileAssociations:
         
         try:
             if sys.platform == "win32":
-                os.startfile(file_path)
+                os.startfile(os.path.normpath(file_path))
                 return True
             if sys.platform == "darwin":
                 return self._run_open(["open", file_path])

@@ -259,7 +259,13 @@ class FileOperations:
             try:
                 if safe:
                     import send2trash
-                    send2trash.send2trash(path)
+                    # send2trash 的 Windows 实现会给路径加 \\?\ 长路径前缀，
+                    # 但不会把正斜杠转反斜杠（\\?\C:/x 不被 Win32 识别，报
+                    # Errno 2）。Qt 传入的是正斜杠路径，必须先规范化。
+                    if os.name == 'nt':
+                        send2trash.send2trash(os.path.normpath(path))
+                    else:
+                        send2trash.send2trash(path)
                 else:
                     if os.path.isdir(path):
                         shutil.rmtree(path)

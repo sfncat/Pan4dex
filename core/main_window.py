@@ -1068,6 +1068,18 @@ class MainWindow(QMainWindow):
         except Exception:
             exif_str = ""
 
+        # 使用/携带的 7-Zip 版本（压缩/解压；系统优先，内置兜底）
+        try:
+            from core import archive_ops
+            _v7, _src = archive_ops.version_source()
+            _7z_str = f"<p>7-Zip: {_v7}（{_src}）</p>" if _v7 else ""
+            if _v7 and _src == '系统':
+                _b7 = archive_ops.builtin_version()
+                if _b7:
+                    _7z_str += f"<p>内置 7-Zip: {_b7}</p>"
+        except Exception:
+            _7z_str = ""
+
         QMessageBox.about(
             self,
             "关于 Pan4dex 万格",
@@ -1076,6 +1088,7 @@ class MainWindow(QMainWindow):
             f"<p>{version_str}</p>"
             f"<p>{build_str}</p>"
             f"{exif_str}"
+            f"{_7z_str}"
             f"<p>许可证: MIT</p>"
         )
     

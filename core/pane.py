@@ -8,7 +8,7 @@ from PyQt6.QtGui import QFileSystemModel, QAction, QKeySequence, QCursor
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QTreeView, QProgressBar,
     QLabel, QMenu, QMessageBox, QInputDialog, QLineEdit, QHBoxLayout, QTabWidget,
-    QApplication, QSplitter
+    QApplication, QSplitter, QDialog, QTableWidget, QHeaderView, QPushButton
 )
 from PyQt6.QtCore import Qt, QDir, QMimeData, pyqtSignal, QThread, QPoint, QEvent, QSortFilterProxyModel, QModelIndex, QPersistentModelIndex
 import os
@@ -16,6 +16,7 @@ import os
 from widgets.path_bar import PathBar
 from widgets.pane_tree_view import PaneTreeView
 from core.file_operations import FileOperations, FileOperationType, FileOperationResult
+from core import archive_ops
 
 
 # 共享剪贴板：所有窗格（含四窗格/双窗格）共用一份，
@@ -129,6 +130,7 @@ class Pane(QWidget):
     path_changed = pyqtSignal(str)  # 路径变更信号
     activated = pyqtSignal(object)  # 窗格被激活信号
     shot_dates_ready = pyqtSignal()  # 后台 prefetch 拍摄日期完成（跨线程安全，自动投递主线程）
+    _archive_done = pyqtSignal(bool, str, str)  # 压缩/解压完成(ok, message, note)；跨线程 emit 自动投递主线程
     
     def __init__(self, pane_id: str, parent=None):
         super().__init__(parent)
@@ -212,6 +214,7 @@ class Pane(QWidget):
         self.layout = QVBoxLayout(self)
         self.layout.setContentsMargins(0, 0, 0, 0)
         self.layout.setSpacing(0)
+        self._archive_done.connect(self._on_archive_done)
 
         # 路径栏
         self.path_bar = PathBar()
@@ -241,6 +244,11 @@ class Pane(QWidget):
         self.pane_tree_view = PaneTreeView()
         self.pane_tree_view.folder_clicked.connect(self.on_pane_tree_clicked)
         self.pane_tree_view.setVisible(False)  # 默认隐藏
+        # 目录树右键：与文件列表右键菜单一致
+        self.pane_tree_view.tree_view.setContextMenuPolicy(
+            Qt.ContextMenuPolicy.CustomContextMenu)
+        self.pane_tree_view.tree_view.customContextMenuRequested.connect(
+            self.show_tree_context_menu)
         self.h_container.addWidget(self.pane_tree_view)
 
         # 文件列表容器
@@ -871,9 +879,36 @@ class Pane(QWidget):
         
         if indexes:
             # 有选中项
+            paths = self._paths_from_selection()
+            single_path = paths[0] if len(paths) == 1 else None
+            is_arc = (single_path is not None and os.path.isfile(single_path)
+                      and archive_ops.is_archive(single_path))
+            
             open_action = QAction("打开(&O)", self)
             open_action.triggered.connect(self.open_selected)
             menu.addAction(open_action)
+            
+            # 压缩包操作（仅单选压缩包时）
+            if is_arc:
+                menu.addSeparator()
+                open_arc_action = QAction("打开压缩包(&P)", self)
+                open_arc_action.triggered.connect(lambda: self.open_archive(single_path))
+                menu.addAction(open_arc_action)
+                extract_here_action = QAction("解压到当前目录(&X)", self)
+                extract_here_action.triggered.connect(
+                    lambda: self.extract_to_current(single_path))
+                menu.addAction(extract_here_action)
+                extract_named_action = QAction("解压到文件目录(&E)", self)
+                extract_named_action.triggered.connect(
+                    lambda: self.extract_to_named(single_path))
+                menu.addAction(extract_named_action)
+            
+            menu.addSeparator()
+            
+            # 压缩选中项（目录/多选/单文件）
+            compress_action = QAction("压缩文件目录(&Z)", self)
+            compress_action.triggered.connect(self.compress_selected)
+            menu.addAction(compress_action)
             
             menu.addSeparator()
             
@@ -958,71 +993,317 @@ class Pane(QWidget):
         
         menu.exec(QCursor.pos())
     
+    def show_tree_context_menu(self, position):
+        """目录树右键菜单：与文件列表右键菜单一致"""
+        tree_view = self.pane_tree_view.tree_view
+        index = tree_view.indexAt(position)
+        menu = QMenu()
+        menu.setStyleSheet("""
+            QMenu {
+                background-color: #2D2D2D;
+                color: #CCCCCC;
+                border: 1px solid #404040;
+            }
+            QMenu::item:selected {
+                background-color: #404040;
+            }
+        """)
+        
+        if index.isValid():
+            path = self.pane_tree_view.model.filePath(index)
+            is_arc = os.path.isfile(path) and archive_ops.is_archive(path)
+            
+            open_action = QAction("打开(&O)", self)
+            open_action.triggered.connect(lambda: self._open_path(path))
+            menu.addAction(open_action)
+            
+            # 压缩包操作（右键压缩包时）
+            if is_arc:
+                menu.addSeparator()
+                open_arc_action = QAction("打开压缩包(&P)", self)
+                open_arc_action.triggered.connect(lambda: self.open_archive(path))
+                menu.addAction(open_arc_action)
+                extract_here_action = QAction("解压到当前目录(&X)", self)
+                extract_here_action.triggered.connect(
+                    lambda: self.extract_to_current(path))
+                menu.addAction(extract_here_action)
+                extract_named_action = QAction("解压到文件目录(&E)", self)
+                extract_named_action.triggered.connect(
+                    lambda: self.extract_to_named(path))
+                menu.addAction(extract_named_action)
+            
+            menu.addSeparator()
+            
+            # 压缩该项
+            compress_action = QAction("压缩文件目录(&Z)", self)
+            compress_action.triggered.connect(lambda: self.compress_paths([path]))
+            menu.addAction(compress_action)
+            
+            menu.addSeparator()
+            
+            copy_action = QAction("复制(&C)", self)
+            copy_action.triggered.connect(lambda: self._copy_paths([path]))
+            menu.addAction(copy_action)
+            
+            cut_action = QAction("剪切(&X)", self)
+            cut_action.triggered.connect(lambda: self._cut_paths([path]))
+            menu.addAction(cut_action)
+            
+            if os.path.isdir(path):
+                paste_action = QAction("粘贴(&V)", self)
+                paste_action.triggered.connect(lambda: self._paste_to(path))
+                menu.addAction(paste_action)
+            else:
+                paste_action = QAction("粘贴(&V)", self)
+                paste_action.triggered.connect(self.paste)
+                menu.addAction(paste_action)
+            
+            menu.addSeparator()
+            
+            delete_action = QAction("删除(&D)", self)
+            delete_action.triggered.connect(lambda: self._delete_paths([path]))
+            menu.addAction(delete_action)
+            
+            rename_action = QAction("重命名(&R)", self)
+            rename_action.triggered.connect(lambda: self._rename_path(path))
+            menu.addAction(rename_action)
+            
+            menu.addSeparator()
+            
+            if os.path.isdir(path):
+                add_bookmark_action = QAction("添加到收藏夹(&B)", self)
+                add_bookmark_action.triggered.connect(
+                    lambda: self.add_to_bookmarks(path)
+                )
+                menu.addAction(add_bookmark_action)
+            
+            menu.addSeparator()
+            
+            terminal_action = QAction("打开终端(&T)", self)
+            terminal_action.triggered.connect(self.open_terminal_here)
+            menu.addAction(terminal_action)
+        else:
+            # 空白区域：在当前目录新建/粘贴
+            new_folder_action = QAction("新建文件夹(&F)", self)
+            new_folder_action.triggered.connect(self.new_folder)
+            menu.addAction(new_folder_action)
+            
+            new_file_action = QAction("新建文件(&N)", self)
+            new_file_action.triggered.connect(self.new_file)
+            menu.addAction(new_file_action)
+            
+            menu.addSeparator()
+            
+            paste_action = QAction("粘贴(&V)", self)
+            paste_action.triggered.connect(self.paste)
+            menu.addAction(paste_action)
+            
+            menu.addSeparator()
+            
+            new_tab_action = QAction("新建标签页(&T)", self)
+            new_tab_action.triggered.connect(lambda: self.add_pane_tab())
+            menu.addAction(new_tab_action)
+            
+            menu.addSeparator()
+            
+            terminal_action = QAction("打开终端(&T)", self)
+            terminal_action.triggered.connect(self.open_terminal_here)
+            menu.addAction(terminal_action)
+        
+        menu.exec(QCursor.pos())
+    
+    # ------------------------------------------------------------------
+    # 压缩 / 解压（内置 7-Zip + 系统 7-Zip 优先）
+    # ------------------------------------------------------------------
+    def open_archive(self, archive_path):
+        """打开压缩包：列出内容对话框"""
+        entries = archive_ops.list_entries(archive_path)
+        if entries is None:
+            QMessageBox.warning(self, "打开压缩包",
+                                f"无法读取压缩包内容：\n{archive_path}")
+            return
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"压缩包内容 - {os.path.basename(archive_path)}")
+        dlg.resize(600, 460)
+        lay = QVBoxLayout(dlg)
+        table = QTableWidget(len(entries), 2, dlg)
+        table.setHorizontalHeaderLabels(["名称", "大小"])
+        table.verticalHeader().setVisible(False)
+        table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        for row, (name, size) in enumerate(entries):
+            table.setItem(row, 0, QTableWidgetItem(name))
+            table.setItem(row, 1, QTableWidgetItem(self._fmt_size(size)))
+        table.horizontalHeader().setSectionResizeMode(
+            0, QHeaderView.ResizeMode.Stretch)
+        table.horizontalHeader().setSectionResizeMode(
+            1, QHeaderView.ResizeMode.ResizeToContents)
+        lay.addWidget(table)
+        close_btn = QPushButton("关闭")
+        close_btn.clicked.connect(dlg.accept)
+        lay.addWidget(close_btn, alignment=Qt.AlignmentFlag.AlignRight)
+        dlg.exec()
+    
+    def extract_to_current(self, archive):
+        """解压到窗格当前目录"""
+        self._run_archive_task(
+            "正在解压", lambda: archive_ops.extract(archive, self.current_path))
+    
+    def extract_to_named(self, archive):
+        """解压到压缩包所在目录的同名文件夹（解压到文件目录）"""
+        base = os.path.basename(archive)
+        stem = base
+        for ext in ('.tar.gz', '.tar.bz2', '.tar.xz'):
+            if base.lower().endswith(ext):
+                stem = base[:-len(ext)]
+                break
+        else:
+            stem = os.path.splitext(base)[0]
+        dest = os.path.join(os.path.dirname(archive) or '.', stem)
+        self._run_archive_task(
+            "正在解压", lambda: archive_ops.extract(archive, dest))
+    
+    def compress_selected(self):
+        """压缩选中项（目录/多选/单文件）"""
+        self.compress_paths(self._paths_from_selection())
+    
+    def compress_paths(self, paths):
+        """压缩指定路径列表，弹窗确认压缩包名称"""
+        if not paths:
+            return
+        if len(paths) == 1:
+            p = paths[0].rstrip(os.sep)
+            default_dir = os.path.dirname(p)
+            default_name = os.path.basename(p) + '.7z'
+        else:
+            default_dir = self.current_path
+            default_name = 'archive.7z'
+        name, ok = QInputDialog.getText(
+            self, "压缩文件目录", "压缩包名称:",
+            QLineEdit.EchoMode.Normal, default_name)
+        if not ok or not name.strip():
+            return
+        name = name.strip()
+        if not os.path.splitext(name)[1]:
+            name += '.7z'
+        out = os.path.join(default_dir, name)
+        if os.path.exists(out):
+            QMessageBox.warning(self, "压缩文件目录", f"目标已存在: {out}")
+            return
+        self._run_archive_task(
+            "正在压缩", lambda: archive_ops.compress(out, paths))
+    
+    def _run_archive_task(self, note, fn):
+        """后台线程执行压缩/解压，完成通过信号回主线程"""
+        self.status_label.setText(f"{note}...")
+        
+        def worker():
+            try:
+                ok, msg = fn()
+            except Exception as e:
+                ok, msg = False, str(e)
+            self._archive_done.emit(ok, msg, note)
+        
+        import threading
+        threading.Thread(target=worker, daemon=True).start()
+    
+    def _on_archive_done(self, ok, msg, note):
+        """压缩/解压完成（主线程）：刷新 + 提示"""
+        if ok:
+            self.status_label.setText(f"{note}完成: {msg}")
+            self.navigate_to(self.current_path)
+        else:
+            self.status_label.setText("操作失败")
+            QMessageBox.warning(self, "操作失败", msg)
+    
+    @staticmethod
+    def _fmt_size(size):
+        """字节数格式化为可读字符串"""
+        try:
+            size = int(size)
+        except (TypeError, ValueError):
+            return ''
+        if size < 1024:
+            return f"{size} B"
+        for unit in ('KB', 'MB', 'GB', 'TB'):
+            size /= 1024.0
+            if size < 1024:
+                return f"{size:.1f} {unit}"
+        return f"{size:.1f} PB"
+    
     def open_selected(self):
         """打开选中项"""
         indexes = self.tree_view.selectedIndexes()
         if indexes:
             path = self.model.filePath(self._map_to_source(indexes[0]))
-            import os
-            if os.path.isdir(path):
-                self.navigate_to(path)
-            else:
-                self.open_file(path)
+            self._open_path(path)
+    
+    def _open_path(self, path):
+        """按路径打开：目录→导航，文件→关联应用"""
+        import os
+        if os.path.isdir(path):
+            self.navigate_to(path)
+        else:
+            self.open_file(path)
+    
+    def _paths_from_selection(self) -> list:
+        """从文件列表选中项提取路径列表"""
+        paths = []
+        for index in self.tree_view.selectedIndexes():
+            if index.column() == 0:
+                paths.append(self.model.filePath(self._map_to_source(index)))
+        return paths
     
     def copy_selected(self):
         """复制选中项"""
-        global SHARED_CLIPBOARD_ACTION
-        indexes = self.tree_view.selectedIndexes()
-        if not indexes:
-            return
-        
-        paths = []
-        for index in indexes:
-            if index.column() == 0:
-                paths.append(self.model.filePath(self._map_to_source(index)))
-        
-        if paths:
-            SHARED_CLIPBOARD.clear()
-            SHARED_CLIPBOARD.extend(paths)
-            SHARED_CLIPBOARD_ACTION = 'copy'
-            self.status_label.setText(f"已复制 {len(paths)} 个项目")
+        self._copy_paths(self._paths_from_selection())
     
     def cut_selected(self):
         """剪切选中项"""
+        self._cut_paths(self._paths_from_selection())
+    
+    def _copy_paths(self, paths):
+        """复制指定路径列表到共享剪贴板"""
         global SHARED_CLIPBOARD_ACTION
-        indexes = self.tree_view.selectedIndexes()
-        if not indexes:
+        if not paths:
             return
-        
-        paths = []
-        for index in indexes:
-            if index.column() == 0:
-                paths.append(self.model.filePath(self._map_to_source(index)))
-        
-        if paths:
-            SHARED_CLIPBOARD.clear()
-            SHARED_CLIPBOARD.extend(paths)
-            SHARED_CLIPBOARD_ACTION = 'cut'
-            self.status_label.setText(f"已剪切 {len(paths)} 个项目")
+        SHARED_CLIPBOARD.clear()
+        SHARED_CLIPBOARD.extend(paths)
+        SHARED_CLIPBOARD_ACTION = 'copy'
+        self.status_label.setText(f"已复制 {len(paths)} 个项目")
+    
+    def _cut_paths(self, paths):
+        """剪切指定路径列表到共享剪贴板"""
+        global SHARED_CLIPBOARD_ACTION
+        if not paths:
+            return
+        SHARED_CLIPBOARD.clear()
+        SHARED_CLIPBOARD.extend(paths)
+        SHARED_CLIPBOARD_ACTION = 'cut'
+        self.status_label.setText(f"已剪切 {len(paths)} 个项目")
     
     def paste(self):
-        """粘贴"""
+        """粘贴到当前目录"""
+        self._paste_to(self.current_path)
+    
+    def _paste_to(self, target_dir):
+        """粘贴共享剪贴板内容到指定目录"""
         global SHARED_CLIPBOARD_ACTION
         if not SHARED_CLIPBOARD:
             return
         
         if SHARED_CLIPBOARD_ACTION == 'copy':
             self.file_ops.set_progress_callback(self._on_copy_progress)
-            self.file_ops.copy(SHARED_CLIPBOARD, self.current_path)
+            self.file_ops.copy(SHARED_CLIPBOARD, target_dir)
             self.file_ops.set_progress_callback(None)
         elif SHARED_CLIPBOARD_ACTION == 'cut':
             self.file_ops.set_progress_callback(self._on_copy_progress)
-            self.file_ops.move(SHARED_CLIPBOARD, self.current_path)
+            self.file_ops.move(SHARED_CLIPBOARD, target_dir)
             self.file_ops.set_progress_callback(None)
             SHARED_CLIPBOARD.clear()
             SHARED_CLIPBOARD_ACTION = None
         
-        self.navigate_to(self.current_path)
+        self.navigate_to(target_dir)
         self.hide_progress()
     
     def _on_copy_progress(self, percent: int, filename: str):
@@ -1032,15 +1313,10 @@ class Pane(QWidget):
     
     def delete_selected(self):
         """删除选中项"""
-        indexes = self.tree_view.selectedIndexes()
-        if not indexes:
-            return
-        
-        paths = []
-        for index in indexes:
-            if index.column() == 0:
-                paths.append(self.model.filePath(self._map_to_source(index)))
-        
+        self._delete_paths(self._paths_from_selection())
+    
+    def _delete_paths(self, paths):
+        """删除指定路径列表（带确认，进回收站）"""
         if not paths:
             return
         
@@ -1066,10 +1342,11 @@ class Pane(QWidget):
     def rename_selected(self):
         """重命名选中项"""
         indexes = self.tree_view.selectedIndexes()
-        if not indexes:
-            return
-        
-        path = self.model.filePath(self._map_to_source(indexes[0]))
+        if indexes:
+            self._rename_path(self.model.filePath(self._map_to_source(indexes[0])))
+    
+    def _rename_path(self, path):
+        """重命名指定路径"""
         old_name = os.path.basename(path)
         
         new_name, ok = QInputDialog.getText(

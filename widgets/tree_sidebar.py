@@ -5,10 +5,10 @@ import os
 import logging
 from PyQt6.QtWidgets import (
     QDockWidget, QTreeView, QWidget, QVBoxLayout,
-    QHBoxLayout, QPushButton, QCheckBox, QHeaderView
+    QHBoxLayout, QPushButton, QCheckBox, QHeaderView, QMenu
 )
 from PyQt6.QtCore import Qt, QDir, pyqtSignal, QModelIndex, QTimer
-from PyQt6.QtGui import QFileSystemModel
+from PyQt6.QtGui import QFileSystemModel, QCursor
 
 logger = logging.getLogger("pan4dex.tree_sidebar")
 
@@ -77,6 +77,9 @@ class TreeSidebar(QDockWidget):
         self.tree_view.setSortingEnabled(True)
         self.tree_view.setItemsExpandable(True)
         self.tree_view.doubleClicked.connect(self.on_item_clicked)
+        # 右键菜单与活动窗格文件列表一致
+        self.tree_view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.tree_view.customContextMenuRequested.connect(self._show_context_menu)
         self.layout.addWidget(self.tree_view)
         
         self.setWidget(self.main_widget)
@@ -110,6 +113,64 @@ class TreeSidebar(QDockWidget):
         path = self.model.filePath(index)
         if os.path.isdir(path):
             self.folder_clicked.emit(path)
+    
+    def _show_context_menu(self, position):
+        """目录树右键菜单：转发到活动窗格，与窗格文件列表一致"""
+        mw = self._main_window_ref
+        pane = getattr(mw, '_active_pane', None) if mw else None
+        if pane is None:
+            return
+        
+        menu = QMenu()
+        menu.setStyleSheet("""
+            QMenu {
+                background-color: #2D2D2D;
+                color: #CCCCCC;
+                border: 1px solid #404040;
+            }
+            QMenu::item:selected {
+                background-color: #404040;
+            }
+        """)
+        
+        index = self.tree_view.indexAt(position)
+        if index.isValid():
+            path = self.model.filePath(index)
+            from core import archive_ops
+            is_arc = os.path.isfile(path) and archive_ops.is_archive(path)
+            menu.addAction("打开(&O)", lambda: pane._open_path(path))
+            if is_arc:
+                menu.addSeparator()
+                menu.addAction("打开压缩包(&P)", lambda: pane.open_archive(path))
+                menu.addAction("解压到当前目录(&X)", lambda: pane.extract_to_current(path))
+                menu.addAction("解压到文件目录(&E)", lambda: pane.extract_to_named(path))
+            menu.addSeparator()
+            menu.addAction("压缩文件目录(&Z)", lambda: pane.compress_paths([path]))
+            menu.addSeparator()
+            menu.addAction("复制(&C)", lambda: pane._copy_paths([path]))
+            menu.addAction("剪切(&X)", lambda: pane._cut_paths([path]))
+            if os.path.isdir(path):
+                menu.addAction("粘贴(&V)", lambda: pane._paste_to(path))
+            else:
+                menu.addAction("粘贴(&V)", pane.paste)
+            menu.addSeparator()
+            menu.addAction("删除(&D)", lambda: pane._delete_paths([path]))
+            menu.addAction("重命名(&R)", lambda: pane._rename_path(path))
+            menu.addSeparator()
+            if os.path.isdir(path):
+                menu.addAction("添加到收藏夹(&B)", lambda: pane.add_to_bookmarks(path))
+            menu.addSeparator()
+            menu.addAction("打开终端(&T)", pane.open_terminal_here)
+        else:
+            # 空白区域：在当前目录新建/粘贴
+            menu.addAction("新建文件夹(&F)", pane.new_folder)
+            menu.addAction("新建文件(&N)", pane.new_file)
+            menu.addSeparator()
+            menu.addAction("粘贴(&V)", pane.paste)
+            menu.addSeparator()
+            menu.addAction("打开终端(&T)", pane.open_terminal_here)
+        
+        menu.exec(QCursor.pos())
     
     def on_follow_clicked(self):
         mw = self._main_window_ref

@@ -67,12 +67,31 @@ except Exception as e:
 tools_dir = project_root / "resources" / "tools"
 linux_tool_src = tools_dir / "exiftool-linux"
 linux_tool_bak = project_root / "build" / "exiftool-linux-build-bak"
-if linux_tool_src.exists():
+# Linux 版 7zz 也不进 Windows 包（Windows 只用 7za.exe）
+linux_7z_src = tools_dir / "7z" / "7zz"
+linux_7z_bak = project_root / "build" / "7zz-build-bak"
+
+
+def _exclude_linux_binaries():
+    """Windows 构建前临时移出 Linux 专用二进制，构建后还原。"""
     import shutil as _sh
-    if linux_tool_bak.exists():
-        _sh.rmtree(linux_tool_bak)
-    _sh.move(str(linux_tool_src), str(linux_tool_bak))
-    print("Excluded exiftool-linux from Windows build (temporarily moved)")
+    for src, bak in ((linux_tool_src, linux_tool_bak), (linux_7z_src, linux_7z_bak)):
+        if src.exists():
+            if bak.exists():
+                _sh.rmtree(bak)
+            _sh.move(str(src), str(bak))
+            print(f"Excluded {src.name} from Windows build (temporarily moved)")
+
+
+def _restore_linux_binaries():
+    import shutil as _sh
+    for src, bak in ((linux_tool_src, linux_tool_bak), (linux_7z_src, linux_7z_bak)):
+        if bak.exists():
+            _sh.move(str(bak), str(src))
+            print(f"Restored {src.name}")
+
+
+_exclude_linux_binaries()
 
 # Build with PyInstaller (onedir mode — faster startup, no extraction overhead)
 # --windowed：GUI 应用不显示控制台黑窗（原 --console 会让每次启动都带终端窗口）；
@@ -129,11 +148,8 @@ if result.returncode != 0:
     print("Build failed!")
     sys.exit(1)
 
-# 还原构建前临时移出的 exiftool-linux（构建完成后，避免被打进 Windows 包）
-if linux_tool_bak.exists():
-    import shutil as _sh2
-    _sh2.move(str(linux_tool_bak), str(linux_tool_src))
-    print("Restored exiftool-linux")
+# 还原构建前临时移出的 Linux 二进制（构建完成后，避免被打进 Windows 包）
+_restore_linux_binaries()
 
 # Copy to releases (onedir mode: copy entire folder + create zip)
 releases_dir = project_root / "releases"

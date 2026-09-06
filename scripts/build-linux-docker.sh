@@ -49,11 +49,13 @@ sudo docker run --name ${CONTAINER_NAME} \
         # 否则运行时图标缺失、任务栏显示默认图标。
         # 同时打包 resources/tools/exiftool-linux（应用内携带的 ExifTool Perl 包，
         # 用系统 perl 运行，避免目标系统未装 exiftool 时拍摄日期列不可用）。
+        # resources/tools/7z（内置 7zz，压缩/解压兜底）。
         # 注意：不打包 resources/tools/exiftool（Windows 专用 exe + Perl 运行时）。
         pyinstaller --onefile --windowed --name=pan4dex \
             --add-data resources/icons:resources/icons \
             --add-data resources/themes:resources/themes \
             --add-data resources/tools/exiftool-linux:resources/tools/exiftool-linux \
+            --add-data resources/tools/7z:resources/tools/7z \
             main.py
         
         # 移动到 releases

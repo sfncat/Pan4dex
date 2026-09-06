@@ -45,6 +45,7 @@ class TestStartupRegression:
         
         widget = QuadPaneWidget()
         qtbot.addWidget(widget)
+        widget._ensure_all_panes()
         
         # 验证每个窗格的必要属性都存在
         for pane in [widget.pane1, widget.pane2, widget.pane3, widget.pane4]:
@@ -65,6 +66,7 @@ class TestStartupRegression:
         
         widget = QuadPaneWidget()
         qtbot.addWidget(widget)
+        widget._ensure_all_panes()
         
         # 模拟各种事件不会崩溃
         for pane in [widget.pane1, widget.pane2, widget.pane3, widget.pane4]:
@@ -99,6 +101,7 @@ class TestPaneTabsRegression:
         
         widget = QuadPaneWidget()
         qtbot.addWidget(widget)
+        widget._ensure_all_panes()
         
         for pane in [widget.pane1, widget.pane2, widget.pane3, widget.pane4]:
             # 切换标签页不崩溃
