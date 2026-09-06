@@ -12,6 +12,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, QDir, QMimeData, pyqtSignal, QThread, QPoint, QEvent, QSortFilterProxyModel, QModelIndex, QPersistentModelIndex
 import os
+import sys
 
 from widgets.path_bar import PathBar
 from widgets.pane_tree_view import PaneTreeView
@@ -263,6 +264,10 @@ class Pane(QWidget):
 
         # 文件列表
         self.tree_view = QTreeView()
+        # 拖拽（setDragDropMode 会隐式改成 SingleSelection）之后必须显式
+        # 恢复多选：支持 Shift/Ctrl 连续多选
+        from PyQt6.QtWidgets import QAbstractItemView
+        self.tree_view.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.tree_view.setRootIsDecorated(False)
         self.tree_view.setAlternatingRowColors(False)
         self.tree_view.setSortingEnabled(True)
@@ -1321,6 +1326,32 @@ class Pane(QWidget):
                     p = u.toLocalFile()
                     if p and os.path.exists(p):
                         paths.append(p)
+        # Windows 真实资源管理器复制：Qt 可能只暴露 CF_HDROP 的封装格式
+        # （application/x-qt-windows-mime;value="FileNameW"），hasUrls 为 False。
+        # 数据为 UTF-16LE、以 \0 分隔的完整路径列表。
+        if not paths and sys.platform == "win32":
+            raw = mime.data('application/x-qt-windows-mime;value="FileNameW"')
+            if raw:
+                try:
+                    text = bytes(raw).decode("utf-16-le", errors="replace")
+                    for p in text.split("\x00"):
+                        p = p.strip()
+                        if p and os.path.exists(p):
+                            paths.append(p)
+                except Exception:
+                    pass
+            # 兜底：单字节版 FileName（ANSI 路径）
+            if not paths:
+                raw_a = mime.data('application/x-qt-windows-mime;value="FileName"')
+                if raw_a:
+                    try:
+                        text = bytes(raw_a).decode("mbcs", errors="replace")
+                        for p in text.split("\x00"):
+                            p = p.strip()
+                            if p and os.path.exists(p):
+                                paths.append(p)
+                    except Exception:
+                        pass
         return paths
 
     def _paste_to(self, target_dir):
