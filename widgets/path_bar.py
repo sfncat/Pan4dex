@@ -2,12 +2,13 @@
 Pan4dex 万格 — 路径栏组件
 """
 import logging
-from PyQt6.QtGui import QFileSystemModel, QAction, QIcon, QPixmap, QPainter, QColor, QFont, QPen
+import sys
+from PyQt6.QtGui import QFileSystemModel, QAction, QIcon, QPixmap, QPainter, QColor, QFont, QPen, QPolygonF
 from PyQt6.QtWidgets import (
     QComboBox, QCompleter, QWidget,
     QHBoxLayout, QPushButton, QToolButton, QStyle
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QDir, QSize, QRectF
+from PyQt6.QtCore import Qt, pyqtSignal, QDir, QSize, QRectF, QPointF
 
 logger = logging.getLogger("pan4dex.path_bar")
 
@@ -36,6 +37,40 @@ def _make_terminal_icon(size: int = 20) -> QIcon:
     f.setPixelSize(max(10, int(size * 0.58)))
     p.setFont(f)
     p.drawText(rect, Qt.AlignmentFlag.AlignCenter, ">_")
+    p.end()
+    return QIcon(px)
+
+
+def _make_up_icon(size: int = 20) -> QIcon:
+    """绘制浅色「上级目录」箭头图标。
+
+    Windows 深色主题下 SP_ArrowUp / SP_FileDialogToParent 渲染出的都是
+    黑色箭头（深色按钮上近乎黑块，观感差），自绘浅灰圆角箭头替代。
+    size 为逻辑像素，按 2x 渲染保证高分屏清晰。
+    """
+    dpr = 2
+    px = QPixmap(size * dpr, size * dpr)
+    px.setDevicePixelRatio(dpr)
+    px.fill(Qt.GlobalColor.transparent)
+
+    p = QPainter(px)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    color = QColor(210, 216, 226)  # 浅灰，深色主题下清晰可见
+    cx = size / 2.0
+    # 竖线
+    pen = QPen(color, 1.6)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    p.setPen(pen)
+    p.drawLine(QPointF(cx, size * 0.80), QPointF(cx, size * 0.44))
+    # 箭头头部（实心三角）
+    tri = QPolygonF([
+        QPointF(cx - size * 0.30, size * 0.44),
+        QPointF(cx + size * 0.30, size * 0.44),
+        QPointF(cx, size * 0.16),
+    ])
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(color)
+    p.drawPolygon(tri)
     p.end()
     return QIcon(px)
 
@@ -81,7 +116,12 @@ class PathBar(QWidget):
 
         # 上级目录按钮
         self.up_btn = QToolButton()
-        self.up_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowUp))
+        if sys.platform == "win32":
+            # Windows 深色主题下 SP_ArrowUp/SP_FileDialogToParent 均为黑色
+            # 箭头（按钮上近乎黑块），自绘浅色箭头图标
+            self.up_btn.setIcon(_make_up_icon(20))
+        else:
+            self.up_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowUp))
         self.up_btn.setIconSize(QSize(20, 20))
         self.up_btn.setToolTip("上级目录")
         self.up_btn.setFixedSize(28, 28)

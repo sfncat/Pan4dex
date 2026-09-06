@@ -619,29 +619,36 @@ class MainWindow(QMainWindow):
         self._launcher_layout = lay
         self._launcher_apps = apps
         for app in apps:
-            name = str(app.get("name", "")).strip()
-            cmd = str(app.get("command", "")).strip()
-            if not cmd:
+            try:
+                name = str(app.get("name", "")).strip()
+                cmd = str(app.get("command", "")).strip()
+                if not cmd:
+                    continue
+                btn = QToolButton()
+                btn.setText(name[:2] if name else "…")
+                btn.setToolTip(f"{name}\n{cmd}" if name else cmd)
+                btn.setFixedSize(30, 24)
+                btn.setAutoRaise(True)
+                btn.clicked.connect(lambda checked=False, c=cmd: self._launch_app(c))
+                lay.addWidget(btn)
+            except Exception as e:
+                logger.error(f"创建启动器按钮失败: {e}")
                 continue
-            btn = QToolButton()
-            btn.setText(name[:2] if name else "…")
-            btn.setToolTip(f"{name}\n{cmd}" if name else cmd)
-            btn.setFixedSize(30, 24)
-            btn.setAutoRaise(True)
-            btn.clicked.connect(lambda checked=False, c=cmd: self._launch_app(c))
-            lay.addWidget(btn)
         lay.addStretch()
         self.menuBar().setCornerWidget(container, Qt.Corner.TopRightCorner)
 
     def refresh_launcher_buttons(self):
-        """设置变更后重建启动器按钮（复用现有菜单栏 corner widget）"""
+        """设置变更后重建启动器按钮（先移除旧 corner widget，再重建）"""
         try:
             old = self.menuBar().cornerWidget(Qt.Corner.TopRightCorner)
+            # 不能对旧 widget 用 deleteLater：QMenuBar.setCornerWidget 内部会
+            # 直接删除旧 corner widget，deleteLater 排队对象随之悬空，在部分
+            # 环境（打包版/事件循环时序）会导致刷新后启动器按钮全部丢失。
             if old is not None:
-                old.deleteLater()
+                self.menuBar().setCornerWidget(None, Qt.Corner.TopRightCorner)
             self.create_launcher_bar()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error(f"刷新启动器按钮失败: {e}", exc_info=True)
 
     def _launch_app(self, command: str):
         """启动外部应用（命令名或路径）"""
