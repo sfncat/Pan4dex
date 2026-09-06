@@ -198,12 +198,20 @@ class MainWindow(QMainWindow):
     
     def _apply_layout(self, layout: dict):
         """应用布局配置"""
-        panes_layout = layout.get('panes', {})
-        if not panes_layout:
-            return
-        
         current_widget = self.tab_widget.currentWidget()
         if not isinstance(current_widget, QuadPaneWidget):
+            return
+        
+        # 先恢复布局模式（决定哪些窗格可见），再恢复各窗格状态
+        mode = layout.get('mode', 'quad')
+        try:
+            current_widget.set_layout_mode(mode)
+        except Exception:
+            current_widget.switch_to_quad()
+        
+        panes_layout = layout.get('panes', {})
+        if not panes_layout:
+            self.status_bar.showMessage("已恢复上次布局")
             return
         
         for pane_name, state in panes_layout.items():
@@ -436,6 +444,21 @@ class MainWindow(QMainWindow):
         dual_mode_action.setShortcut(QKeySequence("Ctrl+2"))
         dual_mode_action.triggered.connect(self.switch_to_dual)
         view_menu.addAction(dual_mode_action)
+
+        dual_h_mode_action = QAction("双窗格横向(&H)", self)
+        dual_h_mode_action.setShortcut(QKeySequence("Ctrl+Shift+2"))
+        dual_h_mode_action.triggered.connect(self.switch_to_dual_horizontal)
+        view_menu.addAction(dual_h_mode_action)
+
+        mode_2_1_action = QAction("上2下1(&5)", self)
+        mode_2_1_action.setShortcut(QKeySequence("Ctrl+5"))
+        mode_2_1_action.triggered.connect(self.switch_to_2_1)
+        view_menu.addAction(mode_2_1_action)
+
+        mode_1_2_action = QAction("上1下2(&6)", self)
+        mode_1_2_action.setShortcut(QKeySequence("Ctrl+6"))
+        mode_1_2_action.triggered.connect(self.switch_to_1_2)
+        view_menu.addAction(mode_1_2_action)
         
         view_menu.addSeparator()
         
@@ -934,10 +957,28 @@ class MainWindow(QMainWindow):
             current_widget.switch_to_quad()
     
     def switch_to_dual(self):
-        """切换到双窗格模式"""
+        """切换到双窗格模式（上下两个）"""
         current_widget = self.tab_widget.currentWidget()
         if current_widget:
             current_widget.switch_to_dual()
+
+    def switch_to_dual_horizontal(self):
+        """切换到双窗格横向模式（左右两个）"""
+        current_widget = self.tab_widget.currentWidget()
+        if current_widget:
+            current_widget.switch_to_dual_horizontal()
+
+    def switch_to_2_1(self):
+        """切换到上2下1模式"""
+        current_widget = self.tab_widget.currentWidget()
+        if current_widget:
+            current_widget.switch_to_2_1()
+
+    def switch_to_1_2(self):
+        """切换到上1下2模式"""
+        current_widget = self.tab_widget.currentWidget()
+        if current_widget:
+            current_widget.switch_to_1_2()
     
     def save_layout(self):
         """保存当前布局到配置文件"""
@@ -955,6 +996,7 @@ class MainWindow(QMainWindow):
         
         layout = {
             'version': '1.0',
+            'mode': current_widget.get_layout_mode(),
             'panes': {}
         }
         
@@ -1120,6 +1162,7 @@ class MainWindow(QMainWindow):
         
         layout = {
             'version': '1.0',
+            'mode': current_widget.get_layout_mode(),
             'panes': {}
         }
         
@@ -1147,6 +1190,7 @@ class QuadPaneWidget(QWidget):
         self.layout = QVBoxLayout(self)
         self.layout.setContentsMargins(0, 0, 0, 0)
         self.layout.setSpacing(0)
+        self.layout_mode = "quad"  # 当前布局模式：quad/dual/dual_h/2_1/1_2
         
         # 创建四窗格
         self.create_quad_panes()
@@ -1238,17 +1282,72 @@ class QuadPaneWidget(QWidget):
         return self.pane1
     
     def switch_to_quad(self):
-        """切换到四窗格模式"""
+        """四窗格模式（2×2）"""
         self._ensure_all_panes()
         self.pane1.show()
         self.pane2.show()
         self.pane3.show()
         self.pane4.show()
+        self.top_splitter.show()
+        self.bottom_splitter.show()
+        self.layout_mode = "quad"
     
     def switch_to_dual(self):
-        """切换到双窗格模式"""
+        """双窗格竖向模式（上、下两个全宽）"""
         self._ensure_all_panes()
         self.pane1.show()
         self.pane3.show()
         self.pane2.hide()
         self.pane4.hide()
+        self.top_splitter.show()
+        self.bottom_splitter.show()
+        self.layout_mode = "dual"
+
+    def switch_to_dual_horizontal(self):
+        """双窗格横向模式（左、右两个全高）"""
+        self._ensure_all_panes()
+        self.pane1.show()
+        self.pane2.show()
+        self.pane3.hide()
+        self.pane4.hide()
+        self.top_splitter.show()
+        self.bottom_splitter.hide()  # 只保留上排，下排隐藏后上排占满全高
+        self.layout_mode = "dual_h"
+
+    def switch_to_2_1(self):
+        """上2下1模式（上排两个并排，下排一个全宽）"""
+        self._ensure_all_panes()
+        self.pane1.show()
+        self.pane2.show()
+        self.pane3.show()
+        self.pane4.hide()
+        self.top_splitter.show()
+        self.bottom_splitter.show()
+        self.layout_mode = "2_1"
+
+    def switch_to_1_2(self):
+        """上1下2模式（上排一个全宽，下排两个并排）"""
+        self._ensure_all_panes()
+        self.pane1.show()
+        self.pane3.show()
+        self.pane4.show()
+        self.pane2.hide()
+        self.top_splitter.show()
+        self.bottom_splitter.show()
+        self.layout_mode = "1_2"
+
+    def get_layout_mode(self):
+        """当前布局模式"""
+        return getattr(self, 'layout_mode', 'quad')
+
+    def set_layout_mode(self, mode: str):
+        """按名称切换布局模式（布局保存/恢复用）"""
+        fn = {
+            'quad': self.switch_to_quad,
+            'dual': self.switch_to_dual,
+            'dual_h': self.switch_to_dual_horizontal,
+            '2_1': self.switch_to_2_1,
+            '1_2': self.switch_to_1_2,
+        }.get(mode)
+        if fn:
+            fn()
