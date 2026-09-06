@@ -132,11 +132,15 @@ class Pane(QWidget):
     shot_dates_ready = pyqtSignal()  # 后台 prefetch 拍摄日期完成（跨线程安全，自动投递主线程）
     _archive_done = pyqtSignal(bool, str, str)  # 压缩/解压完成(ok, message, note)；跨线程 emit 自动投递主线程
     
-    def __init__(self, pane_id: str, parent=None):
+    def __init__(self, pane_id: str, parent=None, start_path: str = None):
         super().__init__(parent)
         
         self.pane_id = pane_id
-        self.current_path = QDir.homePath()
+        # 默认打开目录：设置了有效目录用之，否则用户目录
+        if start_path and os.path.isdir(start_path):
+            self.current_path = start_path
+        else:
+            self.current_path = QDir.homePath()
         self.file_ops = FileOperations()
         # 剪贴板指向模块级共享对象（跨窗格复制/剪切/粘贴）
         self.clipboard = SHARED_CLIPBOARD
@@ -555,9 +559,10 @@ class Pane(QWidget):
             if self.pane_tree_view.isVisible():
                 self.pane_tree_view.expand_to_path(path)
 
-            # 更新当前标签页的名称和路径
+            # 更新当前标签页的名称和路径（标签栏隐藏时也更新，
+            # 否则隐藏期间导航后标签名与实际目录脱节）
             current_idx = self.pane_tabs.currentIndex()
-            if self.pane_tabs.isVisible() and 0 <= current_idx < len(self._pane_tab_paths):
+            if 0 <= current_idx < len(self._pane_tab_paths):
                 self._pane_tab_paths[current_idx] = path
                 self.pane_tabs.setTabText(current_idx, os.path.basename(path) if os.path.basename(path) else path)
 
@@ -612,7 +617,7 @@ class Pane(QWidget):
                 self.pane_tree_view.expand_to_path(path)
 
             current_idx = self.pane_tabs.currentIndex()
-            if self.pane_tabs.isVisible() and 0 <= current_idx < len(self._pane_tab_paths):
+            if 0 <= current_idx < len(self._pane_tab_paths):
                 self._pane_tab_paths[current_idx] = path
                 self.pane_tabs.setTabText(current_idx, os.path.basename(path) if os.path.basename(path) else path)
 
@@ -959,6 +964,10 @@ class Pane(QWidget):
             
             menu.addSeparator()
             
+            internal_terminal_action = QAction("在内置终端中打开(&I)", self)
+            internal_terminal_action.triggered.connect(self.open_internal_terminal_here)
+            menu.addAction(internal_terminal_action)
+            
             terminal_action = QAction("打开终端(&T)", self)
             terminal_action.triggered.connect(self.open_terminal_here)
             menu.addAction(terminal_action)
@@ -1079,6 +1088,10 @@ class Pane(QWidget):
             
             menu.addSeparator()
             
+            internal_terminal_action = QAction("在内置终端中打开(&I)", self)
+            internal_terminal_action.triggered.connect(self.open_internal_terminal_here)
+            menu.addAction(internal_terminal_action)
+            
             terminal_action = QAction("打开终端(&T)", self)
             terminal_action.triggered.connect(self.open_terminal_here)
             menu.addAction(terminal_action)
@@ -1105,6 +1118,10 @@ class Pane(QWidget):
             menu.addAction(new_tab_action)
             
             menu.addSeparator()
+            
+            internal_terminal_action = QAction("在内置终端中打开(&I)", self)
+            internal_terminal_action.triggered.connect(self.open_internal_terminal_here)
+            menu.addAction(internal_terminal_action)
             
             terminal_action = QAction("打开终端(&T)", self)
             terminal_action.triggered.connect(self.open_terminal_here)
@@ -1283,28 +1300,57 @@ class Pane(QWidget):
         self.status_label.setText(f"已剪切 {len(paths)} 个项目")
     
     def paste(self):
-        """粘贴到当前目录"""
+        """粘贴到当前目录（应用内剪贴板优先，其次系统剪贴板）"""
         self._paste_to(self.current_path)
-    
+
+    def _system_clipboard_paths(self) -> list:
+        """读取系统剪贴板中的文件路径（从系统文件管理器复制/剪切的文件）。
+
+        系统复制进 Pan4dex 时应用内剪贴板为空，文件在系统剪贴板
+        （Windows CF_HDROP / Linux text/uri-list，QClipboard 统一为 URLs）。
+        只收集存在的本地文件，忽略网页链接等非本地 URL。
+        """
+        from PyQt6.QtWidgets import QApplication
+        mime = QApplication.clipboard().mimeData()
+        if mime is None:
+            return []
+        paths = []
+        if mime.hasUrls():
+            for u in mime.urls():
+                if u.isLocalFile():
+                    p = u.toLocalFile()
+                    if p and os.path.exists(p):
+                        paths.append(p)
+        return paths
+
     def _paste_to(self, target_dir):
-        """粘贴共享剪贴板内容到指定目录"""
+        """粘贴到指定目录：应用内剪贴板优先，其次系统剪贴板"""
         global SHARED_CLIPBOARD_ACTION
-        if not SHARED_CLIPBOARD:
+        
+        if SHARED_CLIPBOARD:
+            if SHARED_CLIPBOARD_ACTION == 'copy':
+                self.file_ops.set_progress_callback(self._on_copy_progress)
+                self.file_ops.copy(SHARED_CLIPBOARD, target_dir)
+                self.file_ops.set_progress_callback(None)
+            elif SHARED_CLIPBOARD_ACTION == 'cut':
+                self.file_ops.set_progress_callback(self._on_copy_progress)
+                self.file_ops.move(SHARED_CLIPBOARD, target_dir)
+                self.file_ops.set_progress_callback(None)
+                SHARED_CLIPBOARD.clear()
+                SHARED_CLIPBOARD_ACTION = None
+            self.navigate_to(target_dir)
+            self.hide_progress()
             return
         
-        if SHARED_CLIPBOARD_ACTION == 'copy':
+        # 应用内剪贴板为空：尝试系统剪贴板（从系统文件管理器复制进来）
+        system_paths = self._system_clipboard_paths()
+        if system_paths:
             self.file_ops.set_progress_callback(self._on_copy_progress)
-            self.file_ops.copy(SHARED_CLIPBOARD, target_dir)
+            self.file_ops.copy(system_paths, target_dir)
             self.file_ops.set_progress_callback(None)
-        elif SHARED_CLIPBOARD_ACTION == 'cut':
-            self.file_ops.set_progress_callback(self._on_copy_progress)
-            self.file_ops.move(SHARED_CLIPBOARD, target_dir)
-            self.file_ops.set_progress_callback(None)
-            SHARED_CLIPBOARD.clear()
-            SHARED_CLIPBOARD_ACTION = None
-        
-        self.navigate_to(target_dir)
-        self.hide_progress()
+            self.navigate_to(target_dir)
+            self.hide_progress()
+            self.status_label.setText(f"已从系统剪贴板粘贴 {len(system_paths)} 个项目")
     
     def _on_copy_progress(self, percent: int, filename: str):
         """复制进度回调"""
@@ -1525,22 +1571,45 @@ class Pane(QWidget):
                         break
             
             if terminal:
-                if terminal in ["gnome-terminal", "mate-terminal", "tilix"]:
-                    subprocess.Popen([terminal, f"--working-directory={self.current_path}"])
-                elif terminal == "konsole":
-                    subprocess.Popen([terminal, "--workdir", self.current_path])
-                elif terminal == "xfce4-terminal":
-                    subprocess.Popen([terminal, f"--working-directory={self.current_path}"])
-                elif terminal == "terminator":
-                    subprocess.Popen([terminal, f"--working-directory={self.current_path}"])
-                elif terminal == "alacritty":
-                    subprocess.Popen([terminal, "--working-directory", self.current_path])
-                elif terminal == "kitty":
-                    subprocess.Popen([terminal, "--directory", self.current_path])
-                else:
-                    subprocess.Popen([terminal], cwd=self.current_path)
+                # PyInstaller 打包版会注入 LD_LIBRARY_PATH（指向打包目录），
+                # 系统终端（gnome-terminal/xterm 等）继承后加载打包目录里的
+                # 旧 glib/gtk 库会崩溃/无反应，必须剔除
+                from config.file_associations import _clean_child_env
+                env = _clean_child_env()
+                try:
+                    if terminal in ["gnome-terminal", "mate-terminal", "tilix"]:
+                        subprocess.Popen([terminal, f"--working-directory={self.current_path}"],
+                                         env=env, start_new_session=True)
+                    elif terminal == "konsole":
+                        subprocess.Popen([terminal, "--workdir", self.current_path],
+                                         env=env, start_new_session=True)
+                    elif terminal == "xfce4-terminal":
+                        subprocess.Popen([terminal, f"--working-directory={self.current_path}"],
+                                         env=env, start_new_session=True)
+                    elif terminal == "terminator":
+                        subprocess.Popen([terminal, f"--working-directory={self.current_path}"],
+                                         env=env, start_new_session=True)
+                    elif terminal == "alacritty":
+                        subprocess.Popen([terminal, "--working-directory", self.current_path],
+                                         env=env, start_new_session=True)
+                    elif terminal == "kitty":
+                        subprocess.Popen([terminal, "--directory", self.current_path],
+                                         env=env, start_new_session=True)
+                    else:
+                        subprocess.Popen([terminal], cwd=self.current_path,
+                                         env=env, start_new_session=True)
+                except Exception as e:
+                    QMessageBox.warning(self, "错误", f"启动终端失败: {e}")
             else:
                 QMessageBox.warning(self, "错误", "未找到可用的终端")
+    
+    def open_internal_terminal_here(self):
+        """在内置终端面板中打开当前目录"""
+        mw = self.window()
+        if mw is not None and hasattr(mw, 'open_terminal_at'):
+            mw.open_terminal_at(self.current_path)
+        else:
+            QMessageBox.warning(self, "错误", "内置终端不可用")
     
     def dragEnterEvent(self, event):
         """拖拽进入"""

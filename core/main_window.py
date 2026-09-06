@@ -9,6 +9,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, QSettings, QSize, QPoint, pyqtSignal
 from PyQt6.QtGui import QAction, QKeySequence, QCursor
+import os
 
 logger = logging.getLogger("pan4dex.window")
 
@@ -340,6 +341,22 @@ class MainWindow(QMainWindow):
         self.terminal_panel.setVisible(vis)
         self.settings.setValue("terminal/visible", vis)
         self.terminal_action.setChecked(vis)
+
+    def open_terminal_at(self, path):
+        """在内置终端中打开指定目录（显示面板并以该目录启动 shell）"""
+        if getattr(self, 'terminal_panel', None) is None:
+            self._create_terminal_panel_lazy()
+        panel = self.terminal_panel
+        # 恢复停靠位置（右侧/底部，按配置）
+        pos = str(self.settings.value("terminal/position", "bottom") or "bottom")
+        area = (Qt.DockWidgetArea.BottomDockWidgetArea if pos == "bottom"
+                else Qt.DockWidgetArea.RightDockWidgetArea)
+        self.addDockWidget(area, panel)
+        panel.setVisible(True)
+        if hasattr(self, 'terminal_action'):
+            self.terminal_action.setChecked(True)
+        self.settings.setValue("terminal/visible", True)
+        panel.open_in(path)
 
     def set_terminal_position(self, pos: str):
         """终端停靠右侧/底部（配置持久化）"""
@@ -706,9 +723,16 @@ class MainWindow(QMainWindow):
             btn.clicked.connect(handler)
             self.status_bar.addPermanentWidget(btn)
     
+    def _default_start_dir(self) -> str:
+        """读取设置中的默认打开目录（未设置/无效返回空串，调用方回退用户目录）"""
+        d = str(self.settings.value("default_dir", "") or "")
+        if d and os.path.isdir(d):
+            return d
+        return ""
+
     def new_tab(self):
         """新建标签页"""
-        quad_widget = QuadPaneWidget(self)
+        quad_widget = QuadPaneWidget(self, start_dir=self._default_start_dir())
         # 连接活动窗格信号
         quad_widget.pane_activated.connect(self.on_pane_activated)
         index = self.tab_widget.addTab(quad_widget, "新标签页")
@@ -1105,6 +1129,7 @@ class MainWindow(QMainWindow):
             self.settings.setValue("theme", settings.get('theme', DEFAULT_THEME))
             self.settings.setValue("font_family", settings.get('font_family'))
             self.settings.setValue("font_size", settings.get('font_size', 9))
+            self.settings.setValue("default_dir", settings.get('default_dir', ''))
             self.settings.setValue("toolbar_buttons", settings.get('toolbar_buttons', {}))
             self.settings.setValue("launcher/apps", json.dumps(settings.get('launcher_apps', [])))
 
@@ -1197,13 +1222,14 @@ class QuadPaneWidget(QWidget):
     # 信号：窗格被激活
     pane_activated = pyqtSignal(object)
     
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, start_dir: str = None):
         super().__init__(parent)
         
         self.layout = QVBoxLayout(self)
         self.layout.setContentsMargins(0, 0, 0, 0)
         self.layout.setSpacing(0)
         self.layout_mode = "quad"  # 当前布局模式：quad/dual/dual_h/2_1/1_2
+        self.start_dir = start_dir or ""  # 默认打开目录（空 = 用户目录）
         
         # 创建四窗格
         self.create_quad_panes()
@@ -1222,7 +1248,7 @@ class QuadPaneWidget(QWidget):
         
         # 首屏只创建 pane1（加快窗口显示）；pane2/3/4 在事件循环启动后
         # 延迟创建（Pane 构造含 PathBar/文件模型/排序代理等，单个约 80ms）
-        self.pane1 = Pane(pane_id="pane_1", parent=self)
+        self.pane1 = Pane(pane_id="pane_1", parent=self, start_path=self.start_dir)
         self.pane1.activated.connect(self.on_pane_activated)
         self.pane2 = None
         self.pane3 = None
@@ -1260,9 +1286,9 @@ class QuadPaneWidget(QWidget):
             return
         import time
         _t0 = time.perf_counter()
-        self.pane2 = Pane(pane_id="pane_2", parent=self)
-        self.pane3 = Pane(pane_id="pane_3", parent=self)
-        self.pane4 = Pane(pane_id="pane_4", parent=self)
+        self.pane2 = Pane(pane_id="pane_2", parent=self, start_path=self.start_dir)
+        self.pane3 = Pane(pane_id="pane_3", parent=self, start_path=self.start_dir)
+        self.pane4 = Pane(pane_id="pane_4", parent=self, start_path=self.start_dir)
         self.pane2.activated.connect(self.on_pane_activated)
         self.pane3.activated.connect(self.on_pane_activated)
         self.pane4.activated.connect(self.on_pane_activated)

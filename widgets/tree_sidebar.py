@@ -160,6 +160,7 @@ class TreeSidebar(QDockWidget):
             if os.path.isdir(path):
                 menu.addAction("添加到收藏夹(&B)", lambda: pane.add_to_bookmarks(path))
             menu.addSeparator()
+            menu.addAction("在内置终端中打开(&I)", pane.open_internal_terminal_here)
             menu.addAction("打开终端(&T)", pane.open_terminal_here)
         else:
             # 空白区域：在当前目录新建/粘贴
@@ -168,6 +169,7 @@ class TreeSidebar(QDockWidget):
             menu.addSeparator()
             menu.addAction("粘贴(&V)", pane.paste)
             menu.addSeparator()
+            menu.addAction("在内置终端中打开(&I)", pane.open_internal_terminal_here)
             menu.addAction("打开终端(&T)", pane.open_terminal_here)
         
         menu.exec(QCursor.pos())

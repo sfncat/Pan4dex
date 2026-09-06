@@ -5,7 +5,8 @@ from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QComboBox,
     QPushButton, QFontDialog, QColorDialog, QGroupBox,
     QFormLayout, QSpinBox, QTabWidget, QWidget, QCheckBox,
-    QListWidget, QListWidgetItem, QInputDialog, QMessageBox
+    QListWidget, QListWidgetItem, QInputDialog, QMessageBox,
+    QLineEdit, QFileDialog
 )
 from PyQt6.QtGui import QFont, QColor
 from PyQt6.QtCore import Qt, QSettings
@@ -37,6 +38,10 @@ class SettingsDialog(QDialog):
         tabs = QTabWidget()
         layout.addWidget(tabs)
 
+        # 常规设置（默认打开目录）
+        general_tab = self.create_general_tab()
+        tabs.addTab(general_tab, "常规")
+
         # 主题设置
         theme_tab = self.create_theme_tab()
         tabs.addTab(theme_tab, "主题")
@@ -67,6 +72,43 @@ class SettingsDialog(QDialog):
         
         layout.addLayout(btn_layout)
     
+    def create_general_tab(self) -> QWidget:
+        """创建设置常规标签页（默认打开目录）"""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+
+        group = QGroupBox("启动")
+        gl = QFormLayout(group)
+
+        # 默认打开目录（空 = 用户目录）
+        self.default_dir_edit = QLineEdit()
+        self.default_dir_edit.setPlaceholderText("留空 = 打开用户目录")
+        s = QSettings(ORG_NAME, APP_NAME)
+        cur = str(s.value("default_dir", "") or "")
+        self.default_dir_edit.setText(cur)
+
+        dir_row = QHBoxLayout()
+        dir_row.addWidget(self.default_dir_edit)
+        browse_btn = QPushButton("浏览...")
+        browse_btn.clicked.connect(self._browse_default_dir)
+        dir_row.addWidget(browse_btn)
+        gl.addRow("默认打开目录:", dir_row)
+
+        hint = QLabel("启动软件时窗格打开的目录。留空则打开用户目录。")
+        hint.setWordWrap(True)
+        layout.addWidget(group)
+        layout.addWidget(hint)
+        layout.addStretch()
+        return widget
+
+    def _browse_default_dir(self):
+        """浏览选择默认打开目录"""
+        path = QFileDialog.getExistingDirectory(
+            self, "选择默认打开目录", self.default_dir_edit.text() or ""
+        )
+        if path:
+            self.default_dir_edit.setText(path)
+
     def create_theme_tab(self) -> QWidget:
         """创建设置主题标签页"""
         widget = QWidget()
@@ -270,6 +312,7 @@ class SettingsDialog(QDialog):
             'theme': self.current_theme,
             'font_family': self.font_combo.currentText(),
             'font_size': self.font_size_spin.value(),
+            'default_dir': self.default_dir_edit.text().strip(),
         }
         # 收集工具栏按钮可见性
         if hasattr(self, 'toolbar_checkboxes'):

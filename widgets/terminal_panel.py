@@ -321,8 +321,10 @@ class TerminalView(QPlainTextEdit):
         self._program = program or self._default_shell()
         self.restart()
 
-    def restart(self):
-        """重启终端会话"""
+    def restart(self, cwd: str = None):
+        """重启终端会话（cwd 指定后以该目录启动 shell）"""
+        if cwd is not None:
+            self._cwd = cwd
         if self._backend is not None:
             self._backend.terminate()
             self._backend = None
@@ -648,6 +650,10 @@ class TerminalPanel(QDockWidget):
     def set_program(self, program: str):
         """更换终端程序并重启会话（None/空 = 系统默认 shell）"""
         self.view.set_program(program)
+
+    def open_in(self, cwd: str):
+        """以指定目录重启终端会话（内置终端中打开目录）"""
+        self.view.restart(cwd=cwd)
 
     def closeEvent(self, e):
         self.view.close_shell()
