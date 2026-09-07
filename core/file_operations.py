@@ -10,6 +10,25 @@ from enum import Enum
 from typing import Callable, Optional
 
 
+def _is_unc_path(p: str) -> bool:
+    """判断路径是否为 Windows UNC 网络共享路径：server 共享形式（正斜杠
+    //server/share 或反斜杠形式），以及 send2trash 生成的带长路径前缀的
+    UNC 形式。"""
+    if os.name != 'nt':
+        return False
+    return p.replace('/', '\\').startswith('\\\\')
+
+
+def _normalize_unc(p: str) -> str:
+    """把 UNC 路径规范成普通的 server 共享形式（去掉 send2trash 加的
+    长路径前缀、统一反斜杠），供 os.remove / shutil.rmtree 使用。"""
+    p = p.replace('/', '\\')
+    prefix = '\\\\?\\UNC\\'
+    if p.startswith(prefix):
+        p = '\\\\' + p[len(prefix):]
+    return p
+
+
 class FileOperationType(Enum):
     """文件操作类型"""
     COPY = "copy"
@@ -259,10 +278,19 @@ class FileOperations:
             try:
                 if safe:
                     import send2trash
-                    # send2trash 的 Windows 实现会给路径加 \\?\ 长路径前缀，
-                    # 但不会把正斜杠转反斜杠（\\?\C:/x 不被 Win32 识别，报
-                    # Errno 2）。Qt 传入的是正斜杠路径，必须先规范化。
-                    if os.name == 'nt':
+                    if os.name == 'nt' and _is_unc_path(path):
+                        # 网络共享没有回收站（资源管理器同样直接删除），且
+                        # send2trash 内部生成的 \\?\UNC\... 前缀 Shell API
+                        # 不识别，会报 Errno 2 找不到文件。直接永久删除。
+                        target = _normalize_unc(path)
+                        if os.path.isdir(target):
+                            shutil.rmtree(target)
+                        else:
+                            os.remove(target)
+                    elif os.name == 'nt':
+                        # send2trash 的 Windows 实现会给路径加 \\?\ 长路径前缀，
+                        # 但不会把正斜杠转反斜杠（\\?\C:/x 不被 Win32 识别，报
+                        # Errno 2）。Qt 传入的是正斜杠路径，必须先规范化。
                         send2trash.send2trash(os.path.normpath(path))
                     else:
                         send2trash.send2trash(path)

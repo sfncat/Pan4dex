@@ -16,7 +16,7 @@ import sys
 
 from widgets.path_bar import PathBar
 from widgets.pane_tree_view import PaneTreeView
-from core.file_operations import FileOperations, FileOperationType, FileOperationResult
+from core.file_operations import FileOperations, FileOperationType, FileOperationResult, _is_unc_path
 from core import archive_ops
 
 
@@ -127,6 +127,9 @@ class PaneSortProxyModel(QSortFilterProxyModel):
 class Pane(QWidget):
     """单个窗格组件"""
     
+    # 所有窗格实例（weakref，用于重建共享文件模型时统一刷新）
+    _instances = None  # 延迟初始化 weakref.WeakSet
+    
     # 信号
     path_changed = pyqtSignal(str)  # 路径变更信号
     activated = pyqtSignal(object)  # 窗格被激活信号
@@ -135,6 +138,11 @@ class Pane(QWidget):
     
     def __init__(self, pane_id: str, parent=None, start_path: str = None):
         super().__init__(parent)
+        
+        import weakref
+        if Pane._instances is None:
+            Pane._instances = weakref.WeakSet()
+        Pane._instances.add(self)
         
         self.pane_id = pane_id
         # 默认打开目录：设置了有效目录用之，否则用户目录
@@ -1371,6 +1379,8 @@ class Pane(QWidget):
                 SHARED_CLIPBOARD_ACTION = None
             self.navigate_to(target_dir)
             self.hide_progress()
+            if _is_unc_path(target_dir):
+                self._force_refresh_current_dir()
             return
         
         # 应用内剪贴板为空：尝试系统剪贴板（从系统文件管理器复制进来）
@@ -1382,6 +1392,8 @@ class Pane(QWidget):
             self.navigate_to(target_dir)
             self.hide_progress()
             self.status_label.setText(f"已从系统剪贴板粘贴 {len(system_paths)} 个项目")
+            if _is_unc_path(target_dir):
+                self._force_refresh_current_dir()
     
     def _on_copy_progress(self, percent: int, filename: str):
         """复制进度回调"""
@@ -1410,11 +1422,56 @@ class Pane(QWidget):
             
             if result.success:
                 self.status_label.setText(f"已删除 {result.files_affected} 个项目")
+                if _is_unc_path(self.current_path):
+                    # SMB 网络共享上 QFileSystemWatcher 变化通知不可靠，
+                    # 模型不会自动移除已删项，强制重扫当前目录
+                    self._force_refresh_current_dir()
             else:
                 QMessageBox.warning(self, "删除失败", result.error)
             
             self.navigate_to(self.current_path)
             self.hide_progress()
+    
+    def _force_refresh_current_dir(self):
+        """强制刷新当前目录显示。
+
+        SMB/网络共享（UNC）上 QFileSystemWatcher 的目录变化通知不可靠，
+        删除/复制等操作后 QFileSystemModel 不会自动更新列表；且模型对相同
+        路径 setRootPath 会直接返回、无公开的目录缓存失效接口，只能重建
+        共享模型全量重扫。
+        """
+        Pane._rebuild_shared_model()
+    
+    @classmethod
+    def _rebuild_shared_model(cls):
+        """重建共享 ExifFileSystemModel，并让所有窗格重新绑定、重设根索引。
+
+        仅在 UNC 目录文件操作后调用（本地目录文件监视正常，无需重建）。
+        """
+        old = getattr(cls, '_shared_file_model', None)
+        import time
+        t0 = time.perf_counter()
+        model = ExifFileSystemModel()
+        model.setRootPath("")
+        model.setFilter(
+            QDir.Filter.AllDirs |
+            QDir.Filter.Files |
+            QDir.Filter.NoDotAndDotDot |
+            QDir.Filter.Hidden
+        )
+        cls._shared_file_model = model
+        logger.info(f"重建共享文件模型: {((time.perf_counter() - t0) * 1000):.1f}ms")
+        for pane in list(cls._instances or ()):
+            try:
+                pane.model = model
+                pane.sort_proxy.setSourceModel(model)
+                model.directoryLoaded.connect(pane._on_directory_loaded_shot_dates)
+                if pane.current_path:
+                    pane._set_root_index(pane.current_path)
+            except RuntimeError:
+                pass  # 窗格已销毁
+        if old is not None:
+            old.deleteLater()
     
     def rename_selected(self):
         """重命名选中项"""
@@ -1684,6 +1741,8 @@ class Pane(QWidget):
                 
                 self.navigate_to(self.current_path)
                 self.hide_progress()
+                if _is_unc_path(self.current_path):
+                    self._force_refresh_current_dir()
             
             event.accept()
         elif event.mimeData().hasUrls():
@@ -1696,6 +1755,8 @@ class Pane(QWidget):
                 self.file_ops.set_progress_callback(None)
                 self.navigate_to(self.current_path)
                 self.hide_progress()
+                if _is_unc_path(self.current_path):
+                    self._force_refresh_current_dir()
             
             event.accept()
     

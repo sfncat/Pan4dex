@@ -11,6 +11,7 @@ import time
 import platform
 import threading
 import logging
+import shutil
 
 from PyQt6.QtWidgets import QPlainTextEdit, QWidget, QVBoxLayout, QMenu, QDockWidget
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
@@ -127,10 +128,11 @@ def _ime_current_layout() -> int:
 class PtyBackend:
     """跨平台伪终端后端"""
 
-    def __init__(self, program: str, cwd: str = None, cols: int = 100, rows: int = 24):
+    def __init__(self, program: str, cwd: str = None, cols: int = 100, rows: int = 24, env: dict = None):
         self.program = program
         self.cwd = cwd or os.path.expanduser("~")
         self.cols, self.rows = cols, rows
+        self.env = env  # 额外注入的环境变量（如 zsh 禁用 autosuggestions 的 ZDOTDIR）
         self._proc = None
         self._master_fd = None  # Linux only
 
@@ -139,9 +141,10 @@ class PtyBackend:
         if sys.platform == "win32":
             from winpty import PtyProcess
             argv = self.program if isinstance(self.program, (list, tuple)) else [self.program]
-            self._proc = PtyProcess.spawn(
-                argv, cwd=self.cwd, dimensions=(self.rows, self.cols)
-            )
+            kwargs = dict(cwd=self.cwd, dimensions=(self.rows, self.cols))
+            if self.env:
+                kwargs["env"] = self.env
+            self._proc = PtyProcess.spawn(argv, **kwargs)
         else:
             import pty
             import subprocess
@@ -155,6 +158,8 @@ class PtyBackend:
             shell = self.program if isinstance(self.program, list) else [self.program]
             env = dict(os.environ)
             env.setdefault("TERM", "xterm-256color")
+            if self.env:
+                env.update(self.env)
             self._proc = subprocess.Popen(
                 shell,
                 stdin=slave,
@@ -189,6 +194,10 @@ class PtyBackend:
                 self._proc.terminate()
         except Exception:
             pass
+        # 清理 zsh 禁用 autosuggestions 时创建的临时 ZDOTDIR
+        zdot = (self.env or {}).get("ZDOTDIR", "")
+        if zdot and os.path.basename(zdot).startswith("pan4dex-zdot-") and os.path.isdir(zdot):
+            shutil.rmtree(zdot, ignore_errors=True)
 
     # -- IO ---------------------------------------------------------------
     def read(self, size: int = 4096) -> str:
@@ -256,7 +265,7 @@ class TerminalView(QPlainTextEdit):
         self.setMouseTracking(True)
         self.viewport().setCursor(Qt.CursorShape.IBeamCursor)
 
-        self._program = program or self._default_shell()
+        self._program, self._program_env = self._resolve_program(program)
         self._cwd = cwd or os.path.expanduser("~")
         self._cols, self._rows = 100, 24
         self.MAX_RENDER_LINES = 2000  # 渲染文档行数上限（防止超长输出无限增长）
@@ -293,20 +302,47 @@ class TerminalView(QPlainTextEdit):
 
     # -- 默认终端程序 ------------------------------------------------------
     @staticmethod
-    def _default_shell():
+    def _resolve_program(program):
+        """解析终端程序与需要注入的环境变量，返回 (program, env)。
+
+        program 为空时使用系统默认 shell，并统一关闭 shell 的「预测/补齐
+        建议」（灰色半透明文本）：
+        - Windows PowerShell：PSReadLine -PredictionSource None
+        - Linux zsh：临时 ZDOTDIR 包装——source 用户 zshrc 后调用
+          zsh-autosuggestions 的内部禁用函数（配置存在才调用，不报错），
+          不改动用户配置文件；bash 无预测建议无需处理。
+        """
+        if program:
+            return (program, None)
         if sys.platform == "win32":
-            # 优先 PowerShell 7 (pwsh)，回退 Windows PowerShell。
             # 关闭 PSReadLine 内联预测：预测文本以半透明样式输出，终端模拟器
             # 无法渲染其灰色样式，会显示成"真实输入"的干扰内容（Tab 补全不受影响）。
             import shutil
             shell = shutil.which("pwsh") or shutil.which("powershell") or "powershell.exe"
-            return [shell, "-NoLogo", "-NoExit", "-Command",
-                    "Set-PSReadLineOption -PredictionSource None"]
-        return os.environ.get("SHELL", "/bin/bash")
+            return ([shell, "-NoLogo", "-NoExit", "-Command",
+                     "Set-PSReadLineOption -PredictionSource None"], None)
+        shell = os.environ.get("SHELL", "/bin/bash")
+        if os.path.basename(shell).startswith("zsh"):
+            import tempfile
+            import shlex
+            zdotdir = tempfile.mkdtemp(prefix="pan4dex-zdot-")
+            lines = []
+            # 先还原 ZDOTDIR 语义再加载用户配置（避免用户 zshrc 依赖临时目录）
+            lines.append("unset ZDOTDIR")
+            user_rc = os.path.expanduser("~/.zshrc")
+            if os.path.exists(user_rc):
+                lines.append(f"source {shlex.quote(user_rc)}")
+            # 禁用 zsh-autosuggestions 灰色补齐（函数存在才调用）
+            lines.append("(( $+functions[_zsh_autosuggest_disable] )) && _zsh_autosuggest_disable")
+            with open(os.path.join(zdotdir, ".zshrc"), "w", encoding="utf-8") as f:
+                f.write("\n".join(lines) + "\n")
+            return ([shell], {"ZDOTDIR": zdotdir})
+        return ([shell], None)
 
     def _start_shell(self):
         try:
-            self._backend = PtyBackend(self._program, self._cwd, self._cols, self._rows)
+            self._backend = PtyBackend(self._program, self._cwd, self._cols, self._rows,
+                                       env=getattr(self, '_program_env', None))
             self._backend.start()
             self._alive_timer.start(500)
             self._reader = threading.Thread(target=self._read_loop, daemon=True)
@@ -318,7 +354,7 @@ class TerminalView(QPlainTextEdit):
 
     def set_program(self, program: str):
         """更换终端程序并重启会话（None/空 = 系统默认 shell）"""
-        self._program = program or self._default_shell()
+        self._program, self._program_env = self._resolve_program(program)
         self.restart()
 
     def restart(self, cwd: str = None):
