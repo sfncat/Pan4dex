@@ -99,9 +99,8 @@ class MainWindow(QMainWindow):
         if _win_icon is not None and not _win_icon.isNull():
             self.setWindowIcon(_win_icon)
         
-        # 恢复窗口位置和大小
+        # 设置对象（几何/状态在 _deferred_init 中恢复，UI 建完后才有效）
         self.settings = QSettings(ORG_NAME, APP_NAME)
-        self.restore_geometry()
         
         # 文件关联
         self.file_associations = FileAssociations()
@@ -173,9 +172,38 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         
+        # 恢复窗口几何/dock 状态（UI 已建完，此时 restoreState 才有效）
+        self.restore_geometry()
+
+        # 窗格分割比例：等延迟创建的 pane2-4 就位（250ms）后再恢复
+        from PyQt6.QtCore import QTimer
+        QTimer.singleShot(400, self._restore_splitter_sizes)
+
         # 自动恢复上次的布局
         self._auto_load_layout()
         logger.info(f"[启动计时] 布局恢复: {(time.perf_counter()-_t0)*1000:.1f}ms")
+
+    def _restore_splitter_sizes(self):
+        """恢复各分割器比例（按布局模式分别保存）"""
+        quad = self.tab_widget.currentWidget()
+        if not isinstance(quad, QuadPaneWidget):
+            return
+        mode = quad.get_layout_mode()
+        base = f"splitter_sizes_{mode}"
+        try:
+            sizes = self.settings.value(base)
+            if sizes:
+                sizes = [int(x) for x in sizes]
+                if len(sizes) == 2 and all(s > 0 for s in sizes):
+                    quad.main_splitter.setSizes(sizes)
+            for name, splitter in (("_top", quad.top_splitter), ("_bottom", quad.bottom_splitter)):
+                s = self.settings.value(base + name)
+                if s:
+                    s = [int(x) for x in s]
+                    if len(s) == 2 and all(v > 0 for v in s):
+                        splitter.setSizes(s)
+        except Exception:
+            pass
     
     def _auto_load_layout(self):
         """自动加载上次保存的布局"""
@@ -195,8 +223,23 @@ class MainWindow(QMainWindow):
         
         # 等待 UI 初始化完成后恢复布局
         from PyQt6.QtCore import QTimer
-        QTimer.singleShot(100, lambda: self._apply_layout(layout))
-    
+        # 真实显示下 pane2-4 延迟创建可能较慢（慢机/网络盘可达数百 ms），
+        # 100ms 触发会在 pane2-4 尚不存在或正在创建时应用布局导致状态丢失，
+        # 改为轮询等待 pane2-4 创建完成后再应用
+        QTimer.singleShot(100, lambda: self._delayed_apply_layout(layout, 0))
+
+    def _delayed_apply_layout(self, layout: dict, attempts: int):
+        """等待 pane2-4 创建完成后再应用布局（避免与 250ms 延迟创建竞态）。"""
+        from PyQt6.QtCore import QTimer
+        current_widget = self.tab_widget.currentWidget()
+        if isinstance(current_widget, QuadPaneWidget):
+            creating = getattr(current_widget, '_panes_creating', False)
+            done = getattr(current_widget, '_all_panes_created', False)
+            if creating or (not done and attempts < 40):
+                QTimer.singleShot(100, lambda: self._delayed_apply_layout(layout, attempts + 1))
+                return
+        self._apply_layout(layout)
+
     def _apply_layout(self, layout: dict):
         """应用布局配置"""
         current_widget = self.tab_widget.currentWidget()
@@ -218,7 +261,11 @@ class MainWindow(QMainWindow):
         for pane_name, state in panes_layout.items():
             pane = getattr(current_widget, pane_name, None)
             if pane:
-                pane.set_state(state)
+                try:
+                    pane.set_state(state)
+                except Exception:
+                    # 单个窗格恢复失败不中断其余窗格
+                    continue
         
         self.status_bar.showMessage("已恢复上次布局")
     
@@ -1176,7 +1223,17 @@ class MainWindow(QMainWindow):
         """保存窗口位置和大小"""
         self.settings.setValue("geometry", self.saveGeometry())
         self.settings.setValue("windowState", self.saveState())
-    
+        # 各分割器比例（按布局模式分别保存，恢复时只应用当前模式对应的值）
+        quad = getattr(self.tab_widget, 'currentWidget', lambda: None)()
+        if isinstance(quad, QuadPaneWidget):
+            base = f"splitter_sizes_{quad.get_layout_mode()}"
+            try:
+                self.settings.setValue(base, [int(x) for x in quad.main_splitter.sizes()])
+                self.settings.setValue(base + "_top", [int(x) for x in quad.top_splitter.sizes()])
+                self.settings.setValue(base + "_bottom", [int(x) for x in quad.bottom_splitter.sizes()])
+            except Exception:
+                pass
+
     def restore_geometry(self):
         """恢复窗口位置和大小"""
         geometry = self.settings.value("geometry")
@@ -1217,6 +1274,13 @@ class MainWindow(QMainWindow):
                 layout['panes'][pane_name] = pane.get_state()
         
         try:
+            # 先备份上一次布局（防误覆盖后可人工找回）
+            try:
+                if os.path.exists(layout_file):
+                    import shutil
+                    shutil.copy2(layout_file, layout_file + ".bak")
+            except Exception:
+                pass
             with open(layout_file, 'w', encoding='utf-8') as f:
                 json.dump(layout, f, ensure_ascii=False, indent=2)
         except Exception:
@@ -1291,23 +1355,32 @@ class QuadPaneWidget(QWidget):
         """延迟创建 pane2/3/4（首屏显示后执行）"""
         if getattr(self, '_all_panes_created', False):
             return
-        import time
-        _t0 = time.perf_counter()
-        self.pane2 = Pane(pane_id="pane_2", parent=self, start_path=self.start_dir)
-        self.pane3 = Pane(pane_id="pane_3", parent=self, start_path=self.start_dir)
-        self.pane4 = Pane(pane_id="pane_4", parent=self, start_path=self.start_dir)
-        self.pane2.activated.connect(self.on_pane_activated)
-        self.pane3.activated.connect(self.on_pane_activated)
-        self.pane4.activated.connect(self.on_pane_activated)
-        # 用真实窗格替换占位
-        self.top_splitter.replaceWidget(1, self.pane2)
-        self.bottom_splitter.replaceWidget(0, self.pane3)
-        self.bottom_splitter.replaceWidget(1, self.pane4)
-        self._placeholder2.deleteLater()
-        self._placeholder3.deleteLater()
-        self._placeholder4.deleteLater()
-        self._all_panes_created = True
-        logger.info(f"[启动计时] 延迟创建 pane2-4: {(time.perf_counter()-_t0)*1000:.1f}ms")
+        # 防重入：250ms 定时器与 _ensure_all_panes（布局恢复等路径）可能同时触发，
+        # 真实显示下 Pane 构造较慢时若重复创建会把已恢复状态的窗格替换成全新默认窗格，
+        # 导致布局"恢复后仍显示默认"并随之覆盖保存。提前置位 + finally 复位。
+        if getattr(self, '_panes_creating', False):
+            return
+        self._panes_creating = True
+        try:
+            import time
+            _t0 = time.perf_counter()
+            self.pane2 = Pane(pane_id="pane_2", parent=self, start_path=self.start_dir)
+            self.pane3 = Pane(pane_id="pane_3", parent=self, start_path=self.start_dir)
+            self.pane4 = Pane(pane_id="pane_4", parent=self, start_path=self.start_dir)
+            self.pane2.activated.connect(self.on_pane_activated)
+            self.pane3.activated.connect(self.on_pane_activated)
+            self.pane4.activated.connect(self.on_pane_activated)
+            # 用真实窗格替换占位
+            self.top_splitter.replaceWidget(1, self.pane2)
+            self.bottom_splitter.replaceWidget(0, self.pane3)
+            self.bottom_splitter.replaceWidget(1, self.pane4)
+            self._placeholder2.deleteLater()
+            self._placeholder3.deleteLater()
+            self._placeholder4.deleteLater()
+            self._all_panes_created = True
+            logger.info(f"[启动计时] 延迟创建 pane2-4: {(time.perf_counter()-_t0)*1000:.1f}ms")
+        finally:
+            self._panes_creating = False
     
     def _ensure_all_panes(self):
         """确保四个窗格都已创建（四窗格/双窗格切换等立即操作时调用）"""

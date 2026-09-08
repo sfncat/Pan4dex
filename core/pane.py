@@ -124,6 +124,48 @@ class PaneSortProxyModel(QSortFilterProxyModel):
             return False
 
 
+class FileListTreeView(QTreeView):
+    """文件列表树视图：拖放事件统一委托给 Pane 的自定义逻辑。
+
+    QTreeView 内部拖放（DragDrop 模式）走 Qt 自带路径，对 UNC/自定义
+    MIME/同窗格移动语义不可控，因此禁用它，由本类把事件转发给 Pane。
+    """
+
+    def __init__(self, pane):
+        super().__init__()
+        self._pane = pane
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._pane.drag_start_pos = event.position().toPoint()
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if event.buttons() & Qt.MouseButton.LeftButton:
+            if self._pane._start_drag_from_mouse(event.position().toPoint()):
+                return
+        super().mouseMoveEvent(event)
+
+    # 以下拖放虚函数由 QAbstractItemView 内部路由调用（DragDrop 模式），
+    # 均不调用 super()，阻止 Qt 内置 model.dropMimeData 路径，转交 Pane 逻辑。
+    def dragEnterEvent(self, event):
+        self._pane.dragEnterEvent(event)
+
+    def dragMoveEvent(self, event):
+        mime = event.mimeData()
+        if mime.hasUrls() or mime.hasFormat("application/x-pan4dex-drag"):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragLeaveEvent(self, event):
+        self._pane.init_ui_style()
+        event.accept()
+
+    def dropEvent(self, event):
+        self._pane.dropEvent(event)
+
+
 class Pane(QWidget):
     """单个窗格组件"""
     
@@ -271,7 +313,7 @@ class Pane(QWidget):
         self.file_list_layout.setSpacing(0)
 
         # 文件列表
-        self.tree_view = QTreeView()
+        self.tree_view = FileListTreeView(self)
         # 拖拽（setDragDropMode 会隐式改成 SingleSelection）之后必须显式
         # 恢复多选：支持 Shift/Ctrl 连续多选
         from PyQt6.QtWidgets import QAbstractItemView
@@ -289,11 +331,13 @@ class Pane(QWidget):
         self.tree_view.header().customContextMenuRequested.connect(self.show_column_menu)
         self.tree_view.viewport().installEventFilter(self)
 
-        # 拖拽支持
+        # 拖拽支持：保持 DragDrop 框架让 Qt 把 drop 事件投递到 viewport（内部路由
+        # 会调用 FileListTreeView 的拖放虚函数），但子类重写不调用 super()，
+        # 阻止 Qt 内置 model.dropMimeData 路径，全部转交 Pane 的统一处理逻辑
+        self.tree_view.setDragDropMode(QTreeView.DragDropMode.DragDrop)
         self.tree_view.setDragEnabled(True)
         self.tree_view.setAcceptDrops(True)
         self.tree_view.setDropIndicatorShown(True)
-        self.tree_view.setDragDropMode(QTreeView.DragDropMode.DragDrop)
 
         self.file_list_layout.addWidget(self.tree_view)
 
@@ -1491,6 +1535,8 @@ class Pane(QWidget):
             result = self.file_ops.rename(path, new_name)
             if result.success:
                 self.navigate_to(self.current_path)
+                if _is_unc_path(self.current_path):
+                    self._force_refresh_current_dir()
             else:
                 QMessageBox.warning(self, "重命名失败", result.error)
     
@@ -1510,6 +1556,8 @@ class Pane(QWidget):
             result = self.file_ops.create_folder(self.current_path, name)
             if result.success:
                 self.navigate_to(self.current_path)
+                if _is_unc_path(self.current_path):
+                    self._force_refresh_current_dir()
             else:
                 QMessageBox.warning(self, "创建失败", result.error)
     
@@ -1523,6 +1571,8 @@ class Pane(QWidget):
             result = self.file_ops.create_file(self.current_path, name)
             if result.success:
                 self.navigate_to(self.current_path)
+                if _is_unc_path(self.current_path):
+                    self._force_refresh_current_dir()
             else:
                 QMessageBox.warning(self, "创建失败", result.error)
     
@@ -1718,47 +1768,105 @@ class Pane(QWidget):
         event.accept()
     
     def dropEvent(self, event):
-        """拖拽释放"""
+        """拖拽释放。
+
+        - 跨窗格（pan4dex-drag）：按默认动作复制/移动到目标目录
+        - 文件拖拽（urls）：拖到目录行则目标为该目录；源在当前目录
+          （同窗格拖动）→ 移动，外部拖入 → 复制；
+          Ctrl=强制复制，Shift=强制移动
+        """
         self.init_ui_style()
-        
-        # 处理跨窗格拖拽
+        target_dir = self.current_path
+        pos = event.position().toPoint()
+        idx = self.tree_view.indexAt(pos)
+        if idx.isValid():
+            p = self.model.filePath(self._map_to_source(idx))
+            if p and os.path.isdir(p):
+                target_dir = p
+
+        # 跨窗格拖拽
         if event.mimeData().hasFormat("application/x-pan4dex-drag"):
             import json
             data = json.loads(event.mimeData().data("application/x-pan4dex-drag").data().decode())
-            source_pane_id = data.get("source_pane_id", "")
             files = data.get("files", [])
             action = data.get("default_action", "copy")
-            
+            # 同窗格拖动 → 移动（与文件拖动语义一致；dragStart 固定写 copy，
+            # 跨窗格才按 default_action 复制）
+            if data.get("source_pane_id") == self.pane_id:
+                action = "move"
             if files:
-                if action == "copy":
-                    self.file_ops.set_progress_callback(self._on_copy_progress)
-                    self.file_ops.copy(files, self.current_path)
-                    self.file_ops.set_progress_callback(None)
-                elif action == "move":
-                    self.file_ops.set_progress_callback(self._on_copy_progress)
-                    self.file_ops.move(files, self.current_path)
-                    self.file_ops.set_progress_callback(None)
-                
-                self.navigate_to(self.current_path)
-                self.hide_progress()
-                if _is_unc_path(self.current_path):
-                    self._force_refresh_current_dir()
-            
-            event.accept()
-        elif event.mimeData().hasUrls():
-            urls = event.mimeData().urls()
-            files = [url.toLocalFile() for url in urls if url.isLocalFile()]
-            
-            if files:
+                if action == "move" and self._move_target_inside_sources(files, target_dir):
+                    # 不能把目录移到它自己或它的子目录里（shutil 会递归复制卡死）
+                    event.ignore()
+                    return
                 self.file_ops.set_progress_callback(self._on_copy_progress)
-                self.file_ops.copy(files, self.current_path)
+                if action == "move":
+                    self.file_ops.move(files, target_dir)
+                else:
+                    self.file_ops.copy(files, target_dir)
                 self.file_ops.set_progress_callback(None)
                 self.navigate_to(self.current_path)
                 self.hide_progress()
-                if _is_unc_path(self.current_path):
+                if _is_unc_path(target_dir):
                     self._force_refresh_current_dir()
-            
             event.accept()
+            return
+
+        # 文件拖拽（本窗格内部拖动 / 外部文件管理器拖入）
+        urls = event.mimeData().urls()
+        files = [url.toLocalFile() for url in urls if url.isLocalFile()]
+        if not files:
+            event.ignore()
+            return
+
+        src_in_current = all(
+            os.path.normpath(os.path.dirname(f)) == os.path.normpath(self.current_path)
+            for f in files
+        )
+        mods = event.modifiers()
+        if mods & Qt.KeyboardModifier.ControlModifier:
+            do_move = False
+        elif mods & Qt.KeyboardModifier.ShiftModifier:
+            do_move = True
+        else:
+            # 同窗格拖动（源在当前目录、目标为其他目录）→ 移动；外部拖入 → 复制
+            do_move = src_in_current and target_dir != self.current_path
+
+        if src_in_current and target_dir == self.current_path:
+            # 拖到自身所在目录：无操作
+            event.ignore()
+            return
+
+        if do_move and self._move_target_inside_sources(files, target_dir):
+            # 不能把目录移到它自己或它的子目录里（shutil 会递归复制卡死）
+            event.ignore()
+            return
+
+        self.file_ops.set_progress_callback(self._on_copy_progress)
+        if do_move:
+            self.file_ops.move(files, target_dir)
+        else:
+            self.file_ops.copy(files, target_dir)
+        self.file_ops.set_progress_callback(None)
+        self.navigate_to(self.current_path)
+        self.hide_progress()
+        if _is_unc_path(target_dir):
+            self._force_refresh_current_dir()
+        event.accept()
+    
+    @staticmethod
+    def _move_target_inside_sources(files, target_dir):
+        """移动目标是否位于任一源目录内部或等于源（防止目录移到自身子目录导致递归复制）"""
+        t = os.path.normpath(target_dir)
+        for f in files:
+            if not os.path.isdir(f):
+                continue
+            s = os.path.normpath(f)
+            if t == s:
+                return True
+            if t.startswith(s + os.sep) or t.startswith(s + "/"):
+                return True
+        return False
     
     def mousePressEvent(self, event):
         """鼠标按下"""
@@ -1767,25 +1875,28 @@ class Pane(QWidget):
         super().mousePressEvent(event)
     
     def mouseMoveEvent(self, event):
-        """鼠标移动 - 处理拖拽开始"""
-        if not (event.buttons() & Qt.MouseButton.LeftButton):
-            super().mouseMoveEvent(event)
-            return
-        
+        """鼠标移动 - 处理拖拽开始（Pane 自身，实际拖拽在 viewport 事件过滤器）"""
+        if event.buttons() & Qt.MouseButton.LeftButton:
+            if self._start_drag_from_mouse(event.position().toPoint()):
+                return
+        super().mouseMoveEvent(event)
+    
+    def _start_drag_from_mouse(self, pos) -> bool:
+        """从鼠标位置启动拖拽（viewport MouseMove 事件过滤器 / mouseMoveEvent 共用）。
+
+        返回 True 表示已启动拖拽并消费事件。
+        """
         if not self.drag_start_pos:
-            super().mouseMoveEvent(event)
-            return
+            return False
         
         # 检查是否移动了足够的距离
-        if (event.pos() - self.drag_start_pos).manhattanLength() < 10:
-            super().mouseMoveEvent(event)
-            return
+        if (pos - self.drag_start_pos).manhattanLength() < 10:
+            return False
         
         # 获取选中的文件
         indexes = self.tree_view.selectedIndexes()
         if not indexes:
-            super().mouseMoveEvent(event)
-            return
+            return False
         
         paths = []
         for index in indexes:
@@ -1793,8 +1904,7 @@ class Pane(QWidget):
                 paths.append(self.model.filePath(self._map_to_source(index)))
         
         if not paths:
-            super().mouseMoveEvent(event)
-            return
+            return False
         
         # 创建拖拽对象
         from PyQt6.QtGui import QDrag
@@ -1820,10 +1930,11 @@ class Pane(QWidget):
         
         drag.setMimeData(mime_data)
         
-        # 执行拖拽
+        # 执行拖拽（阻塞直到释放）
         drag.exec(Qt.DropAction.CopyAction | Qt.DropAction.MoveAction)
         
         self.drag_start_pos = None
+        return True
     
     def init_ui_style(self):
         """恢复默认样式"""

@@ -214,7 +214,9 @@ class FileOperations:
                 error="目标目录不存在"
             )
         
-        total_files = self._count_files(sources)
+        # 移动按源项计数即可（同卷 rename 瞬时完成；对 SMB 大目录递归
+        # os.walk 统计会阻塞主线程，且进度粒度与 files_moved 不一致）
+        total_files = len(sources)
         files_moved = 0
         
         for source in sources:

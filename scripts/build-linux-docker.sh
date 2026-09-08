@@ -20,9 +20,14 @@ else
     echo "[1/6] Docker 已运行"
 fi
 
-# 构建镜像
-echo "[2/6] 构建 Docker 镜像..."
-sudo docker build --network=host -t ${DOCKER_IMAGE} -f packaging/Dockerfile-linux .
+# 构建镜像：仅当镜像不存在时构建（构建环境固定，每次重建无意义且浪费时间/网络）。
+# 若 Dockerfile 有改动需要重建，先 sudo docker rmi pan4dex-builder-linux 再执行本脚本。
+if sudo docker image inspect ${DOCKER_IMAGE} >/dev/null 2>&1; then
+    echo "[2/6] 使用已有镜像 ${DOCKER_IMAGE}（如需重建：sudo docker rmi ${DOCKER_IMAGE}）"
+else
+    echo "[2/6] 构建 Docker 镜像..."
+    sudo docker build --network=host -t ${DOCKER_IMAGE} -f packaging/Dockerfile-linux .
+fi
 
 # 清理旧容器
 sudo docker rm -f ${CONTAINER_NAME} 2>/dev/null || true
