@@ -322,7 +322,7 @@ class TestPathBarButtonsRegression:
         assert pane.pane_tree_view.isVisible() == False
     
     def test_tabs_button(self, qtbot):
-        """测试标签页按钮"""
+        """测试标签页按钮：隐藏→点击显示标签栏；可见→点击新建标签页"""
         from core.main_window import QuadPaneWidget
         
         widget = QuadPaneWidget()
@@ -331,12 +331,24 @@ class TestPathBarButtonsRegression:
         
         pane = widget.pane1
         
-        # 切换标签页按钮
+        # 隐藏状态点击 → 显示标签栏
         pane.path_bar.tabs_btn.click()
         assert pane.pane_tabs.isVisible() == True
+        assert pane.pane_tabs.count() == 1
         
+        # 可见状态点击 → 新建标签页（不再关闭标签栏）
         pane.path_bar.tabs_btn.click()
+        assert pane.pane_tabs.isVisible() == True
+        assert pane.pane_tabs.count() == 2
+        
+        # 关闭全部标签页 → 自动隐藏标签栏
+        pane.close_pane_tab(0)
+        pane.close_pane_tab(0)
         assert pane.pane_tabs.isVisible() == False
+        assert pane.pane_tabs.count() == 0
+        
+        # 右键隐藏入口存在
+        assert hasattr(pane, 'hide_tabs_bar')
     
     def test_button_states_sync(self, qtbot):
         """测试按钮状态与面板状态同步"""

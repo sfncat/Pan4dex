@@ -708,10 +708,20 @@ class Pane(QWidget):
         self.set_tree_visible(not visible)
 
     def toggle_tabs(self):
-        """切换本窗格的标签页栏"""
-        visible = self.pane_tabs.isVisible()
-        self.pane_tabs.setVisible(not visible)
-        self.path_bar.set_tabs_button_checked(not visible)
+        """标签按钮点击：标签栏隐藏→显示；已显示→新建标签页
+
+        早期行为是纯开关（再次点击关闭标签栏），用户习惯"点标签按钮=创建标签"，
+        且关闭后容易与其他窗格状态混淆。现改为：点击总是产生"标签"（显示标签栏
+        或新建标签页）；关闭标签栏通过标签栏右键菜单「隐藏标签栏」或关闭全部
+        标签页完成。
+        """
+        if not self.pane_tabs.isVisible():
+            logger.info(f"[TABS] pane_id={self.pane_id} toggle_tabs: hidden -> show tabs bar")
+            self.pane_tabs.setVisible(True)
+            self.path_bar.set_tabs_button_checked(True)
+        else:
+            logger.info(f"[TABS] pane_id={self.pane_id} toggle_tabs: visible -> add tab")
+            self.add_pane_tab(self.current_path)
 
     def _on_tab_bar_double_clicked(self, index):
         """双击标签 → 关闭标签页（重命名请用右键菜单）"""
@@ -750,6 +760,10 @@ class Pane(QWidget):
         new_tab_action.triggered.connect(lambda: self.add_pane_tab())
         menu.addAction(new_tab_action)
 
+        hide_tabs_action = QAction("隐藏标签栏(&H)", self)
+        hide_tabs_action.triggered.connect(self.hide_tabs_bar)
+        menu.addAction(hide_tabs_action)
+
         if tab_index >= 0:
             rename_tab_action = QAction("重命名标签页(&R)", self)
             rename_tab_action.triggered.connect(lambda: self._rename_pane_tab(tab_index))
@@ -761,12 +775,21 @@ class Pane(QWidget):
 
         menu.exec(QCursor.pos())
 
+    def hide_tabs_bar(self):
+        """隐藏标签页栏（标签按钮语义改为创建标签后，关闭走这里/关完自动隐藏）"""
+        self.pane_tabs.setVisible(False)
+        self.path_bar.set_tabs_button_checked(False)
+        logger.info(f"[TABS] pane_id={self.pane_id} hide_tabs_bar")
+
     def close_pane_tab(self, index):
-        """关闭窗格内标签页"""
-        if self.pane_tabs.count() > 1:
-            self.pane_tabs.removeTab(index)
-            if index < len(self._pane_tab_paths):
-                self._pane_tab_paths.pop(index)
+        """关闭窗格内标签页；关到 0 个时自动隐藏标签栏"""
+        if self.pane_tabs.count() <= 0:
+            return
+        self.pane_tabs.removeTab(index)
+        if index < len(self._pane_tab_paths):
+            self._pane_tab_paths.pop(index)
+        if self.pane_tabs.count() == 0:
+            self.hide_tabs_bar()
 
     def on_pane_tab_changed(self, index):
         """窗格内标签页切换"""
@@ -788,6 +811,7 @@ class Pane(QWidget):
         """添加窗格内标签页"""
         if path is None:
             path = self.current_path
+        logger.info(f"[TABS] pane_id={self.pane_id} add_pane_tab path={path}")
         self._pane_tab_paths.append(path)
         self.pane_tabs.addTab(QLabel(), os.path.basename(path) if os.path.basename(path) else path)
         # 添加标签页后显示标签页栏

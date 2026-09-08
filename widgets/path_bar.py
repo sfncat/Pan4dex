@@ -255,6 +255,7 @@ class PathBar(QWidget):
 
     def on_tabs_clicked(self):
         """标签页按钮点击"""
+        logger.info(f"[TABS] PathBar.on_tabs_clicked emitting tabs_toggle_requested")
         self.tabs_toggle_requested.emit()
 
     def on_view_clicked(self):
