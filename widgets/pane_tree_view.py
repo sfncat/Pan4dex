@@ -36,6 +36,7 @@ class PaneTreeView(QWidget):
         self._pending_idx = 0
         self._expand_queue = []
         self._expand_done = False
+        self._scroll_settled = False
         self._stable_timer = None
         
         self.setMinimumWidth(180)
@@ -148,15 +149,17 @@ class PaneTreeView(QWidget):
         self._expand_queue = parts
         self._pending_path = None
         self._expand_done = False
+        self._scroll_settled = False
         self._expand_parts(parts, 0)
     
     def _on_rows_inserted(self, *args):
         """目录加载/展开使树高度变化后，把当前目录重新滚到正中。
 
-        只处理展开已完成的树（目标索引此时才有效）；
-        直接 scrollTo，不排队列延迟，避免高频插入时 timer 堆积。
+        只在展开未稳定（_scroll_settled=False）时重启稳定定时器：
+        行持续插入期间树高未定，不做任何强制滚动；等加载静默后由
+        稳定定时器收尾居中一次，避免加载过程中反复滚动导致目录树上下跳动。
         """
-        if self._expand_done and self._expand_queue:
+        if self._expand_done and self._expand_queue and not self._scroll_settled:
             # 行还在插入（树高度未稳定）：重置稳定定时器，稍后再居中
             self._restart_stable_scroll()
 
@@ -186,20 +189,17 @@ class PaneTreeView(QWidget):
     def _scroll_to_center(self, path: str):
         """滚动到树上下居中的位置。
 
-        QFileSystemModel 异步加载，目录展开后树高度还会继续增长，
-        只滚动一次会导致当前目录掉出可视范围。因此按路径多次延迟重定位
-        （每次重新取索引，避免旧索引失效），直到树高度稳定，
-        最终当前目录保持在可视范围正中。
+        QFileSystemModel 异步加载，目录展开后树高度还会继续增长。
+        策略：先立即滚动一次（目标行已就绪时即刻到位），随后等目录
+        加载静默（稳定定时器，行插入期间会不断重置）后收尾居中一次。
+        不再做高频轮询强制居中——目录加载期间树高持续变化，反复
+        scrollTo(PositionAtCenter) 会把目标行来回拉拽，表现为目录树
+        上下反复跳动。
         """
         index = self.model.index(path)
         if not index.isValid():
             return
         self.tree_view.scrollTo(index, QAbstractItemView.ScrollHint.PositionAtCenter)
-        # 目录树模型异步加载：滚动目标行的"视图行"可能在加载过程中尚未布局。
-        # 轮询重试（每 300ms 一次，持续 4.5s）——每次 scrollTo 都会触发视图布局，
-        # 行就绪后自然收敛到正中；rowsInserted 的稳定定时器负责加载结束后的收尾
-        for i in range(1, 16):
-            self._schedule_expand(300 * i, lambda: self._do_scroll(path))
         self._restart_stable_scroll()
 
     def _do_scroll(self, path: str):
@@ -207,20 +207,10 @@ class PaneTreeView(QWidget):
         if idx.isValid():
             self.tree_view.scrollTo(idx, QAbstractItemView.ScrollHint.PositionAtCenter)
 
-    def _restart_stable_scroll(self):
-        """重启"加载静默"定时器：目录加载持续插入行时会不断重置，
-        直到 1.2s 内没有新行插入（树高度稳定）才执行最终居中。
-        """
-        if self._stable_timer is not None:
-            self._stable_timer.stop()
-        timer = QTimer(self)
-        timer.setSingleShot(True)
-        timer.timeout.connect(self._on_stable_timeout)
-        timer.start(800)
-        self._stable_timer = timer
-
     def _on_stable_timeout(self):
         self._stable_timer = None
         if self._expand_done and self._expand_queue:
-            # 无条件居中（推算 rect 时 scrollTo 会触发 Qt 内部布局重算）
+            # 树高度已静默稳定：居中一次并标记完成，
+            # 后续行插入不再触发滚动（避免收尾后又被拉拽）
             self._do_scroll(self._expand_queue[-1])
+            self._scroll_settled = True

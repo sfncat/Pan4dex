@@ -508,6 +508,16 @@ def main():
         QApplication.setHighDpiScaleFactorRoundingPolicy(
             Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
         )
+        # Linux 输入法：Qt6 必须加载输入法插件（ibus/fcitx5）才能输入中文。
+        # 插件由打包脚本打入 bundle（platforminputcontexts）；这里在 QApplication
+        # 创建前检测系统输入法并设置 QT_IM_MODULE（用户已显式配置则尊重）。
+        if sys.platform == "linux" and not os.environ.get("QT_IM_MODULE"):
+            import shutil
+            if shutil.which("fcitx5"):
+                os.environ["QT_IM_MODULE"] = "fcitx"
+            elif shutil.which("ibus-daemon"):
+                os.environ["QT_IM_MODULE"] = "ibus"
+            logger.info(f"Linux 输入法模块: QT_IM_MODULE={os.environ.get('QT_IM_MODULE', '(未设置)')}")
         app = QApplication(sys.argv)
         logger.info(f"[启动计时] QApplication 创建: {(time.perf_counter()-_t0)*1000:.1f}ms")
         app.setApplicationName(APP_NAME)

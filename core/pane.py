@@ -177,6 +177,8 @@ class Pane(QWidget):
     activated = pyqtSignal(object)  # 窗格被激活信号
     shot_dates_ready = pyqtSignal()  # 后台 prefetch 拍摄日期完成（跨线程安全，自动投递主线程）
     _archive_done = pyqtSignal(bool, str, str)  # 压缩/解压完成(ok, message, note)；跨线程 emit 自动投递主线程
+    _file_progress = pyqtSignal(int, str, int, int)  # 文件操作进度(percent, filename, copied_bytes, total_bytes)；worker 线程 emit 自动投递主线程
+    _file_op_done = pyqtSignal(object, str, object)  # 文件操作完成(result, note, done_handler)；worker 线程 emit 自动投递主线程
     
     def __init__(self, pane_id: str, parent=None, start_path: str = None):
         super().__init__(parent)
@@ -193,6 +195,8 @@ class Pane(QWidget):
         else:
             self.current_path = QDir.homePath()
         self.file_ops = FileOperations()
+        self._file_progress.connect(self._on_file_progress_ui)
+        self._file_op_done.connect(self._on_file_op_done)
         # 剪贴板指向模块级共享对象（跨窗格复制/剪切/粘贴）
         self.clipboard = SHARED_CLIPBOARD
         self.clipboard_action = SHARED_CLIPBOARD_ACTION
@@ -861,6 +865,12 @@ class Pane(QWidget):
     
     def open_file(self, file_path: str):
         """打开文件"""
+        # Linux：可执行文件（有执行权限，或 AppImage 这类明确的可执行程序）
+        # 双击直接运行，而不是用 xdg-open 打开
+        if sys.platform == "linux" and os.path.isfile(file_path):
+            if os.access(file_path, os.X_OK) or self._is_appimage(file_path):
+                if self._run_executable(file_path):
+                    return
         # 尝试使用文件关联
         main_window = self.window()
         if hasattr(main_window, 'file_associations'):
@@ -906,6 +916,64 @@ class Pane(QWidget):
                     )
             except Exception as e:
                 logger.warning("打开文件失败 %s: %s", file_path, e)
+
+    @staticmethod
+    def _is_appimage(path: str) -> bool:
+        """判断是否为 AppImage：扩展名，或 magic bytes（类型1: AI\\x02 / 类型2: AI\\x01）"""
+        if path.lower().endswith(".appimage"):
+            return True
+        try:
+            with open(path, "rb") as f:
+                magic = f.read(3)
+            return magic in (b"AI\x02", b"AI\x01")
+        except OSError:
+            return False
+
+    def _run_executable(self, file_path: str) -> bool:
+        """直接运行可执行文件（Linux）。
+
+        AppImage 无执行权限时自动 chmod +x（用户意图即运行）；
+        启动失败（无 shebang 的普通文件被加了 x 位等）返回 False，由调用方回退。
+        """
+        import subprocess
+        from config.file_associations import _clean_child_env
+        if self._is_appimage(file_path) and not os.access(file_path, os.X_OK):
+            try:
+                os.chmod(file_path, os.stat(file_path).st_mode | 0o111)
+                logger.info("AppImage 自动加运行权限: %s", file_path)
+            except OSError as e:
+                logger.warning("AppImage 自动加运行权限失败 %s: %s", file_path, e)
+                return False
+        try:
+            subprocess.Popen(
+                [file_path],
+                cwd=os.path.dirname(file_path) or None,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+                env=_clean_child_env(),
+            )
+            logger.info("运行可执行文件: %s", file_path)
+            return True
+        except OSError as e:
+            logger.warning("运行可执行文件失败 %s: %s", file_path, e)
+            return False
+
+    def _chmod_add_exec(self, file_path: str):
+        """为文件加运行权限（chmod +x）"""
+        try:
+            os.chmod(file_path, os.stat(file_path).st_mode | 0o111)
+            logger.info("加运行权限: %s", file_path)
+        except OSError as e:
+            QMessageBox.warning(self, "加运行权限", f"无法设置运行权限:\n{e}")
+            return
+        # 刷新模型让权限列立即更新（QFileSystemModel.refresh 对已存在路径重扫元数据）
+        try:
+            idx = self.model.index(file_path)
+            self.model.refresh(idx)
+        except Exception:
+            pass
     
     def on_selection_changed(self):
         """选择变化时更新预览"""
@@ -1007,6 +1075,20 @@ class Pane(QWidget):
             compress_action = QAction("压缩文件目录(&Z)", self)
             compress_action.triggered.connect(self.compress_selected)
             menu.addAction(compress_action)
+            
+            # Linux：可执行文件 - 运行 / 加运行权限
+            if sys.platform == "linux" and single_path is not None and os.path.isfile(single_path):
+                has_x = os.access(single_path, os.X_OK)
+                is_ai = self._is_appimage(single_path)
+                menu.addSeparator()
+                if has_x or is_ai:
+                    run_action = QAction("运行(&R)", self)
+                    run_action.triggered.connect(lambda: self._run_executable(single_path))
+                    menu.addAction(run_action)
+                if not has_x:
+                    chmod_action = QAction("加运行权限(&X)", self)
+                    chmod_action.triggered.connect(lambda: self._chmod_add_exec(single_path))
+                    menu.addAction(chmod_action)
             
             menu.addSeparator()
             
@@ -1443,47 +1525,123 @@ class Pane(QWidget):
         return paths
 
     def _paste_to(self, target_dir):
-        """粘贴到指定目录：应用内剪贴板优先，其次系统剪贴板"""
+        """粘贴到指定目录：应用内剪贴板优先，其次系统剪贴板（后台线程执行，不阻塞界面）"""
         global SHARED_CLIPBOARD_ACTION
         
         if SHARED_CLIPBOARD:
             was_cut = (SHARED_CLIPBOARD_ACTION == 'cut')
             src_paths = list(SHARED_CLIPBOARD) if was_cut else []
+            # 快照源列表：worker 线程复制期间主线程可能清理剪贴板
+            clip_snapshot = list(SHARED_CLIPBOARD)
             if SHARED_CLIPBOARD_ACTION == 'copy':
-                self.file_ops.set_progress_callback(self._on_copy_progress)
-                self.file_ops.copy(SHARED_CLIPBOARD, target_dir)
-                self.file_ops.set_progress_callback(None)
+                self._run_file_op_async(
+                    "正在复制",
+                    lambda: self.file_ops.copy(clip_snapshot, target_dir),
+                    lambda result: self._on_paste_done(result, target_dir, None))
             elif SHARED_CLIPBOARD_ACTION == 'cut':
-                self.file_ops.set_progress_callback(self._on_copy_progress)
-                self.file_ops.move(SHARED_CLIPBOARD, target_dir)
-                self.file_ops.set_progress_callback(None)
-                SHARED_CLIPBOARD.clear()
-                SHARED_CLIPBOARD_ACTION = None
-            self.navigate_to(target_dir)
-            self.hide_progress()
-            if _is_network_path(target_dir):
-                self._force_refresh_current_dir()
-            elif was_cut:
-                # 剪切移动：源目录若为网络路径，源窗格显示残留需一并重扫
-                self._refresh_network_sources(src_paths)
+                self._run_file_op_async(
+                    "正在移动",
+                    lambda: self.file_ops.move(clip_snapshot, target_dir),
+                    lambda result: self._on_paste_done(result, target_dir, src_paths))
             return
         
         # 应用内剪贴板为空：尝试系统剪贴板（从系统文件管理器复制进来）
         system_paths = self._system_clipboard_paths()
         if system_paths:
-            self.file_ops.set_progress_callback(self._on_copy_progress)
-            self.file_ops.copy(system_paths, target_dir)
-            self.file_ops.set_progress_callback(None)
+            self._run_file_op_async(
+                "正在复制",
+                lambda: self.file_ops.copy(system_paths, target_dir),
+                lambda result: self._on_system_paste_done(result, target_dir, len(system_paths)))
+            return
+    
+    def _on_paste_done(self, result, target_dir, src_paths):
+        """粘贴完成（应用内剪贴板，主线程）：刷新视图 + 清理剪切剪贴板"""
+        global SHARED_CLIPBOARD_ACTION
+        if result.success:
+            self.status_label.setText("粘贴完成")
+            if src_paths is not None:
+                # 剪切移动完成：清空应用内剪贴板
+                SHARED_CLIPBOARD.clear()
+                SHARED_CLIPBOARD_ACTION = None
             self.navigate_to(target_dir)
-            self.hide_progress()
-            self.status_label.setText(f"已从系统剪贴板粘贴 {len(system_paths)} 个项目")
             if _is_network_path(target_dir):
                 self._force_refresh_current_dir()
+            elif src_paths:
+                # 剪切移动：源目录若为网络路径，源窗格显示残留需一并重扫
+                self._refresh_network_sources(src_paths)
+        else:
+            self.status_label.setText("粘贴失败")
+            QMessageBox.warning(self, "粘贴", result.error or "操作失败")
     
-    def _on_copy_progress(self, percent: int, filename: str):
-        """复制进度回调"""
+    def _on_system_paste_done(self, result, target_dir, count):
+        """系统剪贴板粘贴完成（主线程）"""
+        if result.success:
+            self.status_label.setText(f"已从系统剪贴板粘贴 {count} 个项目")
+            self.navigate_to(target_dir)
+            if _is_network_path(target_dir):
+                self._force_refresh_current_dir()
+        else:
+            self.status_label.setText("粘贴失败")
+            QMessageBox.warning(self, "粘贴", result.error or "操作失败")
+    
+    def _run_file_op_async(self, note, fn, done_handler=None):
+        """后台线程执行文件操作（复制/移动/删除）。
+
+        大文件复制不再阻塞主线程；进度经 _file_progress 信号回主线程更新
+        状态栏进度条，完成经 _file_op_done 信号回主线程刷新视图。
+        """
+        self.status_label.setText(f"{note}...")
+        self.show_progress(0)
+        self.file_ops.set_progress_callback(self._on_copy_progress)
+        def worker():
+            try:
+                result = fn()
+            except Exception as e:
+                result = FileOperationResult(
+                    success=False, operation=FileOperationType.COPY,
+                    source="", error=str(e))
+            self._file_op_done.emit(result, note, done_handler)
+        import threading
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_copy_progress(self, percent: int, filename: str, copied_bytes: int = 0, total_bytes: int = 0):
+        """文件操作进度回调（worker 线程调用）：经信号转发主线程更新 UI"""
+        self._file_progress.emit(percent, filename, copied_bytes, total_bytes)
+
+    def _on_file_progress_ui(self, percent: int, filename: str, copied_bytes: int, total_bytes: int):
+        """进度 UI 更新（主线程）"""
         self.show_progress(percent)
-        self.status_label.setText(f"正在复制: {filename}")
+        if total_bytes > 0:
+            self.status_label.setText(
+                f"正在复制: {filename} ({self._fmt_size(copied_bytes)}/{self._fmt_size(total_bytes)})")
+        else:
+            self.status_label.setText(f"正在复制: {filename}")
+
+    def _on_file_op_done(self, result, note, handler):
+        """文件操作完成（主线程）：清理回调 + 刷新视图"""
+        self.file_ops.set_progress_callback(None)
+        self.hide_progress()
+        if handler is not None:
+            handler(result)
+        elif result.success:
+            self.status_label.setText(f"{note}完成")
+            self.navigate_to(self.current_path)
+        else:
+            self.status_label.setText(f"{note}失败")
+            QMessageBox.warning(self, note, result.error or "操作失败")
+
+    @staticmethod
+    def _fmt_size(n: int) -> str:
+        """字节数人性化显示（GB/MB/KB）"""
+        try:
+            n = int(n)
+        except (TypeError, ValueError):
+            return "0 B"
+        for unit in ("B", "KB", "MB", "GB", "TB"):
+            if n < 1024 or unit == "TB":
+                return f"{n:.1f} {unit}" if unit != "B" else f"{n} B"
+            n /= 1024
+        return "0 B"
     
     def delete_selected(self):
         """删除选中项"""
@@ -1501,21 +1659,23 @@ class Pane(QWidget):
         )
         
         if reply == QMessageBox.StandardButton.Yes:
-            self.file_ops.set_progress_callback(self._on_copy_progress)
-            result = self.file_ops.delete(paths, safe=True)
-            self.file_ops.set_progress_callback(None)
-            
-            if result.success:
-                self.status_label.setText(f"已删除 {result.files_affected} 个项目")
-                if _is_network_path(self.current_path):
-                    # SMB 网络共享上 QFileSystemWatcher 变化通知不可靠，
-                    # 模型不会自动移除已删项，强制重扫当前目录
-                    self._force_refresh_current_dir()
-            else:
-                QMessageBox.warning(self, "删除失败", result.error)
-            
+            self._run_file_op_async(
+                "正在删除",
+                lambda: self.file_ops.delete(paths, safe=True),
+                lambda result: self._on_delete_done(result))
+    
+    def _on_delete_done(self, result):
+        """删除完成（主线程）"""
+        if result.success:
+            self.status_label.setText(f"已删除 {result.files_affected} 个项目")
             self.navigate_to(self.current_path)
-            self.hide_progress()
+            if _is_network_path(self.current_path):
+                # SMB 网络共享上 QFileSystemWatcher 变化通知不可靠，
+                # 模型不会自动移除已删项，强制重扫当前目录
+                self._force_refresh_current_dir()
+        else:
+            self.status_label.setText("删除失败")
+            QMessageBox.warning(self, "删除失败", result.error)
     
     def _force_refresh_current_dir(self):
         """强制刷新当前目录显示。
@@ -1859,19 +2019,12 @@ class Pane(QWidget):
                     # 不能把目录移到它自己或它的子目录里（shutil 会递归复制卡死）
                     event.ignore()
                     return
-                self.file_ops.set_progress_callback(self._on_copy_progress)
-                if action == "move":
-                    self.file_ops.move(files, target_dir)
-                else:
-                    self.file_ops.copy(files, target_dir)
-                self.file_ops.set_progress_callback(None)
-                self.navigate_to(self.current_path)
-                self.hide_progress()
-                if _is_network_path(target_dir):
-                    self._force_refresh_current_dir()
-                elif action == "move":
-                    # 跨窗格移动：源窗格（网络路径）显示残留需一并重扫
-                    self._refresh_network_sources(files)
+                self._run_file_op_async(
+                    "正在移动" if action == "move" else "正在复制",
+                    (lambda: self.file_ops.move(files, target_dir)) if action == "move"
+                    else (lambda: self.file_ops.copy(files, target_dir)),
+                    lambda result: self._on_drop_done(
+                        result, target_dir, files if action == "move" else None))
             event.accept()
             return
 
@@ -1905,20 +2058,27 @@ class Pane(QWidget):
             event.ignore()
             return
 
-        self.file_ops.set_progress_callback(self._on_copy_progress)
-        if do_move:
-            self.file_ops.move(files, target_dir)
-        else:
-            self.file_ops.copy(files, target_dir)
-        self.file_ops.set_progress_callback(None)
-        self.navigate_to(self.current_path)
-        self.hide_progress()
-        if _is_network_path(target_dir):
-            self._force_refresh_current_dir()
-        elif do_move and not src_in_current:
-            # 外部（或其它窗格）Shift 强制移动：源目录若为网络路径，源窗格残留需重扫
-            self._refresh_network_sources(files)
+        self._run_file_op_async(
+            "正在移动" if do_move else "正在复制",
+            (lambda: self.file_ops.move(files, target_dir)) if do_move
+            else (lambda: self.file_ops.copy(files, target_dir)),
+            lambda result: self._on_drop_done(
+                result, target_dir, files if (do_move and not src_in_current) else None))
         event.accept()
+
+    def _on_drop_done(self, result, target_dir, moved_srcs):
+        """拖放操作完成（主线程）"""
+        if result.success:
+            self.status_label.setText("拖放完成")
+            self.navigate_to(self.current_path)
+            if _is_network_path(target_dir):
+                self._force_refresh_current_dir()
+            elif moved_srcs:
+                # 跨窗格/外部移动：源目录若为网络路径，源窗格残留需重扫
+                self._refresh_network_sources(moved_srcs)
+        else:
+            self.status_label.setText("拖放失败")
+            QMessageBox.warning(self, "移动/复制", result.error or "操作失败")
     
     @staticmethod
     def _move_target_inside_sources(files, target_dir):

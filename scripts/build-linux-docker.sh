@@ -56,11 +56,16 @@ sudo docker run --name ${CONTAINER_NAME} \
         # 用系统 perl 运行，避免目标系统未装 exiftool 时拍摄日期列不可用）。
         # resources/tools/7z（内置 7zz，压缩/解压兜底）。
         # 注意：不打包 resources/tools/exiftool（Windows 专用 exe + Perl 运行时）。
+        # platforminputcontexts：PyQt6 wheel 不带 Qt6 输入法插件（ibus/fcitx5），
+        # 不打包则 Linux 下无法输入中文。插件文件放 resources/tools/qt6-im-plugins/
+        # （从系统 Qt6 插件目录拷贝入库，随应用分发）；目标机需有对应客户端库
+        # （ibus 依赖 libibus-1.0，58 已装）。
         pyinstaller --onefile --windowed --name=pan4dex \
             --add-data resources/icons:resources/icons \
             --add-data resources/themes:resources/themes \
             --add-data resources/tools/exiftool-linux:resources/tools/exiftool-linux \
             --add-data resources/tools/7z:resources/tools/7z \
+            --add-data resources/tools/qt6-im-plugins:PyQt6/Qt6/plugins/platforminputcontexts \
             main.py
         
         # 移动到 releases

@@ -80,15 +80,20 @@ class FileOperationResult:
     files_affected: int = 0
 
 
+class _OperationCancelled(Exception):
+    """内部：复制被取消（分段拷贝循环中抛出，由 copy() 统一转为结果）"""
+    pass
+
+
 class FileOperations:
     """文件操作类"""
     
     def __init__(self):
         self._cancelled = False
-        self._progress_callback: Optional[Callable[[int, str], None]] = None
+        self._progress_callback: Optional[Callable[[int, str, int, int], None]] = None
     
-    def set_progress_callback(self, callback: Callable[[int, str], None]):
-        """设置进度回调函数"""
+    def set_progress_callback(self, callback: Callable[[int, str, int, int], None]):
+        """设置进度回调函数(percent, filename, copied_bytes, total_bytes)"""
         self._progress_callback = callback
     
     def cancel(self):
@@ -121,8 +126,9 @@ class FileOperations:
                 error="目标目录不存在"
             )
         
-        total_files = self._count_files(sources)
+        total_files, total_bytes = self._count_files_and_size(sources)
         files_copied = 0
+        copied_bytes = 0
         
         for source in sources:
             if self._cancelled:
@@ -136,10 +142,19 @@ class FileOperations:
                 )
             
             try:
-                result = self._copy_single(source, destination, total_files, files_copied)
+                result = self._copy_single(source, destination, total_files, total_bytes, files_copied, copied_bytes)
                 if isinstance(result, FileOperationResult):
                     return result
-                files_copied = result
+                files_copied, copied_bytes = result
+            except _OperationCancelled:
+                return FileOperationResult(
+                    success=False,
+                    operation=FileOperationType.COPY,
+                    source=source,
+                    destination=destination,
+                    error="操作已取消",
+                    files_affected=files_copied
+                )
             except Exception as e:
                 return FileOperationResult(
                     success=False,
@@ -175,8 +190,9 @@ class FileOperations:
                 return candidate
             counter += 1
 
-    def _copy_single(self, source: str, destination: str, total: int, current: int) -> int | FileOperationResult:
-        """复制单个文件/目录"""
+    def _copy_single(self, source: str, destination: str, total_files: int, total_bytes: int,
+                    current_files: int, current_bytes: int):
+        """复制单个文件/目录，返回 (已复制文件数, 已复制字节数)；取消时返回 FileOperationResult"""
         source_name = os.path.basename(source)
         dest_path = self._unique_dest_path(destination, source_name)
         
@@ -194,26 +210,54 @@ class FileOperations:
                         source=source,
                         destination=destination,
                         error="操作已取消",
-                        files_affected=current
+                        files_affected=current_files
                     )
                 
                 item_path = os.path.join(source, item)
                 if os.path.isdir(item_path):
-                    result = self._copy_single(item_path, dest_path, total, current)
+                    result = self._copy_single(item_path, dest_path, total_files, total_bytes,
+                                               current_files, current_bytes)
                     if isinstance(result, FileOperationResult):
                         return result
-                    current = result
+                    current_files, current_bytes = result
                 else:
-                    shutil.copy2(item_path, dest_path)
-                    current += 1
-                    self._report_progress(current, total, item)
+                    copied = self._copy_file_with_progress(
+                        item_path, os.path.join(dest_path, item),
+                        total_bytes, current_files, current_bytes)
+                    current_files += 1
+                    current_bytes += copied
+                    self._report_progress(current_files, total_files, item, current_bytes, total_bytes)
         else:
-            # 复制文件
-            shutil.copy2(source, dest_path)
-            current += 1
-            self._report_progress(current, total, source_name)
+            # 复制文件（字节级进度）
+            copied = self._copy_file_with_progress(
+                source, dest_path, total_bytes, current_files, current_bytes)
+            current_files += 1
+            current_bytes += copied
+            self._report_progress(current_files, total_files, source_name, current_bytes, total_bytes)
         
-        return current
+        return current_files, current_bytes
+    
+    def _copy_file_with_progress(self, src: str, dst: str, total_bytes: int,
+                                 base_files: int, base_bytes: int) -> int:
+        """分段拷贝单个文件并实时报告字节级进度；返回该文件字节数。
+
+        每 1MB 报告一次，大文件（几个 GB）也能看到持续进度；
+        支持取消（_cancelled 置位后在下一次分段拷贝前抛出）。
+        """
+        src_size = os.path.getsize(src)
+        copied = 0
+        with open(src, "rb") as fsrc, open(dst, "wb") as fdst:
+            while True:
+                if self._cancelled:
+                    raise _OperationCancelled()
+                chunk = fsrc.read(1024 * 1024)
+                if not chunk:
+                    break
+                fdst.write(chunk)
+                copied += len(chunk)
+                done_bytes = base_bytes + copied
+                self._report_progress(0, 0, os.path.basename(src), done_bytes, total_bytes)
+        return copied
     
     def move(self, sources: list[str], destination: str) -> FileOperationResult:
         """
@@ -452,19 +496,35 @@ class FileOperations:
         
         return hash_func.hexdigest()
     
-    def _count_files(self, paths: list[str]) -> int:
-        """计算文件总数"""
+    def _count_files_and_size(self, paths: list[str]) -> tuple:
+        """计算文件总数与总字节数（复制进度按字节显示用）"""
         count = 0
+        total = 0
         for path in paths:
             if os.path.isdir(path):
                 for root, dirs, files in os.walk(path):
                     count += len(files)
+                    for f in files:
+                        try:
+                            total += os.path.getsize(os.path.join(root, f))
+                        except OSError:
+                            pass
             else:
                 count += 1
-        return count
+                try:
+                    total += os.path.getsize(path)
+                except OSError:
+                    pass
+        return count, total
     
-    def _report_progress(self, current: int, total: int, filename: str):
-        """报告进度"""
-        if self._progress_callback and total > 0:
+    def _report_progress(self, current: int, total: int, filename: str,
+                          copied_bytes: int = 0, total_bytes: int = 0):
+        """报告进度：有字节统计时按字节（大文件实时），否则按文件数"""
+        if not self._progress_callback:
+            return
+        if total_bytes > 0:
+            percent = min(100, int(copied_bytes * 100 / total_bytes))
+            self._progress_callback(percent, filename, copied_bytes, total_bytes)
+        elif total > 0:
             percent = int(current * 100 / total)
-            self._progress_callback(percent, filename)
+            self._progress_callback(percent, filename, 0, 0)
