@@ -98,6 +98,22 @@ class SettingsDialog(QDialog):
         hint.setWordWrap(True)
         layout.addWidget(group)
         layout.addWidget(hint)
+
+        # 启动时显示侧边栏
+        side_group = QGroupBox("启动时显示侧边栏")
+        side_layout = QVBoxLayout(side_group)
+        s = QSettings(ORG_NAME, APP_NAME)
+        self.startup_bookmark_cb = QCheckBox("显示收藏夹侧边栏")
+        self.startup_bookmark_cb.setChecked(
+            s.value("startup/bookmark_sidebar", False, type=bool)
+        )
+        self.startup_tree_cb = QCheckBox("显示目录树侧边栏")
+        self.startup_tree_cb.setChecked(
+            s.value("startup/tree_sidebar", False, type=bool)
+        )
+        side_layout.addWidget(self.startup_bookmark_cb)
+        side_layout.addWidget(self.startup_tree_cb)
+        layout.addWidget(side_group)
         layout.addStretch()
         return widget
 
@@ -313,6 +329,8 @@ class SettingsDialog(QDialog):
             'font_family': self.font_combo.currentText(),
             'font_size': self.font_size_spin.value(),
             'default_dir': self.default_dir_edit.text().strip(),
+            'startup_bookmark_sidebar': self.startup_bookmark_cb.isChecked(),
+            'startup_tree_sidebar': self.startup_tree_cb.isChecked(),
         }
         # 收集工具栏按钮可见性
         if hasattr(self, 'toolbar_checkboxes'):

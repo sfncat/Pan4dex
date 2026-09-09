@@ -175,6 +175,9 @@ class MainWindow(QMainWindow):
         # 恢复窗口几何/dock 状态（UI 已建完，此时 restoreState 才有效）
         self.restore_geometry()
 
+        # 按设置项显示启动侧边栏（收藏夹已建；目录树延迟创建后由 _create_tree_sidebar_lazy 再次应用）
+        self._apply_startup_sidebars()
+
         # 窗格分割比例：等延迟创建的 pane2-4 就位（250ms）后再恢复
         from PyQt6.QtCore import QTimer
         QTimer.singleShot(400, self._restore_splitter_sizes)
@@ -308,6 +311,8 @@ class MainWindow(QMainWindow):
         # 若在创建前用户已触发切换，补同步显示状态
         if getattr(self, '_tree_toggle', False):
             self.tree_sidebar.setVisible(True)
+        # 按设置项应用启动时显示（设置开启则显示，否则保持隐藏）
+        self._apply_startup_sidebars()
     
     def on_tree_folder_clicked(self, path: str):
         """目录树文件夹点击 - 导航到当前活动窗格"""
@@ -1170,6 +1175,18 @@ class MainWindow(QMainWindow):
             f"<p>许可证: MIT</p>"
         )
     
+    def _apply_startup_sidebars(self):
+        """按设置项应用侧边栏显示状态（设置保存后立即生效）"""
+        try:
+            show_bookmark = self.settings.value("startup/bookmark_sidebar", False, type=bool)
+            show_tree = self.settings.value("startup/tree_sidebar", False, type=bool)
+            if hasattr(self, 'bookmark_sidebar'):
+                self.bookmark_sidebar.setVisible(bool(show_bookmark))
+            if getattr(self, 'tree_sidebar', None) is not None:
+                self.tree_sidebar.setVisible(bool(show_tree))
+        except Exception as e:
+            logger.error(f"应用启动侧边栏设置失败: {e}", exc_info=True)
+
     def open_settings(self):
         """打开设置对话框"""
         from widgets.settings_dialog import SettingsDialog
@@ -1186,6 +1203,16 @@ class MainWindow(QMainWindow):
             self.settings.setValue("default_dir", settings.get('default_dir', ''))
             self.settings.setValue("toolbar_buttons", settings.get('toolbar_buttons', {}))
             self.settings.setValue("launcher/apps", json.dumps(settings.get('launcher_apps', [])))
+            # 启动时显示侧边栏
+            self.settings.setValue(
+                "startup/bookmark_sidebar",
+                bool(settings.get('startup_bookmark_sidebar', False)),
+            )
+            self.settings.setValue(
+                "startup/tree_sidebar",
+                bool(settings.get('startup_tree_sidebar', False)),
+            )
+            self._apply_startup_sidebars()
 
             # 应用主题
             theme = settings.get('theme', DEFAULT_THEME)

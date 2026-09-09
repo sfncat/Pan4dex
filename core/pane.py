@@ -16,7 +16,7 @@ import sys
 
 from widgets.path_bar import PathBar
 from widgets.pane_tree_view import PaneTreeView
-from core.file_operations import FileOperations, FileOperationType, FileOperationResult, _is_unc_path
+from core.file_operations import FileOperations, FileOperationType, FileOperationResult, _is_network_path
 from core import archive_ops
 
 
@@ -603,6 +603,15 @@ class Pane(QWidget):
         """导航到指定路径"""
         import os
         if os.path.isdir(path):
+            # 网络路径（UNC/映射网络驱动器）下 QFileSystemModel 缓存同一目录
+            # 不重扫：外部程序（如其它文件管理器）复制/删除的文件看不到，
+            # 且 QFileSystemWatcher 在 SMB 上变更通知不可靠，重建共享模型强制重扫
+            if path == self.current_path and _is_network_path(path):
+                self._force_refresh_current_dir()
+                # 超大图标模式下同步刷新缩略图视图（重建模型不自动触发）
+                if hasattr(self, 'thumbnail_view') and self.thumbnail_view.isVisible():
+                    self.thumbnail_view.load_directory(path)
+                return
             self.current_path = path
             self.path_bar.set_path(path)
 
@@ -666,6 +675,9 @@ class Pane(QWidget):
         """导航但不记录历史"""
         import os
         if os.path.isdir(path):
+            if path == self.current_path and _is_network_path(path):
+                self._force_refresh_current_dir()
+                return
             self.current_path = path
             self.path_bar.set_path(path)
             self._set_root_index(path)
@@ -1435,6 +1447,8 @@ class Pane(QWidget):
         global SHARED_CLIPBOARD_ACTION
         
         if SHARED_CLIPBOARD:
+            was_cut = (SHARED_CLIPBOARD_ACTION == 'cut')
+            src_paths = list(SHARED_CLIPBOARD) if was_cut else []
             if SHARED_CLIPBOARD_ACTION == 'copy':
                 self.file_ops.set_progress_callback(self._on_copy_progress)
                 self.file_ops.copy(SHARED_CLIPBOARD, target_dir)
@@ -1447,8 +1461,11 @@ class Pane(QWidget):
                 SHARED_CLIPBOARD_ACTION = None
             self.navigate_to(target_dir)
             self.hide_progress()
-            if _is_unc_path(target_dir):
+            if _is_network_path(target_dir):
                 self._force_refresh_current_dir()
+            elif was_cut:
+                # 剪切移动：源目录若为网络路径，源窗格显示残留需一并重扫
+                self._refresh_network_sources(src_paths)
             return
         
         # 应用内剪贴板为空：尝试系统剪贴板（从系统文件管理器复制进来）
@@ -1460,7 +1477,7 @@ class Pane(QWidget):
             self.navigate_to(target_dir)
             self.hide_progress()
             self.status_label.setText(f"已从系统剪贴板粘贴 {len(system_paths)} 个项目")
-            if _is_unc_path(target_dir):
+            if _is_network_path(target_dir):
                 self._force_refresh_current_dir()
     
     def _on_copy_progress(self, percent: int, filename: str):
@@ -1490,7 +1507,7 @@ class Pane(QWidget):
             
             if result.success:
                 self.status_label.setText(f"已删除 {result.files_affected} 个项目")
-                if _is_unc_path(self.current_path):
+                if _is_network_path(self.current_path):
                     # SMB 网络共享上 QFileSystemWatcher 变化通知不可靠，
                     # 模型不会自动移除已删项，强制重扫当前目录
                     self._force_refresh_current_dir()
@@ -1509,6 +1526,25 @@ class Pane(QWidget):
         共享模型全量重扫。
         """
         Pane._rebuild_shared_model()
+
+    def _refresh_network_sources(self, paths):
+        """移动/剪切后刷新可能残留的源窗格。
+
+        跨窗格移动或剪切粘贴时，文件从源目录消失；若源目录是网络路径
+        （UNC/映射网络驱动器），QFileSystemModel 缓存不会自动移除，
+        目标窗格的 navigate_to 只重建当前窗格所在模型（实际重建共享模型
+        会让所有窗格一并重扫，但仅当目标路径也是网络路径时才触发）。
+        这里主动检查源目录：任一源目录是网络路径就重建共享模型，所有
+        窗格（含显示源目录的窗格）一并强制重扫。
+        """
+        try:
+            src_dirs = {os.path.normpath(os.path.dirname(p)) for p in (paths or []) if p}
+            for d in src_dirs:
+                if _is_network_path(d):
+                    self._force_refresh_current_dir()
+                    return
+        except Exception:
+            pass
     
     @classmethod
     def _rebuild_shared_model(cls):
@@ -1559,7 +1595,7 @@ class Pane(QWidget):
             result = self.file_ops.rename(path, new_name)
             if result.success:
                 self.navigate_to(self.current_path)
-                if _is_unc_path(self.current_path):
+                if _is_network_path(self.current_path):
                     self._force_refresh_current_dir()
             else:
                 QMessageBox.warning(self, "重命名失败", result.error)
@@ -1580,7 +1616,7 @@ class Pane(QWidget):
             result = self.file_ops.create_folder(self.current_path, name)
             if result.success:
                 self.navigate_to(self.current_path)
-                if _is_unc_path(self.current_path):
+                if _is_network_path(self.current_path):
                     self._force_refresh_current_dir()
             else:
                 QMessageBox.warning(self, "创建失败", result.error)
@@ -1595,7 +1631,7 @@ class Pane(QWidget):
             result = self.file_ops.create_file(self.current_path, name)
             if result.success:
                 self.navigate_to(self.current_path)
-                if _is_unc_path(self.current_path):
+                if _is_network_path(self.current_path):
                     self._force_refresh_current_dir()
             else:
                 QMessageBox.warning(self, "创建失败", result.error)
@@ -1831,8 +1867,11 @@ class Pane(QWidget):
                 self.file_ops.set_progress_callback(None)
                 self.navigate_to(self.current_path)
                 self.hide_progress()
-                if _is_unc_path(target_dir):
+                if _is_network_path(target_dir):
                     self._force_refresh_current_dir()
+                elif action == "move":
+                    # 跨窗格移动：源窗格（网络路径）显示残留需一并重扫
+                    self._refresh_network_sources(files)
             event.accept()
             return
 
@@ -1874,8 +1913,11 @@ class Pane(QWidget):
         self.file_ops.set_progress_callback(None)
         self.navigate_to(self.current_path)
         self.hide_progress()
-        if _is_unc_path(target_dir):
+        if _is_network_path(target_dir):
             self._force_refresh_current_dir()
+        elif do_move and not src_in_current:
+            # 外部（或其它窗格）Shift 强制移动：源目录若为网络路径，源窗格残留需重扫
+            self._refresh_network_sources(files)
         event.accept()
     
     @staticmethod

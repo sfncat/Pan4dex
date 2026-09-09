@@ -19,6 +19,29 @@ def _is_unc_path(p: str) -> bool:
     return p.replace('/', '\\').startswith('\\\\')
 
 
+def _is_network_path(p: str) -> bool:
+    """判断路径是否为网络路径（Windows）：UNC 共享（\\server\\share）或
+    映射到网络共享的驱动器（如 Z:\\，GetDriveTypeW 返回 DRIVE_REMOTE=4）。
+
+    QFileSystemModel 对网络路径的目录缓存不可靠（QFileSystemWatcher 变更
+    通知在 SMB 上经常失效），外部程序复制/删除的文件不会自动出现在列表里，
+    需要强制重建模型重扫，因此要能识别这类路径。
+    """
+    if os.name != 'nt':
+        return False
+    p = p.replace('/', '\\')
+    if p.startswith('\\\\'):
+        return True
+    root = os.path.splitdrive(p)[0]
+    if root:
+        try:
+            import ctypes
+            t = ctypes.windll.kernel32.GetDriveTypeW(root + '\\')
+            return t == 4  # DRIVE_REMOTE
+        except Exception:
+            pass
+    return False
+
 def _normalize_unc(p: str) -> str:
     """把 UNC 路径规范成普通的 server 共享形式（去掉 send2trash 加的
     长路径前缀、统一反斜杠），供 os.remove / shutil.rmtree 使用。"""
