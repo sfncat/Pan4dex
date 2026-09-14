@@ -3,7 +3,7 @@ Pan4dex 万格 — 路径栏组件
 """
 import logging
 import sys
-from PyQt6.QtGui import QFileSystemModel, QAction, QIcon, QPixmap, QPainter, QColor, QFont, QPen, QPolygonF
+from PyQt6.QtGui import QAction, QIcon, QPixmap, QPainter, QColor, QFont, QPen, QPolygonF
 from PyQt6.QtWidgets import (
     QComboBox, QCompleter, QWidget,
     QHBoxLayout, QPushButton, QToolButton, QStyle

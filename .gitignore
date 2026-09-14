@@ -55,3 +55,7 @@ releases/
 
 # 运行时工具（exiftool 等，构建机器本地部署，不进版本库）
 /resources/tools/
+
+# PyInstaller 单文件版构建产物
+build_onefile/
+dist_onefile/

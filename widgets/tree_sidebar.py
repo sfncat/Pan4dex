@@ -155,7 +155,7 @@ class TreeSidebar(QDockWidget):
                 menu.addAction("粘贴(&V)", pane.paste)
             menu.addSeparator()
             menu.addAction("删除(&D)", lambda: pane._delete_paths([path]))
-            menu.addAction("重命名(&R)", lambda: pane._rename_path(path))
+            menu.addAction("重命名(&R)", lambda: pane._start_inline_rename(path))
             menu.addSeparator()
             if os.path.isdir(path):
                 menu.addAction("添加到收藏夹(&B)", lambda: pane.add_to_bookmarks(path))

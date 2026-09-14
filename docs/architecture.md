@@ -34,7 +34,7 @@
 |---|---|
 | `main_window.py` | 主窗口管理、标签页、布局切换、菜单栏、状态栏 |
 | `pane.py` | 单个窗格的完整功能：路径栏、文件列表、导航、上下文菜单 |
-| `file_model.py` | 封装 QFileSystemModel，提供排序、过滤、目录监听 |
+| `dir_model.py` | `DirStoreModel`：以目录为单位的异步文件模型（后台枚举 + TTL 缓存 + 定向失效），文件列表专用 |
 | `file_operations.py` | 文件复制/移动/删除/重命名，支持进度回调和取消 |
 | `drag_drop.py` | 拖拽事件处理、MIME 数据传输、操作类型判断 |
 | `terminal.py` | 终端应用检测、命令构造、启动外部终端 |
@@ -73,7 +73,7 @@ progress_signal.emit(percent, current_file) → 进度对话框
     ↓
 result_signal.emit(FileOperationResult) → Pane 处理结果
     ↓
-Pane 刷新 QFileSystemModel + 更新状态栏
+Pane 使涉及的目录失效并重扫（`DirStoreModel.refresh_dir`）+ 更新状态栏
 ```
 
 ### 3.2 拖拽数据协议
@@ -108,17 +108,24 @@ QApplication.setStyleSheet(style_sheet)
 
 ### 4.1 为什么用 QTreeView 而不是 QListView？
 
-QTreeView 支持列排序（名称、大小、修改时间），且 QFileSystemModel 天然适配。QListView 只能单列显示。
+QTreeView 支持列排序（名称、大小、修改时间），文件列表模型（`DirStoreModel`）按列提供数据，配合每窗格独立的排序代理。QListView 只能单列显示。
 
-### 4.2 为什么每个窗格独立 QFileSystemModel？
+### 4.2 为什么文件列表用自研 `DirStoreModel`，且每窗格一个实例？
 
-每个窗格需要独立的：
-- 当前路径
-- 排序规则
-- 过滤规则
-- 选中状态
+**不用 `QFileSystemModel` 的原因（SMB 场景）**：它对一个目录里的每一项都 `stat`，
+并给每个目录挂 `QFileSystemWatcher`；在网络位置上这是几百次往返，列一个目录要十几秒。
 
-共享模型会导致状态冲突。
+**`DirStoreModel` 的做法**：一次只枚举一个目录（`os.scandir` 一次往返拿到
+name/attr/size/mtime），在 `QThreadPool` 后台线程完成，主线程零阻塞；
+当前显示目录作为模型唯一顶层行，保证排序代理 `mapFromSource` 可映射。
+
+**为何每窗格独立实例**：每个窗格需要独立的当前路径、排序规则、过滤规则与选中状态；
+共享模型除了状态冲突，还会让任一窗格的导航/重扫把卡顿带到其它窗格。
+跨窗格一致性改由显式信号保证（`dirChanged` / `Pane._refresh_dir_everywhere`），
+而不靠文件系统 watcher。
+
+> 两个侧边目录树（`pane_tree_view.py` / `tree_sidebar.py`）本就按需展开、非瓶颈，
+> 继续使用 `QFileSystemModel`。
 
 ### 4.3 文件操作为什么用 QThread？
 
@@ -165,7 +172,7 @@ JSON 格式定义颜色变量，放置于 `~/.config/pan4dex/themes/`。
 
 | 场景 | 策略 |
 |---|---|
-| 大目录（10k+ 文件） | QFileSystemModel 原生支持懒加载，无需额外处理 |
+| 大目录（10k+ 文件） | `DirStoreModel` 一次只枚举一个目录且在后台线程完成，主线程不阻塞 |
 | 大文件复制 | QThread 后台执行，进度信号节流（每 50ms 更新一次） |
 | 频繁导航 | 路径栏自动补全使用缓存，避免重复文件系统查询 |
 | 主题切换 | 预编译样式表，避免运行时解析 |

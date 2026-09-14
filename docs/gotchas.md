@@ -41,6 +41,9 @@ python scripts/deploy.py 0.9.XXX
 
 ### 4. QFileSystemModel.setRootPath() 共享模型陷阱
 
+> **状态（v1.9.001）**：文件列表已改为每窗格独立的 `DirStoreModel`，本条作为历史保留；
+> 两个侧边目录树仍用 `QFileSystemModel`，该陷阱在树里依然成立。
+
 **现象**：导航到一个目录后，其他窗格的文件列表变成该目录的内容。
 
 **根因**：四个窗格共享同一个 `QFileSystemModel`，`setRootPath()` 改变了模型的根目录，所有绑定该模型的视图都受影响。
@@ -141,7 +144,73 @@ def _expand_parts(self, parts, idx):
 
 ---
 
-## 六、回归防护机制
+## 六、DirStoreModel（文件列表异步模型）类
+
+### 12. 没有 QFileSystemWatcher → 改动后必须显式重扫
+
+**现象**：新建/删除/粘贴/拖放后条目不可见，只有按 F5 才刷新（本地目录也一样）。
+
+**根因**：为避开 SMB 上的 watcher 轮询，`DirStoreModel` 不挂文件监视；旧共享模型时代
+`QFileSystemModel` 会自己发现本地变更，删掉它之后这份“免费午餐”就没了。又因为
+`_fresh_or_local()` 对本地路径恒为 True，陈旧节点不丢弃就永远不重扫。
+
+**解决**：pane 侧所有改动完成回调统一走 `_reload_after_mutation(path)`
+（`refresh_dir` 失效并重扫 + `navigate_to`），不再区分本地/网络。
+
+**测试**：`tests/test_pane_dir_store.py::test_local_mutation_visible_after_reload`
+
+### 13. 同一目录并发枚举：旧快照会永久占位
+
+**现象**：刷新 / 切换隐藏文件开关后，新文件迟迟不出现；直接单步调
+`model.refresh_dir(path)` 却能立刻看到。
+
+**根因**：同一节点上叠加了多个 in-flight  `_LoadTask`，旧枚举结果先回到主线程，
+`if node.loaded: return` 的幂等守卫让它当成“已完成”而永久占据视图，新结果反而被丢弃。
+
+**解决**：`DirNode.gen` 请求代次——`_start_load` 先 `gen += 1`，回调首行
+`if gen != node.gen: return`（在清 `loading` 之前），只采纳最新一次结果。
+
+**测试**：`tests/test_dir_model.py::test_stale_generation_result_ignored`、
+`test_refresh_after_new_file_wins`
+
+### 14. 两层结构下 `index(path)` 只能给“当前显示目录”的索引
+
+**现象**：对未加载/已切走的目录做行内改名时，窗格不导航到父目录，`current_path` 停在原地。
+
+**根因**：模型里任何 `DirNode` 的 `parent()` 都报为 invalid 根，而
+`index(0, 0, invalid)` 只会解出顶层节点；为非显示目录的条目返回索引，经排序代理
+`mapFromSource` 后会得到“看似有效实则错行”的索引。
+
+**解决**：`_index_for_path` 只解析 top 节点及其条目；判定任意路径是否目录改用
+`entry_is_dir(path)`（纯内存，未知返回 None 由调用方回退 `os.path.isdir`）。
+
+**测试**：`tests/test_dir_model.py::test_index_only_for_displayed_dir`
+
+### 15. 类级 `_CACHE` 只能当只读模板
+
+**现象**：一个窗格改名，另一个窗格同目录的条目文字跟着变；`e.node` 反查指向别的窗格节点。
+
+**根因**：`Entry` 是可变的（行内改名就地改 `name`/`path`，`node` 用于 `parent()`），
+而跨窗格缓存命中时直接把同一个列表/对象挂到两个节点上。
+
+**解决**：缓存命中走 `_copy_entries`（逐份复制并重新回填 `node`），后台新枚举结果
+走 `_adopt`（本节点独占）。
+
+**测试**：`tests/test_dir_model.py::test_cache_entries_are_copied_per_node`、
+`tests/test_pane_dir_store.py::test_cross_pane_rename_syncs`
+
+### 16. Qt6 枚举/接口的写法陷阱（写模型时踩过）
+
+- `Qt.ItemFlag` 没有 `ItemHasChildren`：目录用 `rowCount`/`canFetchMore` 表达，
+  肯定无子项的文件用 `ItemNeverHasChildren`。
+- 判断是否在编辑：`tv.state() == QAbstractItemView.State.EditingState`，
+  不存在 `tv.state.EditingState`。
+- PyQt6 未暴露 `cancelEditing()`：测试里用 `QTest.keyPress(tv, Qt.Key.Key_Escape)` 收起编辑框。
+- `tv.reset()` 会连 `rootIndex` 一起重置，破坏文件列表视图，不可用于“取消编辑”。
+
+---
+
+## 七、回归防护机制
 
 ### 部署脚本
 ```bash
@@ -162,6 +231,9 @@ python scripts/deploy.py 0.9.618
 
 - [ ] 新增的 Qt widget 是否考虑了共享模型
 - [ ] 涉及 QFileSystemModel 的是否处理了异步加载
+- [ ] 涉及 `DirStoreModel` 的：新路径是否走 `entry_is_dir()` 而不是 `index(path)`？
+      改动文件系统后是否调了 `refresh_dir` / `_reload_after_mutation`？
+- [ ] 后台枚举结果是否按 `gen` 校验代次（不得直接信任回调）
 - [ ] 切换可见性后是否 `update()` + `repaint()`
 - [ ] 导航是否用 `setRootIndex` 而不是 `setRootPath`
 - [ ] QDockWidget 是否保存了显式 parent 引用

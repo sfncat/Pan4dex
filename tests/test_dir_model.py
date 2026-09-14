@@ -11,7 +11,7 @@ import os
 import pytest
 from PyQt6.QtCore import Qt, QDir, QModelIndex, QThreadPool
 
-from core.dir_model import DirStoreModel, enumerate_dir, _key
+from core.dir_model import DirStoreModel, Entry, enumerate_dir, _key
 
 
 @pytest.fixture
@@ -165,12 +165,89 @@ def test_rename_reject_collision(qtbot, tree):
 
 # ---------- 定向失效 ----------
 
+def test_stale_generation_result_ignored(qtbot, tree):
+    """gen 落后的枚举结果必须作废：否则旧快照会永久占据视图，刷新看似没生效。"""
+    m = DirStoreModel()
+    di = _load(qtbot, m, tree)
+    node = m._top_node
+    assert m.rowCount(di) == 3
+
+    stale = enumerate_dir(str(tree), True)
+    stale.append(Entry("ghost.txt", str(tree / "ghost.txt"), False, 1, 0.0, False, False))
+
+    m.refresh()                        # 另起一次枚举：gen+1、loading=True
+    gen_now = node.gen
+    assert node.loading is True and node.entries is None
+
+    m._on_entries_loaded(node, stale, gen_now - 1)   # 伪造过期回调
+    assert node.loading is True        # 过期结果不得误清当代 loading
+    assert m.rowCount(di) == 0         # 过期结果不得插入行
+
+    qtbot.waitUntil(lambda: node.loaded and not node.loading, timeout=5000)
+    assert m.rowCount(di) == 3
+    assert "ghost.txt" not in _names(m, di)
+
+
+def test_refresh_after_new_file_wins(qtbot, tree):
+    """建文件后重扫：新结果必须可见（即使之前有一次 in-flight 枚举）。"""
+    m = DirStoreModel()
+    di = _load(qtbot, m, tree)
+    m.refresh()                       # 第一次重扫（未落完）
+    (tree / "late.txt").write_text("x")
+    m.refresh()                       # 紧接着再重扫一次
+    qtbot.waitUntil(lambda: m.rowCount(di) == 4, timeout=5000)
+    assert "late.txt" in _names(m, di)
+
+
 def test_invalidate_drops_cache(tree):
     entries = enumerate_dir(str(tree))
     DirStoreModel._cache_put(_key(str(tree)), True, entries)
     assert _key(str(tree)) in DirStoreModel._CACHE
     DirStoreModel.notify_dir_changed(str(tree))
     assert _key(str(tree)) not in DirStoreModel._CACHE
+
+
+def test_refresh_dir_drops_unseen_node(qtbot, tree, tmp_path):
+    """未显示中的目录被改动后丢弃节点：导航回来时重新枚举，能看到新建项。"""
+    m = DirStoreModel()
+    _load(qtbot, m, tree)                      # tree 成为顶层并被加载
+    other = tmp_path / "other"
+    other.mkdir()
+    (other / "one.txt").write_text("1")
+    _load(qtbot, m, other)                     # 切走，tree 节点留在 _nodes 里
+    (tree / "late.txt").write_text("new")      # 外部新建（无 watcher 可感知）
+    m.refresh_dir(str(tree))
+    assert _key(str(tree)) not in m._nodes
+    di = _load(qtbot, m, tree)
+    qtbot.waitUntil(lambda: "late.txt" in _names(m, di), timeout=5000)
+
+
+# ---------- 零 syscall 目录判定 ----------
+
+def test_entry_is_dir_from_loaded_entries(qtbot, tree):
+    m = DirStoreModel()
+    _load(qtbot, m, tree)
+    assert m.entry_is_dir(str(tree)) is True                 # 顶层目录本身
+    assert m.entry_is_dir(str(tree / "dir_a")) is True
+    assert m.entry_is_dir(str(tree / "b.txt")) is False
+    assert m.entry_is_dir(str(tree / "nowhere")) is None     # 未知，交调用方回退
+
+
+# ---------- 每模型独占条目 ----------
+
+def test_cache_entries_are_copied_per_node(qtbot, tree):
+    """缓存只作模板：两个模型各得一份条目副本，node 反查指向各自节点。"""
+    m1 = DirStoreModel()
+    di1 = _load(qtbot, m1, tree)
+    m2 = DirStoreModel()
+    di2 = _load(qtbot, m2, tree)      # 命中 m1 填的类级缓存，走副本路径
+    n1 = m1._nodes[_key(str(tree))]
+    n2 = m2._nodes[_key(str(tree))]
+    assert n1 is not n2
+    assert all(a is not b for a, b in zip(n1.entries, n2.entries))
+    assert all(e.node is n1 for e in n1.entries)
+    assert all(e.node is n2 for e in n2.entries)
+    assert sorted(_names(m1, di1)) == sorted(_names(m2, di2))
 
 
 # ---------- 快速切换线程安全 ----------
@@ -189,6 +266,28 @@ def test_rapid_switch_only_last(qtbot, tmp_path):
     qtbot.waitUntil(lambda: m.rowCount(di2) == 3, timeout=5000)
     assert sorted(_names(m, di2)) == ["x0.txt", "x1.txt", "x2.txt"]
     # d1 的过期结果不得混入 d2 视图
-    di1 = m.index(str(d1))
-    assert "only1.txt" in _names(m, di1)
+    d1_entries = m._nodes[_key(str(d1))].entries
+    assert "only1.txt" in [e.name for e in d1_entries]
     assert "only1.txt" not in _names(m, di2)
+
+
+def test_index_only_for_displayed_dir(qtbot, tree, tmp_path):
+    """非当前显示目录的路径不得返回索引：两层结构的父链有歧义，
+    这类索引经代理映射会“看似有效实则错行”。"""
+    other = tmp_path.parent / "not_displayed"
+    other.mkdir(exist_ok=True)
+    (other / "deep.txt").write_text("d")
+
+    m = DirStoreModel()
+    _load(qtbot, m, other)                     # 先加载 other，节点留在内存里
+    di = _load(qtbot, m, tree)                 # 切回 tree 显示
+
+    assert not m.index(str(other / "deep.txt")).isValid()   # 不属于显示目录
+    assert not m.index(str(other)).isValid()                # 其它目录也不能给索引
+    assert m.index(str(tree)).isValid()        # 顶层目录自身 OK
+    assert m.index(str(tree / "b.txt")).isValid()
+    # 子目录作为当前目录的条目，仍可定位（它只是条目，不是顶层节点）
+    assert m.index(str(tree / "dir_a")).isValid()
+    # 判定任意路径是否目录走 entry_is_dir（不依赖索引）
+    assert m.entry_is_dir(str(other)) is True
+    assert m.entry_is_dir(str(tree / "dir_a")) is True

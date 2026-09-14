@@ -200,7 +200,10 @@ ssh sshuser@192.168.5.55 'cmd /c "taskkill /F /IM pan4dex* /T 2>nul & timeout /t
 ```
 
 ### 关键设计决策
-- 每个窗格持有独立的 `QFileSystemModel` 实例
+- 文件列表使用自研 `core/dir_model.py:DirStoreModel`（每窗格一个实例）：`os.scandir` 一次只枚举
+  一个目录、在 `QThreadPool` 后台执行，TTL 缓存 + 定向失效，不挂 `QFileSystemWatcher`
+  （SMB 上逐项 `stat` 与 watcher 轮询是卡顿根因）；应用内改动必须显式 `refresh_dir` 重扫
+- 两个侧边目录树（`widgets/pane_tree_view.py` / `widgets/tree_sidebar.py`）仍用 `QFileSystemModel`（按需展开，非瓶颈）
 - 每个标签页持有独立的 `QuadPaneWidget`（包含 4 个 Pane）
 - 跨窗格拖拽使用自定义 MIME 类型 `application/x-pan4dex-drag`
 - 文件操作在 `QThread` 中执行，避免阻塞 UI

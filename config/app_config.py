@@ -15,7 +15,7 @@
 # ---- 发布元数据 ----
 APP_NAME = "Pan4dex"                  # 应用英文名
 APP_NAME_CN = "万格"                    # 应用中文名
-VERSION = "1.9.000"                    # 版本号（开发分支 dev/shell-behavior-smb-perf 从 1.9.000 起每次发布末位 +1）
+VERSION = "1.9.001"                    # 版本号（开发分支 dev/shell-behavior-smb-perf 从 1.9.000 起每次发布末位 +1）
 BUILD_TIME = "2026-09-11 13:09:55"                      # 编译时间（YYYY-MM-DD HH:MM:SS），构建时自动写入；源码运行留空
 
 # ---- 应用级常量 ----
@@ -26,27 +26,6 @@ DEFAULT_THEME = "dark"                 # 默认主题（dark / light）
 # 默认窗口几何（最小尺寸，窗口大小由 QSettings 记忆恢复）
 DEFAULT_WINDOW_MIN_WIDTH = 1024
 DEFAULT_WINDOW_MIN_HEIGHT = 768
-
-# ---- 文件列表模型开关（第二阶段双轨，默认关）----
-# True  => 每个窗格用自研异步模型 DirStoreModel（core/dir_model.py），根治 SMB 逐项 stat
-# False => 沿用共享 ExifFileSystemModel（QFileSystemModel），保持旧行为
-# 运行时可被 QSettings("view/use_new_model") 覆盖，见 use_new_model()
-USE_NEW_MODEL = False
-
-
-def use_new_model() -> bool:
-    """返回文件列表是否启用新模型：QSettings 覆盖优先，否则回落到 USE_NEW_MODEL 常量。
-
-    读取失败（如无 Qt 环境）时安全回落到常量默认值，保证旧路径不受影响。
-    """
-    try:
-        from PyQt6.QtCore import QSettings
-        val = QSettings(ORG_NAME, APP_NAME).value("view/use_new_model", USE_NEW_MODEL)
-        if isinstance(val, bool):
-            return val
-        return str(val).strip().lower() in ("true", "1", "yes", "on")
-    except Exception:
-        return USE_NEW_MODEL
 
 # 图标文件名：统一使用 icon.png（圆角 PNG，Windows/Linux 运行时一致；
 # Windows 的 exe 内嵌图标仍用 icon.ico，由构建脚本 --icon 指定，两者视觉一致）

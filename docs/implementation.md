@@ -34,24 +34,31 @@ main_splitter (Vertical)
 ### 1.2 单窗格文件浏览
 
 **业务逻辑**：
-- 每个窗格持有独立的 `QFileSystemModel` 实例
-- 通过 `setRootPath()` 切换目录
-- `QTreeView` 显示文件列表，支持列排序
+- 每个窗格持有独立的 `DirStoreModel` 实例（`core/dir_model.py`）
+- 导航 = `self._set_root_index(path)`（内部：`model.set_directory(path)` →
+  `sort_proxy.mapFromSource(...)` → `tree_view.setRootIndex(...)`）
+- `QTreeView` 显示文件列表，排序由每窗格独立的 `PaneSortProxyModel` 承载
 
 **实现要点**：
 ```python
 class Pane(QWidget):
-    def __init__(self, pane_id):
-        self.model = QFileSystemModel()
-        self.model.setReadOnly(False)
-        self.tree_view = QTreeView()
-        self.tree_view.setModel(self.model)
-        self.tree_view.setRootIndex(self.model.index(path))
+    def _setup_model(self):
+        self.model = DirStoreModel()              # 每窗格一个实例
+        self.model.setFilter(self._file_filter())
+        self.sort_proxy = PaneSortProxyModel(self)  # 排序/过滤代理
+        self.sort_proxy.setSourceModel(self.model)
+        self.tree_view.setModel(self.sort_proxy)
+        self._set_root_index(self.current_path)   # 设定唯一顶层行
 ```
 
 **说明**：
-- `QFileSystemModel` 异步加载大目录，不阻塞 UI
-- 双击事件：如果是目录则 `setRootPath`，如果是文件则触发打开
+- 一次只枚举一个目录（`os.scandir`），在 `QThreadPool` 后台线程完成，
+  完成后 `begin/endInsertRows` 增量插入，主线程零阻塞
+- **不用** `QFileSystemModel`：它在 SMB 上逐项 `stat` + 挂 `QFileSystemWatcher` 轮询，
+  是网络目录卡顿根因；代价是没有变更通知，应用内改动必须显式 `refresh_dir()` 重扫
+- 当前显示目录是模型唯一顶层行（`rowCount(invalid)=1`），以保证代理 `mapFromSource` 可映射
+- 双击/Enter：目录则 `set_directory(子项)`，文件则触发打开
+- 行内改名走 `setData`：就地更新 + `dataChanged`，不重置模型（保留选中/滚动）
 
 ---
 
@@ -65,18 +72,18 @@ class Pane(QWidget):
 
 **实现要点**：
 ```python
-class PathBar(QComboBox):
-    def __init__(self):
-        self.setEditable(True)
+class PathBar(QWidget):
+    def _setup_shared_completer(self):
+        self._completer_model = QStringListModel(self)   # 非递归、一层子项
         self.completer = QCompleter()
-        self.completer.setModel(QDirModel())  # 文件系统补全
-        self.setCompleter(self.completer)
-        self.returnPressed.connect(self.on_path_entered)
+        self.completer.setModel(self._completer_model)
+        self.combo_box.setCompleter(self.completer)
 ```
 
 **说明**：
 - 路径历史存储在 `QSettings` 中
-- 自动补全使用 `QFileSystemModel` 过滤匹配项
+- 补全候选 = 当前目录下的一层子项（`_refresh_completions`）；旧实现用
+  `QFileSystemModel().setRootPath("")` 会递归枚举所有盘符/网络共享，已废弃
 
 ---
 

@@ -2,13 +2,13 @@
 """
 Pan4dex 万格 — DirStoreModel：以目录节点为单位的异步文件模型
 
-设计目标（第二阶段根治 SMB 性能）：
+设计目标：
 - 一次枚举一个目录，杜绝 QFileSystemModel 在 SMB 上的逐项 stat 与 watcher 轮询
 - 后台线程枚举（QThreadPool），主线程零阻塞；未加载完成 rowCount=0，canFetchMore/
   fetchMore 驱动，加载完 begin/endInsertRows 增量插入
 - TTL 缓存 + 定向失效：应用内操作后只失效涉及的目录，F5 只重扫当前目录
-- 两层结构（目录节点 → 其条目），与 pane 既有 `model.index(path)` → setRootIndex →
-  枚举该目录子项 的用法天然兼容，pane 侧几乎零改动
+- 结构：当前显示目录作为 invalid 根的唯一顶层行（rowCount(invalid)=1），
+  因此 pane 拿到的索引一定能被 QSortFilterProxyModel.mapFromSource 映射
 
 作用范围：仅服务文件列表视图（tree_view / 缩略图）。两个侧边目录树
 （pane_tree_view / tree_sidebar）本就按需展开、非瓶颈，继续使用 QFileSystemModel。
@@ -26,7 +26,7 @@ from PyQt6.QtWidgets import QApplication, QStyle
 
 logger = logging.getLogger("pan4dex.dir_model")
 
-# 列定义（与 QFileSystemModel 前 4 列 + ExifFileSystemModel 拍摄日期对齐）
+# 列定义（名称/大小/类型/修改日期 + 拍摄日期，前 4 列沿用资源管理器习惯顺序）
 COL_NAME, COL_SIZE, COL_TYPE, COL_DATE, COL_SHOT = range(5)
 HEADERS = ["名称", "大小", "类型", "修改日期", "拍摄日期"]
 
@@ -54,7 +54,7 @@ class Entry:
 
 class DirNode:
     """一个目录节点：持有其枚举出的条目列表与加载状态。"""
-    __slots__ = ("path", "key", "entries", "loaded", "loading")
+    __slots__ = ("path", "key", "entries", "loaded", "loading", "gen")
 
     def __init__(self, path):
         self.path = os.path.normpath(path)
@@ -62,6 +62,7 @@ class DirNode:
         self.entries = None        # None=未加载；list=已加载
         self.loaded = False
         self.loading = False
+        self.gen = 0               # 枚举请求代次：只采纳最新一次的结果
 
 
 # ---------- 目录枚举（纯 Python，不触碰 Qt，供后台线程调用） ----------
@@ -124,13 +125,14 @@ def enumerate_dir(path, show_hidden=True):
 # ---------- 后台枚举任务 ----------
 
 class _LoadSignals(QObject):
-    finished = pyqtSignal(object, object)   # DirNode, list[Entry]
+    finished = pyqtSignal(object, object, int)   # DirNode, list[Entry], gen
 
 
 class _LoadTask(QRunnable):
-    def __init__(self, node, show_hidden, signals):
+    def __init__(self, node, gen, show_hidden, signals):
         super().__init__()
         self.node = node
+        self.gen = gen
         self.show_hidden = show_hidden
         self.signals = signals
         self.setAutoDelete(True)
@@ -141,16 +143,20 @@ class _LoadTask(QRunnable):
         except Exception:
             rows = []
         # queued 投递回主线程（signals 属于主线程对象）
-        self.signals.finished.emit(self.node, rows)
+        self.signals.finished.emit(self.node, rows, self.gen)
 
 
 class DirStoreModel(QAbstractItemModel):
-    """目录节点为根、条目为子项的异步模型。pane 用 index(dirPath) + setRootIndex
-    显示某目录的条目；根（invalid）本身不直接展开。"""
+    """当前显示目录 = invalid 根的唯一顶层行，其子行为该目录条目。
 
-    SHOT_DATE_COLUMN = COL_SHOT   # 兼容 pane 对 ExifFileSystemModel 的列常量引用
+    pane 导航时调用 `set_directory(path)` 取得顶层索引，再经排序代理
+    setRootIndex，视图即展示该目录的条目列表。
+    """
+
+    SHOT_DATE_COLUMN = COL_SHOT   # pane 的「拍摄日期」列常量
     directoryLoaded = pyqtSignal(str)
     loadingStarted = pyqtSignal(str)
+    dirChanged = pyqtSignal(str)   # 本模型使某目录发生变更（行内改名等），供跨窗格同步
 
     # 类级缓存：{dirkey: (timestamp, show_hidden, [Entry])}，跨窗格共享同一目录枚举结果
     _CACHE = {}
@@ -168,7 +174,7 @@ class DirStoreModel(QAbstractItemModel):
         self._loader.finished.connect(self._on_entries_loaded)
         self._invalid = QModelIndex()
 
-    # ---- 兼容 QFileSystemModel 的接口 ----
+    # ---- pane 依赖的条目/目录查询接口（与 QFileSystemModel 同名，便于替换）----
     def rootPath(self):
         return self._top_node.path if self._top_node else ""
 
@@ -225,6 +231,28 @@ class DirStoreModel(QAbstractItemModel):
         p = idx.internalPointer()
         return getattr(p, "name", "") or (os.path.basename(p.path) if isinstance(p, DirNode) else "")
 
+    def entry_is_dir(self, path):
+        """纯内存判定路径是否为目录（零 syscall、零网络往返）。
+
+        返回 True/False；模型尚未加载该目录（未知）时返回 None，
+        由调用方决定回退方式（网络路径回退一次 os.path.isdir）。
+        """
+        path = os.path.normpath(path) if path else ""
+        if not path:
+            return None
+        # 当前显示目录本身
+        if _key(path) == self._top_key and self._top_node is not None:
+            return True
+        # 曾作为目录枚举过的节点（含已切走的）——内存里已知道它是目录
+        if _key(path) in self._nodes:
+            return True
+        node = self._nodes.get(_key(os.path.dirname(path)))
+        if node and node.loaded and node.entries:
+            for e in node.entries:
+                if e.path == path:
+                    return e.is_dir
+        return None
+
     # ---- 缓存 / 定向失效 ----
     @classmethod
     def _cache_get(cls, key, show_hidden):
@@ -268,10 +296,31 @@ class DirStoreModel(QAbstractItemModel):
 
     def refresh(self, index=None):
         """重扫当前显示目录（F5 / 定向失效）：清条目后异步重载，
-        保留顶层节点映射（不重置模型，为§7 保留选中/滚动留余地）。"""
+        保留顶层节点映射（不重置模型，为保留选中/滚动留余地）。"""
         node = self._top_node
+        if node is not None:
+            self._reload_top(node)
+
+    def refresh_dir(self, path):
+        """失效并重扫指定目录（应用内改动后调用，本地/网络统一）。
+
+        - 正是当前显示目录：清条目 + 异步重载（保留顶层索引映射）
+        - 已加载但未显示：直接丢弃节点，导航回来时重新枚举
+          （DirStoreModel 无文件系统 watcher，不丢弃则陈旧节点会让模型
+          跳过重扫，新建/删除的项迟迟不可见）
+        """
+        self._cache_invalidate(path)
+        node = self._nodes.get(_key(path))
         if node is None:
             return
+        if node is self._top_node:
+            self._reload_top(node)
+            return
+        node.entries = None
+        node.loaded = False
+        self._nodes.pop(node.key, None)   # 丢弃后其 in-flight 结果会被自动作废
+
+    def _reload_top(self, node):
         self._cache_invalidate(node.path)
         if node.loaded and node.entries:
             parent_idx = self.createIndex(0, 0, node)
@@ -279,7 +328,7 @@ class DirStoreModel(QAbstractItemModel):
             node.entries = None
             node.loaded = False
             self.endRemoveRows()
-        node.loading = False
+        # 重扫请求总是另起一次枚举（gen+1）， in-flight 的旧结果会被作废
         self._start_load(node)
 
     # ---- 节点 materialize + 异步加载 ----
@@ -293,11 +342,33 @@ class DirStoreModel(QAbstractItemModel):
         show = self._show_hidden()
         cached = self._cache_get(key, show)
         if cached is not None and self._fresh_or_local(path):
-            node.entries = cached
-            for e in node.entries:
-                e.node = node
+            self._copy_entries(node, cached)
             node.loaded = True
         return node
+
+    @staticmethod
+    def _adopt(node, entries):
+        """后台新枚举出的条目归本节点独占（无共享，直接回填 node 反查指针）。"""
+        for e in entries:
+            e.node = node
+        node.entries = entries
+        return entries
+
+    @staticmethod
+    def _copy_entries(node, entries):
+        """把类级缓存里的条目复制为本节点独占对象。
+
+        多个窗格可能同时显示同一目录并共用缓存列表；Entry 是可变的
+        （行内改名会就地改 name/path，e.node 反查用于 parent()），共享
+        会造成跨窗格互相污染，故缓存只作只读模板，使用时逐份复制。
+        """
+        bound = []
+        for e in entries:
+            ne = Entry(e.name, e.path, e.is_dir, e.size, e.mtime, e.hidden, e.is_link)
+            ne.node = node
+            bound.append(ne)
+        node.entries = bound
+        return bound
 
     @classmethod
     def _fresh_or_local(cls, path):
@@ -310,15 +381,21 @@ class DirStoreModel(QAbstractItemModel):
         return bool(self._filter & QDir.Filter.Hidden)
 
     def _start_load(self, node):
-        if node.loading:
-            return
+        """发起一次后台枚举；旧请求的结果按代次(gen)作废。
+
+        隐式调用方自行判断 `not loaded and not loading`；显式刷新（_reload_top）
+        会先清 loading 再调用，以保证能拿到改动后的枚举结果。
+        """
+        node.gen += 1
         node.loading = True
-        task = _LoadTask(node, self._show_hidden(), self._loader)
+        task = _LoadTask(node, node.gen, self._show_hidden(), self._loader)
         self.loadingStarted.emit(node.path)
         self._pool.start(task)
 
-    @pyqtSlot(object, object)
-    def _on_entries_loaded(self, node, entries):
+    @pyqtSlot(object, object, int)
+    def _on_entries_loaded(self, node, entries, gen):
+        if gen != node.gen:
+            return  # 过期结果：期间又发起过新枚举，否则旧快照会占据视图
         node.loading = False
         if node.key not in self._nodes or self._nodes.get(node.key) is not node:
             return  # 节点已被丢弃
@@ -328,9 +405,7 @@ class DirStoreModel(QAbstractItemModel):
         first = 0
         self.beginInsertRows(parent_idx, first, first + len(entries) - 1) \
             if entries else None
-        node.entries = entries
-        for e in entries:
-            e.node = node
+        self._adopt(node, entries)
         node.loaded = True
         if entries:
             self.endInsertRows()
@@ -363,17 +438,23 @@ class DirStoreModel(QAbstractItemModel):
         return self._invalid  # 条目不再有子
 
     def _index_for_path(self, path):
+        """路径 → 索引，仅对【当前显示目录】及其条目有效。
+
+        其它目录的节点虽存在 `self._nodes` 里（缓存/曾导航过），但不能返回
+        它们的索引：两层结构中任何 DirNode 的父都报为 invalid 根，而
+        index(0, 0, invalid) 只会解出顶层节点，于是非顶层节点的条目经
+        排序代理映射会得到“看似有效实则错行”的索引（误定位、误改名）。
+        判定任意路径是否目录请用 `entry_is_dir()`（零 syscall）。
+        """
         path = os.path.normpath(path) if path else ""
         if not path:
             return self._invalid
-        if os.path.isdir(path):
-            if _key(path) == self._top_key and self._top_node is not None:
-                return self.createIndex(0, 0, self._top_node)
-            # 非当前显示目录：返回轻量节点（仅供 isDir/isValid 判定，不触发加载）
-            return self.createIndex(0, 0, self._ensure_node(path))
-        # 文件：查其所属（已加载）目录里的行
-        node = self._nodes.get(_key(os.path.dirname(path)))
-        if node and node.loaded and node.entries:
+        node = self._top_node
+        if node is None:
+            return self._invalid
+        if _key(path) == self._top_key:
+            return self.createIndex(0, 0, node)
+        if node.loaded and node.entries:
             for r, e in enumerate(node.entries):
                 if e.path == path:
                     return self.createIndex(r, 0, e)
@@ -494,6 +575,7 @@ class DirStoreModel(QAbstractItemModel):
             self._cache_invalidate(node.path)
         self.dataChanged.emit(index, index,
                               [Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.EditRole])
+        self.dirChanged.emit(os.path.dirname(old_path))
         return True
 
     # ---- 辅助格式化 ----

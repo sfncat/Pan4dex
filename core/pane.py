@@ -4,7 +4,7 @@ Pan4dex 万格 — 单窗格组件
 import logging
 
 logger = logging.getLogger("pan4dex.pane")
-from PyQt6.QtGui import QFileSystemModel, QAction, QKeySequence, QCursor
+from PyQt6.QtGui import QAction, QKeySequence, QCursor
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QTreeView, QProgressBar,
     QLabel, QMenu, QMessageBox, QInputDialog, QLineEdit, QHBoxLayout, QTabWidget,
@@ -27,63 +27,11 @@ SHARED_CLIPBOARD: list = []
 SHARED_CLIPBOARD_ACTION = None  # 'copy' / 'cut' / None
 
 
-class ExifFileSystemModel(QFileSystemModel):
-    """在 QFileSystemModel 的 4 列（名称/大小/类型/修改日期）之后追加「拍摄日期」列。
-
-    直接子类化 QFileSystemModel 让源模型真正拥有 5 列，因此上层的
-    PaneSortProxyModel（QSortFilterProxyModel）可以完全用内建机制排序/映射，
-    无需自行实现列扩展（PyQt6 下 QSortFilterProxyModel 索引的 internalPointer()
-    访问会崩溃，且其 index() 对超出源列范围的列返回无效索引，不能直接加列）。
-
-    拍摄日期由 exiftool 读取：
-    - 照片：DateTimeOriginal -> CreateDate（EXIF 拍摄时间）
-    - 视频：CreateDate -> DateTimeOriginal（QuickTime mvhd.creation_time）
-    仅当文件是照片/视频（含 EXIF）时显示值，否则为空。
-    """
-
-    SHOT_DATE_COLUMN = 4  # 拍摄日期列
-
-    def columnCount(self, parent=None):
-        return super().columnCount() + 1
-
-    def headerData(self, section, orientation, role):
-        if orientation == Qt.Orientation.Horizontal and section == self.SHOT_DATE_COLUMN:
-            if role == Qt.ItemDataRole.DisplayRole:
-                return "拍摄日期"
-            if role == Qt.ItemDataRole.TextAlignmentRole:
-                return int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-            return None
-        return super().headerData(section, orientation, role)
-
-    def data(self, index, role):
-        if index.isValid() and index.column() == self.SHOT_DATE_COLUMN:
-            if role == Qt.ItemDataRole.DisplayRole:
-                return self.shot_date(index) or ""
-            if role == Qt.ItemDataRole.TextAlignmentRole:
-                return int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-            return None
-        return super().data(index, role)
-
-    def shot_date(self, index):
-        """读取拍摄日期（仅查缓存，避免渲染时逐文件启动 exiftool 卡顿 UI）。
-
-        缓存由 navigate_to 后的后台 prefetch 批量填充，完成后视图自动刷新。
-        """
-        if not index.isValid():
-            return None
-        path = self.filePath(index)
-        if not path:
-            return None
-        from core.media_metadata import get_shot_date_cached
-        return get_shot_date_cached(path)
-
-
 class PaneSortProxyModel(QSortFilterProxyModel):
     """每个窗格独立的排序代理模型。
 
-    四个窗格共享同一个 ExifFileSystemModel（5 列）作为数据源（性能考虑），
-    但排序状态若直接作用在共享模型上，任意窗格点表头都会让所有窗格一起重排。
-    通过本代理模型，让每个窗格持有独立的排序状态：点哪个窗格，只排哪个窗格。
+    源模型为每窗格独立的 DirStoreModel（5 列，按目录异步枚举）；排序状态
+    统一由本代理承载，因此点哪个窗格的表头，只重排哪个窗格。
     同时保持“目录优先”的文件管理器习惯排序。
 
     「拍摄日期」列（第 4 列）由源模型直接提供，本代理只需按字符串比较。
@@ -202,7 +150,7 @@ class FileListTreeView(QTreeView):
 class Pane(QWidget):
     """单个窗格组件"""
     
-    # 所有窗格实例（weakref，用于重建共享文件模型时统一刷新）
+    # 所有窗格实例（weakref，用于跨窗格统一刷新：隐藏文件开关、目录变更失效）
     _instances = None  # 延迟初始化 weakref.WeakSet
     
     # 信号
@@ -228,9 +176,6 @@ class Pane(QWidget):
         else:
             self.current_path = QDir.homePath()
         self.file_ops = FileOperations()
-        # 第二阶段双轨开关：True 时本窗格文件列表用自研异步模型 DirStoreModel
-        from config.app_config import use_new_model
-        self._use_new_model = use_new_model()
         # 同名冲突记忆策略（“对后续冲突执行相同操作”，仅本次操作内有效）
         self._conflict_policy = None
         self._file_progress.connect(self._on_file_progress_ui)
@@ -249,7 +194,7 @@ class Pane(QWidget):
         # 创建 UI
         self.init_ui()
         
-        # 模型已在 init_ui 中通过 _setup_shared_model 设置
+        # 模型已在 init_ui 中通过 _setup_model 设置
         
         # 设置默认路径
         self.navigate_to(self.current_path)
@@ -441,8 +386,8 @@ class Pane(QWidget):
         self._pane_tab_paths = [self.current_path]
         self.pane_tabs.addTab(QLabel(), os.path.basename(self.current_path) if os.path.basename(self.current_path) else self.current_path)
         
-        # 设置文件模型（使用共享模型）
-        self._setup_shared_model()
+        # 设置文件模型（每窗格独立的异步 DirStoreModel）
+        self._setup_model()
         
         # 选择变化时更新预览（需要在 model 设置之后）
         self.tree_view.selectionModel().selectionChanged.connect(self.on_selection_changed)
@@ -457,55 +402,49 @@ class Pane(QWidget):
 
     @classmethod
     def set_show_hidden(cls, show: bool):
-        """全局切换隐藏文件过滤（所有窗格同步生效）。
-
-        旧共享模型：直接改共享模型 filter。新模型（DirStoreModel）：
-        逐窗格设自己的模型 filter 并重扫。
-        """
+        """全局切换隐藏文件过滤（逐窗格同步：设模型 filter 并重扫）。"""
         Pane._show_hidden = bool(show)
         filt = cls._file_filter()
-        model = getattr(Pane, '_shared_file_model', None)
-        if model is not None:
-            model.setFilter(filt)
         for pane in list(getattr(cls, '_instances', None) or ()):
-            if getattr(pane, '_use_new_model', False) and pane.model is not None:
+            if pane.model is not None:
                 try:
                     pane.model.setFilter(filt)
                     pane.model.refresh()
                 except RuntimeError:
                     pass  # 窗格已销毁
 
-    def _setup_shared_model(self):
-        """设置文件列表模型：新模型开关开则每窗格独立 DirStoreModel，
-        否则沿用共享 ExifFileSystemModel。"""
-        if getattr(self, '_use_new_model', False):
-            self._setup_dir_store_model()
-            return
-        # 使用静态共享模型，避免每个窗格都创建
-        if not hasattr(Pane, '_shared_file_model') or Pane._shared_file_model is None:
-            import time
-            t0 = time.perf_counter()
-            model = ExifFileSystemModel()
-            model.setRootPath("")
-            model.setFilter(self._file_filter())
-            elapsed = (time.perf_counter() - t0) * 1000
-            logger.info(f"[启动计时] QFileSystemModel 创建（首次，后续共享）: {elapsed:.1f}ms")
-            Pane._shared_file_model = model
-        
-        self.model = Pane._shared_file_model
-        # 每个窗格独立的排序代理：点表头只排序本窗格，不影响其他窗格
+    def _setup_model(self):
+        """为本窗格创建独立的异步 DirStoreModel（文件列表唯一数据源）。
+
+        目录枚举在后台线程完成、主线程零阻塞；每窗格一个模型，便于
+        按窗格独立刷新；排序由每窗格独立的 PaneSortProxyModel 负责。
+        """
+        from core.dir_model import DirStoreModel
+        import time
+        t0 = time.perf_counter()
+        model = DirStoreModel()
+        model.setFilter(self._file_filter())
+        self.model = model
         self.sort_proxy = PaneSortProxyModel(self)
-        self.sort_proxy.setSourceModel(self.model)
+        self.sort_proxy.setSourceModel(model)
         self.tree_view.setModel(self.sort_proxy)
+        # 行内改名：选中主名不选扩展名
+        self.tree_view.setItemDelegate(_NameRenameDelegate(self.tree_view))
+        elapsed = (time.perf_counter() - t0) * 1000
+        logger.info(f"[启动计时] DirStoreModel 创建（窗格 {self.pane_id}）: {elapsed:.1f}ms")
 
         # 恢复列显示状态（拍摄日期列默认隐藏；用户勾选后持久化）
         self._restore_column_visibility()
 
         # 后台 prefetch 完成后刷新视图（信号跨线程自动 QueuedConnection，安全）
         self.shot_dates_ready.connect(self._refresh_shot_date_column)
-
-        # 目录异步加载完成后，若正好是当前目录则预读拍摄日期
-        self.model.directoryLoaded.connect(self._on_directory_loaded_shot_dates)
+        # 目录异步加载完成后：预读拍摄日期 + 恢复待恢复的选中/滚动
+        model.directoryLoaded.connect(self._on_directory_loaded_shot_dates)
+        model.directoryLoaded.connect(self._on_dir_loaded_restore)
+        # 本窗格改动目录（如行内改名）后，让其它显示同一目录的窗格一并重扫
+        model.dirChanged.connect(self._on_model_dir_changed)
+        # 行内改名目标可能在异步加载完成后才出现
+        model.directoryLoaded.connect(self._on_dir_loaded_inline_rename)
 
         # 设置根索引
         self._set_root_index(self.current_path)
@@ -549,41 +488,8 @@ class Pane(QWidget):
         except Exception:
             pass
 
-    def _setup_dir_store_model(self):
-        """第二阶段：为本窗格创建独立的异步 DirStoreModel（不共享）。
-
-        目录枚举在后台线程完成、主线程零阻塞；每个窗格一个模型，
-        便于按窗格独立回退与定向刷新。排序仍由每窗格独立的
-        PaneSortProxyModel 负责（与旧路径一致的视图/代理结构）。
-        """
-        from core.dir_model import DirStoreModel
-        import time
-        t0 = time.perf_counter()
-        model = DirStoreModel()
-        model.setFilter(self._file_filter())
-        self.model = model
-        self.sort_proxy = PaneSortProxyModel(self)
-        self.sort_proxy.setSourceModel(model)
-        self.tree_view.setModel(self.sort_proxy)
-        # 行内改名：选中主名不选扩展名
-        self.tree_view.setItemDelegate(_NameRenameDelegate(self.tree_view))
-        elapsed = (time.perf_counter() - t0) * 1000
-        logger.info(f"[启动计时] DirStoreModel 创建（窗格 {self.pane_id}）: {elapsed:.1f}ms")
-
-        # 恢复列显示状态（拍摄日期列默认隐藏；用户勾选后持久化）
-        self._restore_column_visibility()
-
-        # 后台 prefetch 完成后刷新视图
-        self.shot_dates_ready.connect(self._refresh_shot_date_column)
-        # 目录异步加载完成后：预读拍摄日期 + 恢复待恢复的选中/滚动
-        model.directoryLoaded.connect(self._on_directory_loaded_shot_dates)
-        model.directoryLoaded.connect(self._on_dir_loaded_restore)
-
-        # 设置根索引
-        self._set_root_index(self.current_path)
-
     def _on_directory_loaded_shot_dates(self, path):
-        """共享模型目录加载完成：若是本窗格当前目录，则预读拍摄日期。"""
+        """目录加载完成：若是本窗格当前目录，则预读拍摄日期。"""
         try:
             if os.path.normpath(path) == os.path.normpath(self.current_path):
                 self._prefetch_shot_dates()
@@ -591,29 +497,22 @@ class Pane(QWidget):
             pass
 
     def _map_to_source(self, index):
-        """把视图/代理模型索引映射回共享源模型（QFileSystemModel）索引"""
+        """把视图/代理模型索引映射回源模型（DirStoreModel）索引"""
         if index is None or not index.isValid():
             return index
         return self.sort_proxy.mapToSource(index)
 
     def _set_root_index(self, path: str) -> bool:
         """经排序代理设置当前目录的根索引，成功返回 True"""
-        if getattr(self, '_use_new_model', False):
-            # 新模型：把 path 设为唯一顶层节点（触发异步加载），返回可映射的顶层索引
-            source_index = self.model.set_directory(path)
-        else:
-            source_index = self.model.index(path)
+        # 把 path 设为唯一顶层节点（触发异步加载），返回可映射的顶层索引
+        source_index = self.model.set_directory(path)
         if source_index.isValid():
             proxy_index = self.sort_proxy.mapFromSource(source_index)
             if proxy_index.isValid():
                 self.tree_view.setRootIndex(proxy_index)
                 return True
         return False
-        
 
-    
-
-    
     def get_state(self) -> dict:
         """获取窗格状态"""
         return {
@@ -727,21 +626,19 @@ class Pane(QWidget):
             pass
 
     def _path_is_dir(self, path: str) -> bool:
-        """判断路径是否为目录，优先利用共享模型已加载的缓存（内存查询，
+        """判断路径是否为目录，优先利用模型已加载的条目（纯内存查询，
         零 syscall），避免每次导航都对网络路径做同步 stat。
 
         - 本地路径：直接 os.path.isdir（本地 stat 极快）
-        - 网络路径：先查模型（已加载则 isDir 不额外往返）；未加载时
+        - 网络路径：先查模型已加载条目（不额外往返）；模型未知时
           回退一次 os.path.isdir 保证正确性（不误入文件）
         """
         if not _is_network_path(path):
             return os.path.isdir(path)
         try:
-            idx = self.model.index(path)
-            if idx.isValid():
-                # isValid 不代表已填充；rowCount 为 0 且未加载时不能断定是目录，
-                # 用 fileInfo 的缓存属性（QFileSystemModel 拉到条目后不额外 syscall）
-                return self.model.isDir(idx)
+            known = self.model.entry_is_dir(path)
+            if known is not None:
+                return known
         except Exception:
             pass
         return os.path.isdir(path)
@@ -750,9 +647,8 @@ class Pane(QWidget):
         """导航到指定路径"""
         import os
         if self._path_is_dir(path):
-            # 网络路径（UNC/映射网络驱动器）下 QFileSystemModel 缓存同一目录
-            # 不重扫：外部程序（如其它文件管理器）复制/删除的文件看不到，
-            # 且 QFileSystemWatcher 在 SMB 上变更通知不可靠，重建共享模型强制重扫
+            # 网络路径下 SMB 变更通知不可靠、模型缓存同一目录不重扫：外部程序
+            # （如其它文件管理器）复制/删除的文件看不到，重复导航同一目录时强制重扫
             if path == self.current_path and _is_network_path(path):
                 self._force_refresh_current_dir()
                 # 超大图标模式下同步刷新缩略图视图（重建模型不自动触发）
@@ -762,7 +658,7 @@ class Pane(QWidget):
             self.current_path = path
             self.path_bar.set_path(path)
 
-            # 不使用 setRootPath（会改变共享模型的根），直接用 index + setRootIndex（经排序代理映射）
+            # 经排序代理把当前目录设为视图根（模型侧由 set_directory 管理顶层节点）
             if not self._set_root_index(path):
                 # 模型还没加载完，用 QTimer 延迟重试（避免重复连接 directoryLoaded 信号导致泄漏）
                 from PyQt6.QtCore import QTimer
@@ -996,15 +892,8 @@ class Pane(QWidget):
             self.on_item_double_clicked(index)
 
     def refresh_current(self):
-        """刷新当前目录（F5 / 刷新按钮）。
-
-        新模型：定向重扫当前目录并保留选中/滚动。旧模型：网络路径强制
-        重扫（navigate_to 内处理），本地走常规导航。
-        """
-        if getattr(self, '_use_new_model', False):
-            self._refresh_preserving_selection()
-            return
-        self.navigate_to(self.current_path)
+        """刷新当前目录（F5 / 刷新按钮）：定向重扫并保留选中/滚动。"""
+        self._refresh_preserving_selection()
 
     def _sync_nav_buttons(self):
         """后退/前进按钮按历史栈位置置灰"""
@@ -1139,10 +1028,9 @@ class Pane(QWidget):
         except OSError as e:
             QMessageBox.warning(self, "加运行权限", f"无法设置运行权限:\n{e}")
             return
-        # 刷新模型让权限列立即更新（QFileSystemModel.refresh 对已存在路径重扫元数据）
+        # 失效该目录缓存并重扫，让权限列立即更新（同时保留选中/滚动）
         try:
-            idx = self.model.index(file_path)
-            self.model.refresh(idx)
+            self._refresh_preserving_selection()
         except Exception:
             pass
     
@@ -1159,8 +1047,8 @@ class Pane(QWidget):
     def _update_selection_status(self):
         """状态栏追加“已选 N 项”（无选中时回退到目录概要）。
 
-        只显计数不算选中大小：大小需递归遍历，在 SMB 上会阻塞主线程（
-        且 QFileSystemModel 不缓存目录大小），异步统计待第二阶段随新模型落地。
+        只显计数不算选中大小：大小需递归遍历，在 SMB 上会阻塞主线程
+        （且模型不缓存目录大小），异步统计待后续跟进。
         """
         try:
             n = len([i for i in self.tree_view.selectedIndexes() if i.column() == 0])
@@ -1466,7 +1354,7 @@ class Pane(QWidget):
             menu.addAction(delete_action)
             
             rename_action = QAction("重命名(&R)", self)
-            rename_action.triggered.connect(lambda: self._rename_path(path))
+            rename_action.triggered.connect(lambda: self._start_inline_rename(path))
             menu.addAction(rename_action)
             
             menu.addSeparator()
@@ -1620,7 +1508,7 @@ class Pane(QWidget):
         """压缩/解压完成（主线程）：刷新 + 提示"""
         if ok:
             self.status_label.setText(f"{note}完成: {msg}")
-            self.navigate_to(self.current_path)
+            self._reload_after_mutation(self.current_path)
         else:
             self.status_label.setText("操作失败")
             QMessageBox.warning(self, "操作失败", msg)
@@ -1888,12 +1776,10 @@ class Pane(QWidget):
                 # 剪切移动完成：清空应用内剪贴板
                 SHARED_CLIPBOARD.clear()
                 SHARED_CLIPBOARD_ACTION = None
-            self.navigate_to(target_dir)
-            if _is_network_path(target_dir):
-                self._force_refresh_current_dir()
-            elif src_paths:
-                # 剪切移动：源目录若为网络路径，源窗格显示残留需一并重扫
-                self._refresh_network_sources(src_paths)
+            self._reload_after_mutation(target_dir)
+            if src_paths:
+                # 剪切移动：源目录也要重扫，否则源窗格残留已移走的条目
+                self._refresh_source_dirs(src_paths)
         else:
             self.status_label.setText("粘贴失败")
             QMessageBox.warning(self, "粘贴", result.error or "操作失败")
@@ -1903,7 +1789,7 @@ class Pane(QWidget):
 
         moved_srcs 非空说明来自资源管理器的“剪切”：粘贴后源已被移走，
         按 Windows 习惯清空系统剪贴板（再粘贴无意义），并一并刷新源目录
-        所在窗格，避免网络路径上源窗格残留已移走的条目。
+        所在窗格，避免源窗格残留已移走的条目。
         """
         if result.success:
             self.status_label.setText(f"已从系统剪贴板粘贴 {count} 个项目")
@@ -1913,10 +1799,8 @@ class Pane(QWidget):
                     QApplication.clipboard().clear()
                 except Exception:
                     pass
-                self._refresh_network_sources(moved_srcs)
-            self.navigate_to(target_dir)
-            if _is_network_path(target_dir):
-                self._force_refresh_current_dir()
+                self._refresh_source_dirs(moved_srcs)
+            self._reload_after_mutation(target_dir)
         else:
             self.status_label.setText("粘贴失败")
             QMessageBox.warning(self, "粘贴", result.error or "操作失败")
@@ -2044,7 +1928,7 @@ class Pane(QWidget):
             handler(result)
         elif result.success:
             self.status_label.setText(f"{note}完成")
-            self.navigate_to(self.current_path)
+            self._reload_after_mutation(self.current_path)
         else:
             self.status_label.setText(f"{note}失败")
             QMessageBox.warning(self, note, result.error or "操作失败")
@@ -2116,99 +2000,139 @@ class Pane(QWidget):
             if result.error:
                 # 网络位置回退永久删除等需告知用户的附带结果
                 QMessageBox.information(self, "删除完成", result.error)
-            self.navigate_to(self.current_path)
-            if _is_network_path(self.current_path):
-                # SMB 网络共享上 QFileSystemWatcher 变化通知不可靠，
-                # 模型不会自动移除已删项，强制重扫当前目录
-                self._force_refresh_current_dir()
+            self._reload_after_mutation(self.current_path)
         else:
             self.status_label.setText("删除失败")
             QMessageBox.warning(self, "删除失败", result.error)
     
     def _force_refresh_current_dir(self):
-        """强制刷新当前目录显示。
+        """强制刷新当前目录：失效缓存 + 异步重扫（不阻塞）。
 
-        旧共享模型（QFileSystemModel）：SMB/UNC 上 QFileSystemWatcher 目录
-        变化通知不可靠，只能重建共享模型全量重扫。
-        新模型（DirStoreModel）：只需失效并重扫当前目录（异步、不阻塞），
-        无需全量重建。
+        DirStoreModel 为每窗格独立 + 类级缓存，若其它窗格也显示同一目录，
+        一并刷新，避免其它窗格停留在旧条目。
         """
-        if getattr(self, '_use_new_model', False):
+        try:
+            Pane._refresh_dir_everywhere(self.current_path)
+        except Exception:
+            pass
+
+    @classmethod
+    def _refresh_dir_everywhere(cls, path, skip=None):
+        """失效某目录缓存，并让所有窗格重扫/丢弃该目录（本地/网络统一）。
+    
+        skip 指定排除的窗格（已由 setData 就地更新，不需重扫）。
+        """
+        if not path:
+            return
+        for pane in list(cls._instances or ()):
+            if pane is skip:
+                continue
             try:
-                self.model.refresh()
+                if pane.model is not None:
+                    pane.model.refresh_dir(path)
+            except RuntimeError:
+                continue  # 窗格已销毁
             except Exception:
                 pass
-            return
-        Pane._rebuild_shared_model()
-
-    def _refresh_network_sources(self, paths):
-        """移动/剪切后刷新可能残留的源窗格。
-
-        跨窗格移动或剪切粘贴时，文件从源目录消失；若源目录是网络路径
-        （UNC/映射网络驱动器），QFileSystemModel 缓存不会自动移除，
-        目标窗格的 navigate_to 只重建当前窗格所在模型（实际重建共享模型
-        会让所有窗格一并重扫，但仅当目标路径也是网络路径时才触发）。
-        这里主动检查源目录：任一源目录是网络路径就重建共享模型，所有
-        窗格（含显示源目录的窗格）一并强制重扫。
+    
+    def _reload_after_mutation(self, path):
+        """应用内改动后刷新：失效并重扫涉及目录（本地/网络统一），再导航过去。
+    
+        DirStoreModel 不挂文件系统 watcher（那正是 SMB 卡顿根因之一），且本地
+        目录缓存不因过期而重扫，因此改动必须显式失效，否则新建/删除的项
+        不会出现在列表里。
+        """
+        Pane._refresh_dir_everywhere(path)
+        self.navigate_to(path)
+    
+    def _on_model_dir_changed(self, path):
+        """本窗格模型改动目录（行内改名等）：其它显示同一目录的窗格一并重扫。"""
+        Pane._refresh_dir_everywhere(path, skip=self)
+    
+    def _refresh_source_dirs(self, paths):
+        """移动/剪切后刷新涉及的源目录（含其它正在显示它的窗格）。
+    
+        跨窗格移动/剪切粘贴时文件从源目录消失；源目录可能正被另一个窗格
+        显示。逐个失效源目录缓存并重扫，避免其它窗格残留已移走项。
         """
         try:
             src_dirs = {os.path.normpath(os.path.dirname(p)) for p in (paths or []) if p}
             for d in src_dirs:
-                if _is_network_path(d):
-                    self._force_refresh_current_dir()
-                    return
+                Pane._refresh_dir_everywhere(d)
         except Exception:
             pass
-    
-    @classmethod
-    def _rebuild_shared_model(cls):
-        """重建共享 ExifFileSystemModel，并让所有窗格重新绑定、重设根索引。
 
-        仅在 UNC 目录文件操作后调用（本地目录文件监视正常，无需重建）。
-        """
-        old = getattr(cls, '_shared_file_model', None)
-        import time
-        t0 = time.perf_counter()
-        model = ExifFileSystemModel()
-        model.setRootPath("")
-        model.setFilter(cls._file_filter())
-        cls._shared_file_model = model
-        logger.info(f"重建共享文件模型: {((time.perf_counter() - t0) * 1000):.1f}ms")
-        for pane in list(cls._instances or ()):
-            try:
-                pane.model = model
-                pane.sort_proxy.setSourceModel(model)
-                model.directoryLoaded.connect(pane._on_directory_loaded_shot_dates)
-                if pane.current_path:
-                    pane._set_root_index(pane.current_path)
-            except RuntimeError:
-                pass  # 窗格已销毁
-        if old is not None:
-            old.deleteLater()
-    
     def rename_selected(self):
-        """重命名选中项。
-
-        新模型（DirStoreModel）：F2 进入行内编辑（资源管理器习惯），
-        提交由模型 setData 完成。旧模型：保留原 QInputDialog 改名。
-        """
-        if getattr(self, '_use_new_model', False):
-            idx = self.tree_view.currentIndex()
-            if not idx.isValid():
-                sel = self.tree_view.selectedIndexes()
-                idx = sel[0] if sel else QModelIndex()
-            if not idx.isValid():
-                return
-            # 定位到该行的名称列（第 0 列）再触发编辑
-            name_idx = idx.siblingAtColumn(0)
-            self.tree_view.setCurrentIndex(name_idx)
-            self.tree_view.edit(name_idx)
+        """重命名选中项：F2 进入行内编辑（资源管理器习惯），
+        提交由模型 setData 完成。"""
+        idx = self.tree_view.currentIndex()
+        if not idx.isValid():
+            sel = self.tree_view.selectedIndexes()
+            idx = sel[0] if sel else QModelIndex()
+        if not idx.isValid():
             return
-        indexes = self.tree_view.selectedIndexes()
-        if indexes:
-            self._rename_path(self.model.filePath(self._map_to_source(indexes[0])))
+        # 定位到该行的名称列（第 0 列）再触发编辑
+        name_idx = idx.siblingAtColumn(0)
+        self.tree_view.setCurrentIndex(name_idx)
+        self.tree_view.edit(name_idx)
 
-    # ---- 刷新/操作后保留选中与滚动（新模型）----
+    def _proxy_index_for(self, path):
+        """把磁盘路径映射为视图（排序代理）索引；未加载/不在当前目录时返回无效索引。"""
+        try:
+            si = self.model.index(path)
+            if not si.isValid():
+                return QModelIndex()
+            pi = self.sort_proxy.mapFromSource(si.siblingAtColumn(0))
+            return pi if pi.isValid() else QModelIndex()
+        except Exception:
+            return QModelIndex()
+
+    def _start_inline_rename(self, path):
+        """选中指定路径所在行并进入行内编辑（右键“重命名”与 F2 一致）。
+
+        行可能尚未加载（异步模型）：先导航到其父目录并记下待改名路径，
+        directoryLoaded 后再开编辑框。
+        """
+        target = os.path.normpath(path)
+        pi = self._proxy_index_for(target)
+        if pi.isValid():
+            self.tree_view.setCurrentIndex(pi)
+            self.tree_view.edit(pi)
+            return
+        parent = os.path.dirname(target)
+        if not parent or not os.path.isdir(parent):
+            return
+        self._pending_inline_rename = target
+        if os.path.normpath(parent) == os.path.normpath(self.current_path):
+            Pane._refresh_dir_everywhere(parent)   # 强迫重扫，加载完会回调开编辑框
+        else:
+            self.navigate_to(parent)
+        # 目标目录可能已在内存里（节点已加载）：此时不会再发 directoryLoaded，
+        # 立刻再试一次；仍拿不到索引才等异步加载完成后的回调
+        pi = self._proxy_index_for(target)
+        if pi.isValid():
+            self._pending_inline_rename = None
+            self.tree_view.setCurrentIndex(pi)
+            self.tree_view.edit(pi)
+
+    def _on_dir_loaded_inline_rename(self, path):
+        """目录加载完成：若有待行内改名的路径且属于本目录，此时进入编辑。"""
+        target = getattr(self, '_pending_inline_rename', None)
+        if not target:
+            return
+        try:
+            if os.path.normpath(os.path.dirname(target)) != os.path.normpath(self.current_path):
+                return
+        except Exception:
+            return
+        self._pending_inline_rename = None
+        pi = self._proxy_index_for(target)
+        if not pi.isValid():
+            return
+        self.tree_view.setCurrentIndex(pi)
+        self.tree_view.edit(pi)
+
+    # ---- 刷新/操作后保留选中与滚动 ----
     def _snapshot_view_state(self):
         """记录当前选中路径与光标路径（用于刷新后恢复）。"""
         paths = self._paths_from_selection()
@@ -2264,33 +2188,13 @@ class Pane(QWidget):
         self._restore_view_state(paths, cursor)
 
     def _refresh_preserving_selection(self):
-        """刷新当前目录并保留选中/滚动（新模型）。"""
-        if getattr(self, '_use_new_model', False):
-            self._pending_restore = self._snapshot_view_state()
-            try:
-                self.model.refresh()
-            except Exception:
-                self._pending_restore = None
-            return
-        self._force_refresh_current_dir()
-    
-    def _rename_path(self, path):
-        """重命名指定路径"""
-        old_name = os.path.basename(path)
-        
-        new_name, ok = QInputDialog.getText(
-            self, "重命名", "新名称:", QLineEdit.EchoMode.Normal, old_name
-        )
-        
-        if ok and new_name and new_name != old_name:
-            result = self.file_ops.rename(path, new_name)
-            if result.success:
-                self.navigate_to(self.current_path)
-                if _is_network_path(self.current_path):
-                    self._force_refresh_current_dir()
-            else:
-                QMessageBox.warning(self, "重命名失败", result.error)
-    
+        """刷新当前目录并保留选中/滚动。"""
+        self._pending_restore = self._snapshot_view_state()
+        try:
+            self.model.refresh()
+        except Exception:
+            self._pending_restore = None
+
     def add_to_bookmarks(self, path):
         """添加到收藏夹"""
         main_window = self.window()
@@ -2306,9 +2210,7 @@ class Pane(QWidget):
         if ok and name:
             result = self.file_ops.create_folder(self.current_path, name)
             if result.success:
-                self.navigate_to(self.current_path)
-                if _is_network_path(self.current_path):
-                    self._force_refresh_current_dir()
+                self._reload_after_mutation(self.current_path)
             else:
                 QMessageBox.warning(self, "创建失败", result.error)
     
@@ -2321,9 +2223,7 @@ class Pane(QWidget):
         if ok and name:
             result = self.file_ops.create_file(self.current_path, name)
             if result.success:
-                self.navigate_to(self.current_path)
-                if _is_network_path(self.current_path):
-                    self._force_refresh_current_dir()
+                self._reload_after_mutation(self.current_path)
             else:
                 QMessageBox.warning(self, "创建失败", result.error)
     
@@ -2614,12 +2514,15 @@ class Pane(QWidget):
         """拖放操作完成（主线程）"""
         if result.success:
             self.status_label.setText("拖放完成")
-            self.navigate_to(self.current_path)
-            if _is_network_path(target_dir):
-                self._force_refresh_current_dir()
-            elif moved_srcs:
-                # 跨窗格/外部移动：源目录若为网络路径，源窗格残留需重扫
-                self._refresh_network_sources(moved_srcs)
+            # 目标目录可能是当前目录的子目录（拖到文件夹行上），与当前目录
+            # 一并失效重扫；DirStoreModel 无 watcher，不显式重扫看不到变化
+            if target_dir:
+                Pane._refresh_dir_everywhere(target_dir)
+            self._pending_restore = self._snapshot_view_state()
+            Pane._refresh_dir_everywhere(self.current_path)
+            if moved_srcs:
+                # 跨窗格/外部移动：源目录也要重扫，避免源窗格残留已移走项
+                self._refresh_source_dirs(moved_srcs)
         else:
             self.status_label.setText("拖放失败")
             QMessageBox.warning(self, "移动/复制", result.error or "操作失败")
