@@ -212,6 +212,12 @@ ssh sshuser@192.168.5.55 'cmd /c "taskkill /F /IM pan4dex* /T 2>nul & timeout /t
   信号属性都会抛 RuntimeError
 - 延后执行（启动分阶段 / 防抖 / 轮询）统一用 `core/lifecycle.py:call_later(obj, ms, fn)`
   而不是 `QTimer.singleShot`：后者的定时器不属于对象，对象先销毁时回调仍会访问已删除子控件
+- 进程退出统一用 `core/lifecycle.py:exec_and_drain(app)`：`app.exec()` 一返回就排空
+  `QThreadPool.globalInstance()`。未派发的跨线程投递持有 Python 对象，留给解释器收尾阶段
+  去释放会让进程以 `0xC0000409` fast-fail 退出（用户侧就是“关掉程序时报错”）
+- 后台结果回投主线程时，信号连接的**接收者必须就是目标 QObject**（绑定方法直连）：
+  换成弱引用 closure 后接收者变成 sender，模型销毁不再剔除已排队投递，实测反而直接 AV
+  （见 `docs/gotchas.md` 第 22 条）
 - 主题系统支持运行时切换，无需重启
 - 目录树导航通过 `_active_pane` 跟踪当前活动窗格
 - 窗格焦点通过 `eventFilter` 监听 `FocusIn` 和 `MouseButtonPress` 事件

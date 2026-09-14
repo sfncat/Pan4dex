@@ -7,14 +7,12 @@ Pan4dex 万格 — 延迟回调（call_later）的生命周期回归测试
 （表现为偶发 access violation）。`core.lifecycle.call_later` 把定时器作为对象
 的子对象，随对象一起销毁。
 """
-import sys
-from contextlib import contextmanager
-
 import pytest
 from PyQt6 import sip
 from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import QLabel, QWidget
 
+from conftest import qt_exceptions
 from core.lifecycle import call_later
 
 
@@ -24,22 +22,6 @@ def fired():
     calls = []
     yield calls
     calls.clear()
-
-
-@contextmanager
-def qt_exceptions():
-    """收集 PyQt6 在 Qt 事件循环里捕获的未处理 Python 异常。
-
-    槽函数里抛出的异常不会传播回调用方，而是交给 sys.excepthook；不接管它就会
-    只是打印到 stderr，测试里看不住。
-    """
-    saved = sys.excepthook
-    errors = []
-    sys.excepthook = lambda etype, value, tb: errors.append(value)
-    try:
-        yield errors
-    finally:
-        sys.excepthook = saved
 
 
 def test_callback_runs_when_receiver_alive(qapp, qtbot, fired):

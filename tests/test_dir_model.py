@@ -2,16 +2,22 @@
 """DirStoreModel 单元测试（第二阶段 5.3）
 
 覆盖：枚举正确性、列/角色、隐藏过滤、重命名 setData、TTL 缓存与定向失效、
-快速切换目录的后台线程安全。异步枚举用 qtbot 等待目录节点加载完成。
+快速切换目录的后台线程安全、模型销毁与在飞枚举投递的生命周期。异步枚举用
+qtbot 等待目录节点加载完成。
 
 两层结构：目录节点 index(dirPath) 为父，其条目为子项。
 """
 import os
+import threading
 
 import pytest
+from PyQt6 import sip
 from PyQt6.QtCore import Qt, QDir, QModelIndex, QThreadPool
 
+from conftest import qt_exceptions
+from core import dir_model as dm
 from core.dir_model import DirStoreModel, Entry, enumerate_dir, _key
+from core.lifecycle import drain_background_pool
 
 
 @pytest.fixture
@@ -291,3 +297,60 @@ def test_index_only_for_displayed_dir(qtbot, tree, tmp_path):
     # 判定任意路径是否目录走 entry_is_dir（不依赖索引）
     assert m.entry_is_dir(str(other)) is True
     assert m.entry_is_dir(str(tree / "dir_a")) is True
+
+
+# ---------- 生命周期：模型销毁 × 在飞枚举 ----------
+
+def test_load_slot_reads_no_self_state_after_row_insertion(qapp, tree, monkeypatch):
+    """锁定现场：行插入之后不得再读实例状态（模型可能在本槽期间被销毁）
+
+    实际抓到的异常是 `_on_entries_loaded` 在 `endInsertRows()` 之后调
+    `self._show_hidden()` 报 `AttributeError: 'DirStoreModel' object has no
+    attribute '_filter'`（sip 在 C++ 部分销毁时会清空实例 `__dict__`）。这里用同样
+    确定的一步代表那个时刻：在 `endInsertRows` 里抹掉 `_filter`，验证剩下的流程
+    不再需要它（改前写法在此用例会失败）。
+    """
+    m = DirStoreModel()
+    node = m._ensure_node(str(tree))
+    m._start_load(node)
+
+    def wipe_and_pass(*args, **kwargs):
+        del m.__dict__["_filter"]        # 模拟“槽跑到一半模型已被销毁”
+
+    monkeypatch.setattr(m, "endInsertRows", wipe_and_pass)
+    with qt_exceptions() as errors:
+        assert QThreadPool.globalInstance().waitForDone(15000)
+        drain_background_pool()
+    assert errors == [], f"行插入后仍在读已失效的实例状态: {errors!r}"
+    assert node.loaded is True           # 加载本身必须照常完成
+
+
+def test_in_flight_load_after_model_death_is_dropped(qapp, tmp_path, monkeypatch):
+    """契约：枚举还在飞、模型先被销毁时，投递必须安静丢弃
+
+    用两个事件卡住 `enumerate_dir`，把“在飞”做成确定性时序（不靠 sleep 碰运气）；
+    同时覆盖 `_loader` 随模型销毁后工作线程里 `emit` 报 RuntimeError 的路径。
+    """
+    started = threading.Event()
+    release = threading.Event()
+    real = dm.enumerate_dir
+
+    def slow(path, show_hidden=False):
+        started.set()
+        release.wait(10)
+        return real(path, show_hidden)
+
+    monkeypatch.setattr(dm, "enumerate_dir", slow)
+
+    m = DirStoreModel()
+    node = m._ensure_node(str(tmp_path))
+    m._start_load(node)
+    assert started.wait(10), "后台枚举未启动，测不到在飞投递"
+    sip.delete(m)                       # 模型先于枚举结果销毁
+    release.set()
+
+    with qt_exceptions() as errors:
+        assert QThreadPool.globalInstance().waitForDone(15000)
+        drain_background_pool()
+    assert errors == [], f"销毁后的投递/emit 报了异常: {errors!r}"
+    assert node.loaded is False         # 结果被丢弃，不会再写回一个死模型

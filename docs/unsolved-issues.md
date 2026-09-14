@@ -2,13 +2,17 @@
 
 > 2026-09-02 更新：原始问题 1、2、3、4 全部已解决。后续新增问题（控制台窗口、任务栏图标、浅色主题、标签栏行为、菜单栏空隙、超大图标切换、onedir 构建）也全部已解决。
 >
-> 2026-09-14 更新：新增问题 13（全量测试偶发 access violation，**未解决**，已定位到范围）。
+> 2026-09-14 更新：新增问题 13（全量测试偶发 access violation）。
+>
+> 2026-09-14 追更：问题 13 已定位并修复（v1.9.004）—— 根因不在“模型被销毁”，而在
+> **退出阶段还有未派发的跨线程投递**。运行中偶发 AV 的触发路径也已收敛（改后连续 25 轮
+> 全量抽样 0 次崩溃），但未证明根除，量化评估见问题 13 末尾。
 
 ---
 
-## ⚠️ 未解决
+## ✅ 已解决（v1.9.004）
 
-### 问题 13：全量测试偶发 access violation（后台目录枚举 × 控件销毁）
+### 问题 13：全量测试偶发 access violation / 关闭程序时报错（退出时未派发的后台投递）
 
 **现象**：
 - `pytest tests -q` 跑全量时偶发进程直接崩溃，faulthandler 打印
@@ -17,6 +21,8 @@
   另一次抽样 12 次中出现 1 次（残余但已显著降低）
 - 只在测试全量连跑时复现；单跑 `test_m1_core + test_lifecycle + test_dir_model`
   10 次全绿；加 `-v`（改变输出/时序）时较难复现
+- 同一机制在生产路径上的表现是退出码 `0xC0000409`（CPython fast-fail）—— 用户侧就是
+  “关掉程序时报错”，所以这不是纯粹的测试环境问题
 
 **已取得的证据**（faulthandler 全线程转储）：
 
@@ -44,19 +50,59 @@ Current thread (主线程):
    `_reap_top_level_widgets` 确定性回收（它本身不是修复，而是把 AV 降级成可见的
    RuntimeError，才使得上面两条可定位）。
 
-**仍未解决的部分**：残余 AV 与 `QThreadPool.globalInstance()` 上的 `_LoadTask` 相关：
-模型（及其视图）在枚举结果回投前被销毁。按 Qt 语义，接收者销毁会自动断开连接，
-不应崩溃；但实测仍会偶发硬崩，且崩在 C++ 内部 → 无法用 Python 层 try/except 或
-`sip.isdeleted` 守卫解决（只能降低触发频率，不能根除）。
+**根因（二分定位）**：崩在**解释器收尾阶段**，不是运行中的竞态。后台枚举任务
+（`_LoadTask`）在子线程 `emit` 结果，事件循环一旦结束，这些 queued 投递可能还没派发；
+投递事件里持有着一批 Python 对象（枚举条目、目录节点），而 `QThreadPool.globalInstance()`
+和事件队列要等 `~QCoreApplication`（甚至更晚的静态析构）才销毁 —— 那时 CPython 已开始
+finalize，Qt 从非主线程释放这些对象 → 直接 fast-fail。
 
-**下一步候选方案**（未实施，需先做可行性验证）：
-- 每个 `DirStoreModel` 记录 in-flight 任务数，销毁前 `waitForDone`（风险：死锁/
-  卡 UI，网络盘上可能数秒）
-- 不用 `QThreadPool`，改用受控 `QThread` + 协作式取消（工作线程自己检查取消标志）
-- 接受现状：生产环境只在退出/关标签时短暂共存，未观察到用户可见崩溃（待 win55 SMB 真机验证）
+**被否证的假设**（都曾写进过候选方案）：
+- “投递的接收者已被销毁” → 控制实验：把 emit 目标换成 `sip.delete` 后的对象，200 轮
+  全部 exit 0。Qt 的自动断连确实可靠，问题不在这里。
+- “删窗格 / 销毁模型触发的” → pane 模式（真建真删 Pane）exit 0，只有 model 模式崩。
+- “后台线程在收尾时还在跑就够了” → 纯 Python 计算的 emit 完全不崩，必须叠加真实
+  系统调用（os.scandir / entry.stat / ctypes.windll）才会；且触发量还取决于**载荷体量**：
+  System32 4867 条 × 200 模型（≈ 100 万对象）8/8 崩，600 条 × 200 不崩。
+- “引用环把销毁时刻交给循环 GC” → 探针否证：PyQt6 的信号连接不在 Python 层强引用
+  `__self__`，绑定方法直连不会形成引用环（`del` 后 weakref 立即失效，与无环 QObject 一致）。
+- “改成弱引用 closure 分发更安全” → **反而更差**：实测在 pytest-qt teardown 的
+  `_process_events` 里直接 AV，当前线程帧就落在 `_deliver`。原因是接收者不是模型时，
+  Qt 不会在模型销毁时剔除已排队的投递，而 `_loader` 会被在飞任务活得比模型久。已改回
+  绑定方法直连（接收者必须就是模型），并保留 `_loader` 随模型销毁。
 
-**相关文件**：`core/dir_model.py`（`_LoadTask`/`_LoadSignals`）、`tests/conftest.py`、
-`core/lifecycle.py`
+**同时修掉的现场**：全量跑里抓到过一条指向同一类问题的可见异常 ——
+`_on_entries_loaded` 在 `endInsertRows()` 之后调 `self._show_hidden()` 报
+`AttributeError: 'DirStoreModel' object has no attribute '_filter'`（sip 在 C++ 部分
+销毁时会清空实例 `__dict__`，即投递落在一个已销毁的模型上）。现在槽函数先把要用的自身
+状态取完，行插入之后不再读实例状态，`directoryLoaded` 的发射也包了 RuntimeError 早退；
+该用例已锁定，并用临时探针确认改前写法在同一场景下必报同样的 AttributeError。
+
+**修复**：退出路径显式排空 —— `core/lifecycle.exec_and_drain(app)` 把 `app.exec()` 与
+`drain_background_pool()` 绑成一个入口（clear 未开始的任务 → 等在飞的跑完 → 空转事件
+循环把投递派发完 → 因派发可能触发新加载，再来一轮）；`tests/conftest.py` 在每个测试边界
+也调一次，不留竞态窗口给下一个用例。同时收紧 `DirStoreModel` 的投递链路：`_loader` 以模型
+为父（模型销毁→投递源一同销毁，在飞任务的 `emit` 会报错并被 `_LoadTask.run` 吞掉），
+接收者保持为模型本身，槽内不再在行插入之后读实例状态。
+
+**A/B 实测**：同一探针脚本、200 轮真实枚举，收尾不调 drain → 8/8 fast-fail；调 drain
+→ 8/8 干净退出。
+
+**未做**：没有给每个 `DirStoreModel` 加析构 `waitForDone`，也没有改线程模型 —— 既然触发
+点不在“模型先亡”，这两条都解决不了问题，反而引入卡 UI 的风险（网络盘上一次枚举可能数秒）。
+
+**相关文件**：`core/lifecycle.py`（`drain_background_pool` / `exec_and_drain`）、
+`core/dir_model.py`（`_LoadTask` / `_LoadSignals` / `_on_entries_loaded`）、`main.py`、
+`tests/conftest.py`、`tests/test_shutdown_drain.py`、`tests/test_dir_model.py`、
+`docs/gotchas.md` 第 21、22 条
+
+**遗留的度量缺口**：A/B 那条测试需要数千条目的目录才能触发，默认跳过
+（`PAN4DEX_SHUTDOWN_CRASH_TARGET`），因此在普通机器上它不会运行；防回归主要靠契约测试
++ conftest 边界排空。
+
+**残余与量化**：运行中（测试 teardown 阶段）的硬崩，修复前同一命令形式下 3/8 轮；修复后
+25 轮（12 + 8 + 5，两种输出形式）全绿。若残余触发率仍是 3/8，25 轮全绿的概率只有约 10⁻⁵
+—— 改善是真的；但样本不足以证明根除，继续在全量跑中观察，一旦再现先取 faulthandler
+全线程转储（本轮的 `_deliver` 帧就是这么来的）。
 
 ---
 

@@ -11,10 +11,13 @@ Pan4dex 万格 — Qt 对象生命周期防护
 
 统一改用 `call_later()`：定时器以业务对象为父对象，随对象一起销毁，回调自然不再
 触发 —— 靠 Qt 的所有权语义解决，不需要在各调用点散着写 `sip.isdeleted` 守卫。
-"""
-from PyQt6.QtCore import QTimer
 
-__all__ = ["call_later"]
+同一类的另一半问题发生在**进程退出时**：后台枚举任务的跨线程投递还没派发完，解释器
+就开始收尾。用 `exec_and_drain()` 进入事件循环可保证循环一返回就排空后台线程。
+"""
+from PyQt6.QtCore import QCoreApplication, QThreadPool, QTimer
+
+__all__ = ["call_later", "drain_background_pool", "exec_and_drain"]
 
 
 def call_later(receiver, msec: int, fn):
@@ -31,3 +34,46 @@ def call_later(receiver, msec: int, fn):
     timer.timeout.connect(fn)
     timer.start(msec)
     return timer
+
+
+def drain_background_pool(wait_ms: int = 5000, spin: int = 5) -> None:
+    """退出前收拢后台线程：丢弃/等待在飞任务，并把挂起的跨线程投递派发完。
+
+    不能留给析构阶段去做：`QThreadPool.globalInstance()` 要等 `~QCoreApplication`（甚至
+    更晚的静态析构）才销毁，那时 CPython 可能已开始 finalize；而未派发的 queued
+    投递事件里持有着一批 Python 对象（枚举出的条目、目录节点），Qt 销毁它们时
+    会从非主线程触碰已死的解释器状态。Windows 上实测退化为 fast-fail（退出码
+    0xC0000409，无可捕异常），用户侧就是“关掉程序时报错”。
+
+    只做三件事，按顺序：先丢弃尚未开始的排队任务（`clear`，已经开始的无法收回），
+    再等在飞任务跑完（它们的 emit 会堆出更多投递），最后空转几次事件循环把投递
+    派发干净。事件处理本身可能又触发新加载（导航/失效），所以再来一轮。
+
+    只能在退出路径（事件循环已停 / 测试 teardown）调用，不要在运行中调：`waitForDone`
+    会阻塞主线程，网络盘上一个枚举可能耗时数秒。
+    """
+    pool = QThreadPool.globalInstance()
+    pool.clear()
+    pool.waitForDone(wait_ms)
+    app = QCoreApplication.instance()
+    if app is None:
+        return
+    for _ in range(spin):
+        app.processEvents()
+    pool.clear()
+    pool.waitForDone(1000)
+    for _ in range(spin):
+        app.processEvents()
+
+
+def exec_and_drain(app) -> int:
+    """进入事件循环，并在退出循环时收拢后台线程，返回退出码。
+
+    生产入口唯一允许的「跑事件循环」写法：`app.exec()` 返回后必须排空后台线程，
+    否则未派发的跨线程投递会留到解释器收尾阶段被 Qt 释放，进程以 fast-fail 退出
+    （见 `drain_background_pool`）。把两件事绑成一个函数，避免以后新增退出路径时
+    漏掉排空。
+    """
+    code = app.exec()
+    drain_background_pool()
+    return code

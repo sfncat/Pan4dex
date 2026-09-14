@@ -142,8 +142,13 @@ class _LoadTask(QRunnable):
             rows = enumerate_dir(self.node.path, self.show_hidden)
         except Exception:
             rows = []
-        # queued 投递回主线程（signals 属于主线程对象）
-        self.signals.finished.emit(self.node, rows, self.gen)
+        # queued 投递回主线程（signals 属于主线程对象）。模型可能已先一步销毁，
+        # 而 signals 是模型的子对象、届时自己也成了悬空包装 → emit 报 RuntimeError；
+        # 丢掉这份结果即可，不能让异常死在 worker 线程里
+        try:
+            self.signals.finished.emit(self.node, rows, self.gen)
+        except RuntimeError:
+            logger.debug("枚举结果丢弃：投递目标已随模型销毁")
 
 
 class DirStoreModel(QAbstractItemModel):
@@ -170,7 +175,14 @@ class DirStoreModel(QAbstractItemModel):
         self._filter = (QDir.Filter.AllDirs | QDir.Filter.Files |
                         QDir.Filter.NoDotAndDotDot | QDir.Filter.Hidden)
         self._pool = QThreadPool.globalInstance()
-        self._loader = _LoadSignals()
+        # `_loader` 以本模型为父：模型销毁时它一同销毁，在飞任务的 emit 会立刻失败
+        # 并被 `_LoadTask.run` 吞掉，不会留下悬空的投递源。
+        # 接收者必须是本模型（所以用绑定方法直连）：只有那样 Qt 才会在模型销毁时
+        # 把已排队的投递一并剔除。改成“无 QObject 归属的函数”（如弱引用 closure）
+        # 后，接收者变成 sender，而 `_loader` 会被在飞任务活得比模型久，投递就在模型
+        # 销毁后照旧派发 —— 实测反而把崩溃点从槽内部前推到分发处（见
+        # docs/unsolved-issues.md 问题 13）。
+        self._loader = _LoadSignals(self)
         self._loader.finished.connect(self._on_entries_loaded)
         self._invalid = QModelIndex()
 
@@ -396,6 +408,9 @@ class DirStoreModel(QAbstractItemModel):
     def _on_entries_loaded(self, node, entries, gen):
         if gen != node.gen:
             return  # 过期结果：期间又发起过新枚举，否则旧快照会占据视图
+        # 先取完要用的自身状态：本槽由后台线程的投递触发，销毁时刻不受本槽控制，
+        # 实测存在“槽跑到一半 self.__dict__ 已被清空”的现场（见 __init__ 处的说明）
+        show_hidden = self._show_hidden()
         node.loading = False
         if node.key not in self._nodes or self._nodes.get(node.key) is not node:
             return  # 节点已被丢弃
@@ -407,10 +422,13 @@ class DirStoreModel(QAbstractItemModel):
             if entries else None
         self._adopt(node, entries)
         node.loaded = True
+        self._cache_put(node.key, show_hidden, entries)
         if entries:
             self.endInsertRows()
-        self._cache_put(node.key, self._show_hidden(), entries)
-        self.directoryLoaded.emit(node.path)
+        try:
+            self.directoryLoaded.emit(node.path)
+        except RuntimeError:
+            pass  # 模型已在本槽执行期间被销毁：目录已加载完，不必再通知
 
     # ---- QAbstractItemModel 必需实现 ----
     def index(self, *args, **kwargs):

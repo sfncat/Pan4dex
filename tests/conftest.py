@@ -1,7 +1,26 @@
 # Pan4dex 万格 — 测试配置和夹具
+import sys
+from contextlib import contextmanager
+
 import pytest
 from PyQt6.QtCore import QCoreApplication
 from PyQt6.QtWidgets import QApplication
+
+
+@contextmanager
+def qt_exceptions():
+    """收集 PyQt6 在 Qt 事件循环 / 工作线程里捕获的未处理 Python 异常。
+
+    槽函数里抛出的异常不会传回调用方，而是交给 `sys.excepthook`；不接管它就只是
+    打印到 stderr，测试里抓不到。定义在这里供各测试文件共用。
+    """
+    saved = sys.excepthook
+    errors = []
+    sys.excepthook = lambda etype, value, tb: errors.append(value)
+    try:
+        yield errors
+    finally:
+        sys.excepthook = saved
 
 
 @pytest.fixture(scope="session")
@@ -15,16 +34,20 @@ def qapp():
 
 @pytest.fixture(autouse=True)
 def _reap_top_level_widgets(qapp):
-    """每个测试结束后立即销毁残留的顶层窗口（含 MainWindow）。
+    """每个测试结束后立即销毁残留的顶层窗口（含 MainWindow），并收拢后台线程。
 
     测试里创建的窗口如果不显式销毁，C++ 对象会一直活到后面的测试，删除时机由
     GC 决定；而 `QApplication.setStyleSheet`（应用主题，MainWindow 的 0ms 延迟
     初始化会调）会遍历 polish 全部存活控件，撞上这种“半回收”窗口会偶发
     access violation（Windows 下 faulthandler 只能打印栈，进程直接死）。
-    确定性回收同时会停掉窗口里挂着的定时器/后台线程，避免污染后续测试。
+
+    `drain_background_pool()` 是同一类问题的另一半：窗格销毁时后台枚举可能仍在飞，
+    未派发的投递带着 Python 对象残留到下个测试（甚至残留到进程退出），实测会偶发
+    fast-fail / AV；在每个测试边界上把它们排空，就不留竞态窗口。
     """
     yield
     from PyQt6 import sip
+    from core.lifecycle import drain_background_pool
     for w in list(qapp.topLevelWidgets()):
         try:
             w.hide()
@@ -34,6 +57,7 @@ def _reap_top_level_widgets(qapp):
             sip.delete(w)
         except RuntimeError:
             pass
+    drain_background_pool()
     QCoreApplication.processEvents()
 
 

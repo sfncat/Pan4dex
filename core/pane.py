@@ -955,10 +955,8 @@ class Pane(QWidget):
         
         # 回退到系统默认
         import subprocess
-        import sys
-        
+
         if sys.platform == "win32":
-            import os
             os.startfile(file_path)
         else:
             # xdg-open 等待默认应用就绪才返回（可能 >10s），不能阻塞等待；

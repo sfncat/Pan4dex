@@ -274,6 +274,54 @@ Python 级操作（写实例属性、调纯 Python 对象），不能碰任何 Q
 **关联**：`tests/conftest.py` 的 `_reap_top_level_widgets` 会在每个测试后销毁残留
 窗口 —— 它不是修复，但把不可读的 AV 降级成带栈的 RuntimeError，是定位这类问题的前提。
 
+### 21. 退出时还有未派发的跨线程投递 → 进程 fast-fail（0xC0000409）
+
+**现象**：用户侧「关掉程序时报错」，退出码 `0xC0000409`
+（STATUS_STACK_BUFFER_OVERRUN，实为 CPython fatal error 走 `__fastfail`），
+faulthandler 也打不出可读的 Python 栈；测试全量连跑时的偶发 access violation 同一根源。
+
+**根因**：`QThreadPool.globalInstance()` 上的枚举任务在后台线程 `emit` 结果，事件循环
+一旦结束，这些 queued 投递可能还没派发；投递事件里持有着一批 Python 对象（枚举条目、
+目录节点）。而线程池/事件队列要等 `~QCoreApplication`（甚至更晚的静态析构）才销毁，
+那时 CPython 已开始 finalize，Qt 从非主线程释放这些对象 → 硬崩。
+
+**否证过的假设**：不是“接收者已被删除”—— 把 emit 目标换成 `sip.delete` 后的对象，
+200 轮仍 exit 0。真正的触发条件是：后台做**真实系统调用**（os.scandir / entry.stat /
+ctypes）+ 后台 emit，且退出时残留的**载荷体量足够大**（System32 4867 条 × 200 模型
+≈ 100 万对象：8/8 崩；600 条 × 200：不崩；纯 Python 计算的 emit 怎么都不崩）。
+
+**解决**：退出路径显式排空 —— `main.py` 用 `exec_and_drain(app)`（`app.exec()` 一返回
+就 `drain_background_pool()`：clear → waitForDone → 空转事件循环把投递派发完 → 再来一轮）。
+测试边界（`conftest._reap_top_level_widgets`）也调一次，不留竞态窗口给下一个用例。
+
+**注意**：`drain_background_pool()` 只能在退出/teardown 调；运行中调会阻塞主线程，
+网络盘上一次枚举可能耗时数秒。
+
+**测试**：`tests/test_shutdown_drain.py`（A/B 那条默认跳过，需
+`PAN4DEX_SHUTDOWN_CRASH_TARGET` 指向一个数千条目的目录才能复现）。
+
+### 22. 后台投递的接收者必须是目标对象本身（别为“判活”改成 closure）
+
+**现象**：为了让枚举结果不落到已销毁的模型上，把
+`loader.finished.connect(self._on_entries_loaded)` 换成“弱引用 closure + `sip.isdeleted`
+判活”；结果反而崩得更快 —— faulthandler 显示当前线程帧就落在那个 closure 里。
+
+**根因**：连接的目标如果是普通可调用对象（没有指向 QObject 的 `__self__`），Qt 认定的
+**接收者是 sender**。接收者不是模型时，模型销毁并不会剔除已排队的投递；而 `_LoadSignals`
+会被在飞任务（`QRunnable` 持有它）活得比模型久，投递就照旧派发 → 在悬空的模型上调方法。
+绑定方法直连时接收者就是模型，`~QObject` 会 disconnect + `removePostedEvents` —— 这才是
+Qt 提供的保护，Python 层的判活抢不过它。
+
+**解决**：投递仍用绑定方法直连，同时 `_LoadSignals(self)` 以模型为父（模型销毁→投递源
+一同销毁，worker 里的 `emit` 报 RuntimeError，在 `_LoadTask.run` 里吞掉）。“判活”不放在
+接收者上，而是放在槽自己的写法上：**先把要用的实例状态取完，begin/endInsertRows 之后
+不再读 self**（sip 在 C++ 部分销毁时会清空实例 `__dict__`，那时读 `self._filter` 就是
+AttributeError）。
+
+**测试**：`tests/test_dir_model.py::test_load_slot_reads_no_self_state_after_row_insertion`
+（临时探针确认改前写法在同一场景下必报同样的 AttributeError）、
+`::test_in_flight_load_after_model_death_is_dropped`。
+
 ---
 
 ## 八、回归防护机制
@@ -302,9 +350,13 @@ python scripts/deploy.py 0.9.618
 - [ ] 后台枚举结果是否按 `gen` 校验代次（不得直接信任回调）
 - [ ] 从 `threading.Thread` 向主线程投递：是否只走 `_emit_ui(名字, ...)` 这类带
       RuntimeError 防护的路径（不得直接 `self.sig.emit(...)`）
+- [ ] 后台结果回投主线程：信号连接的**接收者是否就是目标 QObject**（绑定方法直连；
+      不得为了判活改成 closure，那样 Qt 会在 sender 侧派发，模型销毁也不剔除投递）
 - [ ] 新增常驻子进程/后台任务：是否在 `MainWindow.closeEvent` 里显式关停（不能依赖 GC）
 - [ ] 延后执行（启动分阶段 / 防抖 / 轮询）：是否用 `call_later(obj, ms, fn)` 而不是
       `QTimer.singleShot`（后者在对象销毁后仍会触发）
+- [ ] 新增后台线程/线程池任务：进程退出是否走 `exec_and_drain(app)`（而非裸 `app.exec()`），
+      保证事件循环一返回就排空未派发的投递
 - [ ] 切换可见性后是否 `update()` + `repaint()`
 - [ ] 导航是否用 `setRootIndex` 而不是 `setRootPath`
 - [ ] QDockWidget 是否保存了显式 parent 引用

@@ -19,6 +19,49 @@
 
 ## 更新记录
 
+### v1.9.004 — 2026-09-14（开发分支 dev/shell-behavior-smb-perf）
+
+#### 🐛 缺陷修复
+- **关闭程序时报错 / 退出码 `0xC0000409`（`docs/unsolved-issues.md` 问题 13 的真实根因）**：
+  - 事件循环结束后，`QThreadPool.globalInstance()` 上还有未派发的跨线程投递（枚举结果），
+    投递事件里持有一批 Python 对象；线程池与事件队列要等 `~QCoreApplication` 才销毁，
+    那时 CPython 已开始收尾，Qt 从非主线程释放它们 → fast-fail（无可捕异常）
+  - 需要三者叠加才会触发：真实系统调用枚举 + 后台 `emit` + 足够大的载荷体量
+    （System32 4867 条 × 200 模型：8/8 崩；纯 Python 计算的 emit：怎么都不崩）
+  - 新增 `core/lifecycle.drain_background_pool()`（clear 未开始任务 → 等在飞跑完 →
+    空转事件循环把投递派发完 → 再来一轮），并用 `exec_and_drain(app)` 把它与 `app.exec()`
+    绑成唯一入口，`main.py` 改用它
+  - **A/B 实测**：收尾不排空 8/8 fast-fail；排空后 8/8 干净退出
+- **枚举结果回投到已销毁的模型**：`_on_entries_loaded` 在 `endInsertRows()` 之后读
+  `self._show_hidden()` 抛 `AttributeError: 'DirStoreModel' object has no attribute
+  '_filter'`（sip 在 C++ 部分销毁时会清空实例 `__dict__`）。现在槽函数先把要用的自身状态
+  取完，行插入之后不再读实例状态，`directoryLoaded` 的发射带 RuntimeError 早退
+- **`_LoadSignals` 改为以模型为父**：模型销毁→投递源一同销毁，在飞任务的 `emit` 会报错并
+  在 `_LoadTask.run` 里被吞掉（不再静默弄死工作线程）。仍**保留绑定方法直连**：接收者必须
+  是模型本身，Qt 才会在模型销毁时剔除已排队的投递（试过弱引用 closure 分发，反而直接 AV）
+- **双击任何文件都打不开**（本轮冒烟时从旧日志里发现）：`Pane.open_file` 把
+  `import sys` / `import os` 写在函数后半段，于是这两个名字在**整个函数**内都是局部名，
+  开头的 `if sys.platform == "linux" and os.path.isfile(...)` 必抛 `UnboundLocalError`
+  （Windows/Linux 都中招，异常只留在日志里，用户侧就是“双击没反应”）
+  —— 删掉这两个多余的局部 import，并加一条全仓 AST 检查用例守住同类“先用后导”
+- 效果：全量测试的硬崩由同命令形式下的 3/8 轮降为连续 25 轮全绿（未证明根除，继续观察）
+
+#### 🔧 工程
+- `tests/conftest.py`：每个测试边界调用 `drain_background_pool()` 排空后台线程，不留
+  竞态窗口给下一个用例
+- 新增 `tests/test_shutdown_drain.py`（5 项）：排空会派发挂起的枚举结果、排空后线程池空闲、
+  `exec_and_drain` 的顺序契约、子进程积攒 200 轮投递后排空干净退出，以及默认跳过的退出崩溃 A/B
+- `tests/test_dir_model.py` 新增 2 项生命周期用例（行插入后不读实例状态 / 在飞×模型销毁静默丢弃）
+- `tests/test_regression.py` 新增 `TestNoUseBeforeLocalImport`：双击打开文件的入口用例 +
+  全仓静态检查“函数内在 local import 之前用了同名模块级名字”（就是上面那个 bug 的根源）
+- `qt_exceptions()` 从 `test_lifecycle.py` 上移到 `tests/conftest.py` 供各文件共用
+
+#### 📝 文档更新
+- `docs/gotchas.md` 新增第 21（退出时必须排空后台线程）、22（投递的接收者必须是目标对象）条，
+  审查清单补 2 项
+- `docs/unsolved-issues.md` 问题 13 由「未解决」改写为已解决，并记录被否证的 4 个假设与
+  残余崩溃率的量化评估
+
 ### v1.9.003 — 2026-09-14（开发分支 dev/shell-behavior-smb-perf）
 
 #### 🐛 缺陷修复

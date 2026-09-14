@@ -571,6 +571,7 @@ def main():
             font.setHintingPreference(QFont.HintingPreference.PreferFullHinting)
             app.setFont(font)
         from core.main_window import MainWindow
+        from core.lifecycle import exec_and_drain
 
         logger.info(f"[启动计时] MainWindow 导入: {(time.perf_counter()-_t0)*1000:.1f}ms")
         window = MainWindow()
@@ -600,7 +601,12 @@ def main():
             call_later(window, 200, _reapply_window_icon)
         logger.info(f"[启动计时] window.show() 完成: {(time.perf_counter()-_t0)*1000:.1f}ms")
         logger.info("Main window shown, entering event loop")
-        sys.exit(app.exec())
+        # 进事件循环必须走 exec_and_drain：app.exec() 一返回就收拢后台线程，否则
+        # 未派发的跨线程投递会在解释器收尾阶段被 Qt 释放，进程以 0xC0000409
+        # fast-fail 退出（用户侧表现为“关掉程序时报错”），见 core/lifecycle.py
+        exit_code = exec_and_drain(app)
+        logger.info("后台线程已收拢，退出")
+        sys.exit(exit_code)
     except Exception as e:
         error_msg = str(e)
         logger.error(f"启动失败: {error_msg}", exc_info=True)

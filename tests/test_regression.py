@@ -372,3 +372,71 @@ class TestPathBarButtonsRegression:
         # 打开标签栏
         pane.toggle_tabs()
         assert pane.path_bar.tabs_btn.isChecked() == True
+
+
+class TestNoUseBeforeLocalImport:
+    """回归防护：函数内的 `import x` 会把模块级同名 x 遮蔽成**整个函数**的局部名，
+    在那行之前用到 x 就必抛 UnboundLocalError。
+
+    真实事故：`Pane.open_file` 里 `import sys` / `import os` 写在函数后半段，于是
+    开头的 `if sys.platform == "linux"` 直接报错 —— 用户侧表现为**双击任何文件都打不开**，
+    而异常只能从日志里看到（Qt 事件循环里的 Python 异常不会弹窗）。
+    """
+
+    def test_open_file_passes_platform_check(self, tmp_path, monkeypatch):
+        """双击打开文件的入口不得在平台判断处报 UnboundLocalError"""
+        import shutil
+
+        import core.pane as pane_mod
+
+        opened = []
+        if sys.platform == "win32":
+            monkeypatch.setattr(pane_mod.os, "startfile", lambda p: opened.append(p))
+        monkeypatch.setattr(shutil, "which", lambda name: None)   # 不真的去起 xdg-open/gio
+
+        class _NoWindow:
+            def window(self):
+                return None            # 没有主窗口 → 跳过文件关联分支
+
+        f = tmp_path / "doc.txt"
+        f.write_text("x", encoding="utf-8")
+        pane_mod.Pane.open_file(_NoWindow(), str(f))    # 修复前：UnboundLocalError: sys
+        if sys.platform == "win32":
+            assert opened == [str(f)]
+
+    def test_no_function_uses_a_name_before_its_local_import(self):
+        """全仓静态检查：函数内在 local import 之前使用了与模块级同名的名字"""
+        import ast
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[1]
+        offenders = []
+        for pkg in ("core", "widgets", "config"):
+            for src in sorted((root / pkg).glob("*.py")):
+                # utf-8-sig：容忍带 BOM 的源文件（CPython 能跑，ast.parse 不接受 BOM）
+                tree = ast.parse(src.read_text(encoding="utf-8-sig"))
+                top = set()
+                for node in tree.body:
+                    if isinstance(node, ast.Import):
+                        top |= {(a.asname or a.name).split(".")[0] for a in node.names}
+                    elif isinstance(node, ast.ImportFrom):
+                        top |= {(a.asname or a.name) for a in node.names}
+                for fn in [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]:
+                    imported = {}
+                    for node in ast.walk(fn):
+                        if isinstance(node, ast.Import):
+                            for a in node.names:
+                                imported[(a.asname or a.name).split(".")[0]] = node.lineno
+                        elif isinstance(node, ast.ImportFrom):
+                            for a in node.names:
+                                imported[a.asname or a.name] = node.lineno
+                    for name, imp_line in imported.items():
+                        if name not in top:
+                            continue
+                        early = [n.lineno for n in ast.walk(fn)
+                                 if isinstance(n, ast.Name) and n.id == name
+                                 and isinstance(n.ctx, ast.Load) and n.lineno < imp_line]
+                        if early:
+                            rel = src.relative_to(root).as_posix()
+                            offenders.append(f"{rel}:{min(early)} {name}（局部 import 在 :{imp_line}）")
+        assert offenders == [], "先用后导会抛 UnboundLocalError：\n" + "\n".join(offenders)
