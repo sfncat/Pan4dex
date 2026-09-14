@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import (
     QLabel, QMenu, QMessageBox, QInputDialog, QLineEdit, QHBoxLayout, QTabWidget,
     QApplication, QSplitter, QDialog, QTableWidget, QHeaderView, QPushButton
 )
-from PyQt6.QtCore import Qt, QDir, QMimeData, pyqtSignal, QThread, QPoint, QEvent, QSortFilterProxyModel, QModelIndex, QPersistentModelIndex
+from PyQt6.QtCore import Qt, QDir, QMimeData, pyqtSignal, pyqtSlot, QThread, QPoint, QEvent, QSortFilterProxyModel, QModelIndex, QPersistentModelIndex, QUrl, QByteArray, QMetaObject, Q_ARG
 import os
 import sys
 
@@ -159,11 +159,22 @@ class FileListTreeView(QTreeView):
             event.ignore()
 
     def dragLeaveEvent(self, event):
-        self._pane.init_ui_style()
+        self._pane._apply_drag_highlight(False)
         event.accept()
 
     def dropEvent(self, event):
         self._pane.dropEvent(event)
+
+    def keyPressEvent(self, event):
+        # Shift+Delete 永久删除（Windows 习惯）；普通 Delete 不在此拦截，
+        # 仍由主窗口 QAction(Delete) → delete_selected 走回收站路径，
+        # 避免两条入口同时触发弹两次确认框
+        if event.key() == Qt.Key.Key_Delete and (event.modifiers() & Qt.KeyboardModifier.ShiftModifier):
+            paths = self._pane._paths_from_selection()
+            if paths:
+                self._pane._delete_paths(paths, permanent=True)
+            return
+        super().keyPressEvent(event)
 
 
 class Pane(QWidget):
@@ -195,6 +206,8 @@ class Pane(QWidget):
         else:
             self.current_path = QDir.homePath()
         self.file_ops = FileOperations()
+        # 同名冲突记忆策略（“对后续冲突执行相同操作”，仅本次操作内有效）
+        self._conflict_policy = None
         self._file_progress.connect(self._on_file_progress_ui)
         self._file_op_done.connect(self._on_file_op_done)
         # 剪贴板指向模块级共享对象（跨窗格复制/剪切/粘贴）
@@ -280,6 +293,9 @@ class Pane(QWidget):
         logger.info(f"[启动计时] PathBar 创建: {(time.perf_counter()-_t0)*1000:.1f}ms")
         
         self.path_bar.path_entered.connect(self.on_path_entered)
+        self.path_bar.back_requested.connect(self.go_back)
+        self.path_bar.forward_requested.connect(self.go_forward)
+        self.path_bar.refresh_requested.connect(self.refresh_current)
         self.path_bar.tree_toggle_requested.connect(self.toggle_tree)
         self.path_bar.tabs_toggle_requested.connect(self.toggle_tabs)
         self.path_bar.terminal_requested.connect(self.open_terminal_here)
@@ -328,6 +344,10 @@ class Pane(QWidget):
         self.tree_view.setItemsExpandable(False)
         self.tree_view.setAllColumnsShowFocus(True)
         self.tree_view.doubleClicked.connect(self.on_item_double_clicked)
+        # Enter 打开（Windows 习惯：Enter 等价于双击）：QTreeView 对 Enter 只发
+        # activated 不发 doubleClicked，旧版未连接导致 Enter 无反应；
+        # Ctrl+Enter 是 Qt 内建的“打开持续编辑器”，不劫持
+        self.tree_view.activated.connect(self._on_item_activated)
         self.tree_view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.tree_view.customContextMenuRequested.connect(self.show_context_menu)
         # 列标题右键：弹出列选择菜单，不触发窗格右键菜单
@@ -398,6 +418,22 @@ class Pane(QWidget):
         # 选择变化时更新预览（需要在 model 设置之后）
         self.tree_view.selectionModel().selectionChanged.connect(self.on_selection_changed)
     
+    @classmethod
+    def _file_filter(cls):
+        """根据“显示隐藏文件”开关构造 QDir.Filter（默认显示，保持旧行为）"""
+        base = (QDir.Filter.AllDirs | QDir.Filter.Files | QDir.Filter.NoDotAndDotDot)
+        if getattr(cls, '_show_hidden', True):
+            base |= QDir.Filter.Hidden
+        return base
+
+    @classmethod
+    def set_show_hidden(cls, show: bool):
+        """全局切换共享模型的隐藏文件过滤（所有窗格同步生效）"""
+        Pane._show_hidden = bool(show)
+        model = getattr(Pane, '_shared_file_model', None)
+        if model is not None:
+            model.setFilter(cls._file_filter())
+
     def _setup_shared_model(self):
         """设置共享的 QFileSystemModel"""
         # 使用静态共享模型，避免每个窗格都创建
@@ -406,12 +442,7 @@ class Pane(QWidget):
             t0 = time.perf_counter()
             model = ExifFileSystemModel()
             model.setRootPath("")
-            model.setFilter(
-                QDir.Filter.AllDirs | 
-                QDir.Filter.Files | 
-                QDir.Filter.NoDotAndDotDot |
-                QDir.Filter.Hidden
-            )
+            model.setFilter(self._file_filter())
             elapsed = (time.perf_counter() - t0) * 1000
             logger.info(f"[启动计时] QFileSystemModel 创建（首次，后续共享）: {elapsed:.1f}ms")
             Pane._shared_file_model = model
@@ -562,7 +593,16 @@ class Pane(QWidget):
 
         注意：Qt 模型只能在主线程访问，因此目录枚举在主线程完成，
         后台线程只调用 exiftool 子进程（纯 IO，不触碰 Qt 对象）。
+
+        性能：拍摄日期列默认隐藏，而主线程枚举整表 + 拉起 exiftool 子进程
+        在 SMB 上代价极高。故仅在该列真正可见时才预读；列隐藏时直接返回。
         """
+        try:
+            shot_col = getattr(self.model, 'SHOT_DATE_COLUMN', 4)
+            if self.tree_view.isColumnHidden(shot_col):
+                return
+        except Exception:
+            pass
         try:
             model = self.model
             idx = model.index(self.current_path)
@@ -603,10 +643,30 @@ class Pane(QWidget):
         except Exception:
             pass
 
+    def _path_is_dir(self, path: str) -> bool:
+        """判断路径是否为目录，优先利用共享模型已加载的缓存（内存查询，
+        零 syscall），避免每次导航都对网络路径做同步 stat。
+
+        - 本地路径：直接 os.path.isdir（本地 stat 极快）
+        - 网络路径：先查模型（已加载则 isDir 不额外往返）；未加载时
+          回退一次 os.path.isdir 保证正确性（不误入文件）
+        """
+        if not _is_network_path(path):
+            return os.path.isdir(path)
+        try:
+            idx = self.model.index(path)
+            if idx.isValid():
+                # isValid 不代表已填充；rowCount 为 0 且未加载时不能断定是目录，
+                # 用 fileInfo 的缓存属性（QFileSystemModel 拉到条目后不额外 syscall）
+                return self.model.isDir(idx)
+        except Exception:
+            pass
+        return os.path.isdir(path)
+
     def navigate_to(self, path: str):
         """导航到指定路径"""
         import os
-        if os.path.isdir(path):
+        if self._path_is_dir(path):
             # 网络路径（UNC/映射网络驱动器）下 QFileSystemModel 缓存同一目录
             # 不重扫：外部程序（如其它文件管理器）复制/删除的文件看不到，
             # 且 QFileSystemWatcher 在 SMB 上变更通知不可靠，重建共享模型强制重扫
@@ -644,6 +704,7 @@ class Pane(QWidget):
 
             self.update_status_bar()
             self.path_changed.emit(path)
+            self._sync_nav_buttons()
             # 后台预读当前目录文件的拍摄日期（exiftool 批量一次调用）
             self._prefetch_shot_dates()
             # 超大图标模式下同步刷新缩略图视图
@@ -667,6 +728,7 @@ class Pane(QWidget):
             self._nav_index -= 1
             path = self._nav_history[self._nav_index]
             self._navigate_no_history(path)
+            self._sync_nav_buttons()
 
     def go_forward(self):
         """前进到下一个目录"""
@@ -674,11 +736,12 @@ class Pane(QWidget):
             self._nav_index += 1
             path = self._nav_history[self._nav_index]
             self._navigate_no_history(path)
+            self._sync_nav_buttons()
 
     def _navigate_no_history(self, path: str):
         """导航但不记录历史"""
         import os
-        if os.path.isdir(path):
+        if self._path_is_dir(path):
             if path == self.current_path and _is_network_path(path):
                 self._force_refresh_current_dir()
                 return
@@ -844,6 +907,24 @@ class Pane(QWidget):
             # 路径无效，恢复原路径
             self.path_bar.set_path(self.current_path)
     
+    def _on_item_activated(self, index):
+        """Enter/双击同样打开；Ctrl+Enter 保留 Qt 内建行为不处理"""
+        if index.isValid() and not (QApplication.keyboardModifiers() & Qt.KeyboardModifier.ControlModifier):
+            self.on_item_double_clicked(index)
+
+    def refresh_current(self):
+        """刷新当前目录（F5 / 刷新按钮）：网络路径强制重扫，本地走常规导航"""
+        self.navigate_to(self.current_path)
+
+    def _sync_nav_buttons(self):
+        """后退/前进按钮按历史栈位置置灰"""
+        try:
+            self.path_bar.set_nav_enabled(
+                self._nav_index > 0,
+                self._nav_index < len(self._nav_history) - 1)
+        except Exception:
+            pass
+
     def on_item_double_clicked(self, index):
         """双击项目处理"""
         path = self.model.filePath(self._map_to_source(index))
@@ -976,24 +1057,56 @@ class Pane(QWidget):
             pass
     
     def on_selection_changed(self):
-        """选择变化时更新预览"""
-        indexes = self.tree_view.selectedIndexes()
+        """选择变化：更新预览 + 状态栏选中计数"""
+        indexes = [i for i in self.tree_view.selectedIndexes() if i.column() == 0]
         if indexes:
             path = self.model.filePath(self._map_to_source(indexes[0]))
             main_window = self.window()
             if hasattr(main_window, 'preview_panel') and main_window.preview_panel.isVisible():
                 main_window.preview_panel.preview_file(path)
+        self._update_selection_status()
+    
+    def _update_selection_status(self):
+        """状态栏追加“已选 N 项”（无选中时回退到目录概要）。
+
+        只显计数不算选中大小：大小需递归遍历，在 SMB 上会阻塞主线程（
+        且 QFileSystemModel 不缓存目录大小），异步统计待第二阶段随新模型落地。
+        """
+        try:
+            n = len([i for i in self.tree_view.selectedIndexes() if i.column() == 0])
+            base = getattr(self, '_status_summary', '') or ''
+            if n:
+                self.status_label.setText(f"{base}    已选 {n} 项" if base else f"已选 {n} 项")
+            elif base:
+                self.status_label.setText(base)
+        except Exception:
+            pass
     
     def update_status_bar(self):
-        """更新状态栏"""
-        import os
+        """更新状态栏
+
+        旧实现先 os.listdir 再对每个条目 os.path.isfile/isdir 二次 stat，
+        在 SMB 上等于双倍网络往返。改用 os.scandir：一次枚举、DirEntry
+        自带类型缓存，is_dir() 通常不额外 syscall。结果存为概要基串，
+        供选中计数拼接使用。
+        """
         try:
-            entries = os.listdir(self.current_path)
-            files = [f for f in entries if os.path.isfile(os.path.join(self.current_path, f))]
-            dirs = [d for d in entries if os.path.isdir(os.path.join(self.current_path, d))]
-            self.status_label.setText(f"{len(dirs)} 个目录, {len(files)} 个文件")
+            dirs = files = 0
+            with os.scandir(self.current_path) as it:
+                for entry in it:
+                    try:
+                        if entry.is_dir():
+                            dirs += 1
+                        else:
+                            files += 1
+                    except OSError:
+                        files += 1
+            self._status_summary = f"{dirs} 个目录, {files} 个文件"
         except PermissionError:
-            self.status_label.setText("无权限访问")
+            self._status_summary = "无权限访问"
+        except OSError:
+            self._status_summary = ""
+        self._update_selection_status()
     
     def show_column_menu(self, position):
         """列标题右键菜单：勾选要显示的列（名称/大小/类型/修改日期）"""
@@ -1118,6 +1231,20 @@ class Pane(QWidget):
             rename_action.setShortcut(QKeySequence("F2"))
             rename_action.triggered.connect(self.rename_selected)
             menu.addAction(rename_action)
+            
+            menu.addSeparator()
+            
+            # 复制选中项绝对路径（到系统剪贴板，多行）
+            copy_path_action = QAction("复制文件地址(&A)", self)
+            copy_path_action.triggered.connect(lambda: self._copy_paths_to_clipboard(paths))
+            menu.addAction(copy_path_action)
+            
+            # 在系统文件管理器中定位（Windows explorer /select）
+            reveal_text = "在资源管理器中显示(&E)" if sys.platform == 'win32' else "在文件管理器中显示(&E)"
+            reveal_action = QAction(reveal_text, self)
+            reveal_action.triggered.connect(
+                lambda: self._reveal_in_file_manager(single_path or self.current_path))
+            menu.addAction(reveal_action)
             
             menu.addSeparator()
             
@@ -1438,6 +1565,47 @@ class Pane(QWidget):
         else:
             self.open_file(path)
     
+    def _copy_paths_to_clipboard(self, paths):
+        """把选中项绝对路径写入系统剪贴板（多行），供外部粘贴"""
+        if not paths:
+            return
+        try:
+            from PyQt6.QtWidgets import QApplication
+            text = '\n'.join(os.path.normpath(p) for p in paths)
+            QApplication.clipboard().setText(text)
+            self.status_label.setText(f"已复制 {len(paths)} 个文件地址")
+        except Exception:
+            pass
+    
+    def _reveal_in_file_manager(self, path):
+        """在系统文件管理器中选中并显示该项"""
+        if not path:
+            return
+        try:
+            import subprocess
+            norm = os.path.normpath(path)
+            if sys.platform == 'win32':
+                # os.path.normpath 会去掉 UNC 前缀双斜杠（\\server → \server），
+                # explorer 不识别，需还原
+                norm = self._win_unc_fix(norm)
+                subprocess.Popen(['explorer', '/select,', norm])
+            elif sys.platform == 'darwin':
+                subprocess.Popen(['open', '-R', norm])
+            else:
+                from PyQt6.QtGui import QDesktopServices
+                url = QUrl.fromLocalFile(os.path.dirname(norm) if os.path.exists(norm) else norm)
+                QDesktopServices.openUrl(url)
+        except Exception as e:
+            self.status_label.setText(f"无法在文件管理器中显示: {e}")
+    
+    @staticmethod
+    def _win_unc_fix(norm):
+        """还原被 normpath 压掉的 UNC 双前导斜杠"""
+        p = norm.replace('/', '\\')
+        if not p.startswith('\\\\') and p.startswith('\\'):
+            p = '\\' + p
+        return p
+    
     def _paths_from_selection(self) -> list:
         """从文件列表选中项提取路径列表"""
         paths = []
@@ -1462,6 +1630,7 @@ class Pane(QWidget):
         SHARED_CLIPBOARD.clear()
         SHARED_CLIPBOARD.extend(paths)
         SHARED_CLIPBOARD_ACTION = 'copy'
+        self._write_system_clipboard(paths, is_cut=False)
         self.status_label.setText(f"已复制 {len(paths)} 个项目")
     
     def _cut_paths(self, paths):
@@ -1472,23 +1641,29 @@ class Pane(QWidget):
         SHARED_CLIPBOARD.clear()
         SHARED_CLIPBOARD.extend(paths)
         SHARED_CLIPBOARD_ACTION = 'cut'
+        self._write_system_clipboard(paths, is_cut=True)
         self.status_label.setText(f"已剪切 {len(paths)} 个项目")
     
     def paste(self):
         """粘贴到当前目录（应用内剪贴板优先，其次系统剪贴板）"""
         self._paste_to(self.current_path)
 
-    def _system_clipboard_paths(self) -> list:
+    def _system_clipboard_paths(self) -> tuple:
         """读取系统剪贴板中的文件路径（从系统文件管理器复制/剪切的文件）。
 
         系统复制进 Pan4dex 时应用内剪贴板为空，文件在系统剪贴板
         （Windows CF_HDROP / Linux text/uri-list，QClipboard 统一为 URLs）。
         只收集存在的本地文件，忽略网页链接等非本地 URL。
+
+        返回 (paths, is_move)：Windows 资源管理器“剪切”会在
+        Preferred DropEffect 格式里写 DROPEFFECT_MOVE(2)，不读它就会把
+        剪切误判成复制、源文件留在原地（用户以为已移走，属数据问题）。
+        Linux 对应 x-special/gnome-copied-files（首行 move/copy）。
         """
         from PyQt6.QtWidgets import QApplication
         mime = QApplication.clipboard().mimeData()
         if mime is None:
-            return []
+            return [], False
         paths = []
         if mime.hasUrls():
             for u in mime.urls():
@@ -1522,7 +1697,60 @@ class Pane(QWidget):
                                 paths.append(p)
                     except Exception:
                         pass
-        return paths
+        return paths, self._clipboard_prefers_move(mime)
+
+    @staticmethod
+    def _clipboard_prefers_move(mime) -> bool:
+        """判断剪贴板 MIME 数据是否标记为“剪切/移动”。"""
+        if mime is None:
+            return False
+        try:
+            if sys.platform == "win32":
+                # Preferred DropEffect：DWORD，低位可为 4 或 8 字节，
+                # 取前 4 字节小端无符号整数判 DROPEFFECT_MOVE(0x02)
+                raw = mime.data('application/x-qt-windows-mime;value="Preferred DropEffect"')
+                if not raw or len(bytes(raw)) < 4:
+                    return False
+                import struct
+                val = struct.unpack('<I', bytes(raw)[:4])[0]
+                return bool(val & 0x02)
+            else:
+                raw = mime.data('x-special/gnome-copied-files')
+                if raw and bytes(raw).startswith(b'move'):
+                    return True
+                raw = mime.data('application/x-kde-dropdata-actions')
+                if raw:
+                    import struct
+                    b = bytes(raw)
+                    # 格式：默认动作(int) + 可用动作列表(int...)；Private(2) 表示移动
+                    if len(b) >= 4 and struct.unpack('<i', b[:4])[0] == 2:
+                        return True
+                return False
+        except Exception:
+            return False
+
+    def _write_system_clipboard(self, paths: list, is_cut: bool):
+        """把应用内复制/剪切写回系统剪贴板，使资源管理器等外部程序可粘贴。
+
+        失败（剪贴板被占用等）不影响应用内剪贴板，仅放弃外部可见性。
+        """
+        try:
+            from PyQt6.QtWidgets import QApplication
+            mime = QMimeData()
+            mime.setUrls([QUrl.fromLocalFile(p) for p in paths])
+            mime.setText('\n'.join(paths))
+            if is_cut:
+                # Windows：Explorer 读 Preferred DropEffect 显示灰色剪切外观
+                # （PyQt6 无 QByteArray.fromRawData，setData 直接收 bytes）
+                if sys.platform == "win32":
+                    mime.setData('application/x-qt-windows-mime;value="Preferred DropEffect"',
+                                 b'\x02\x00\x00\x00')
+                else:
+                    mime.setData('x-special/gnome-copied-files', b'move\n' +
+                                 '\n'.join(QUrl.fromLocalFile(p).toString() for p in paths).encode())
+            QApplication.clipboard().setMimeData(mime)
+        except Exception:
+            pass
 
     def _paste_to(self, target_dir):
         """粘贴到指定目录：应用内剪贴板优先，其次系统剪贴板（后台线程执行，不阻塞界面）"""
@@ -1545,13 +1773,20 @@ class Pane(QWidget):
                     lambda result: self._on_paste_done(result, target_dir, src_paths))
             return
         
-        # 应用内剪贴板为空：尝试系统剪贴板（从系统文件管理器复制进来）
-        system_paths = self._system_clipboard_paths()
+        # 应用内剪贴板为空：尝试系统剪贴板（从系统文件管理器复制/剪切进来）
+        system_paths, system_is_move = self._system_clipboard_paths()
         if system_paths:
-            self._run_file_op_async(
-                "正在复制",
-                lambda: self.file_ops.copy(system_paths, target_dir),
-                lambda result: self._on_system_paste_done(result, target_dir, len(system_paths)))
+            if system_is_move:
+                self._run_file_op_async(
+                    "正在移动",
+                    lambda: self.file_ops.move(list(system_paths), target_dir),
+                    lambda result: self._on_system_paste_done(
+                        result, target_dir, len(system_paths), system_paths))
+            else:
+                self._run_file_op_async(
+                    "正在复制",
+                    lambda: self.file_ops.copy(system_paths, target_dir),
+                    lambda result: self._on_system_paste_done(result, target_dir, len(system_paths), None))
             return
     
     def _on_paste_done(self, result, target_dir, src_paths):
@@ -1573,10 +1808,22 @@ class Pane(QWidget):
             self.status_label.setText("粘贴失败")
             QMessageBox.warning(self, "粘贴", result.error or "操作失败")
     
-    def _on_system_paste_done(self, result, target_dir, count):
-        """系统剪贴板粘贴完成（主线程）"""
+    def _on_system_paste_done(self, result, target_dir, count, moved_srcs):
+        """系统剪贴板粘贴完成（主线程）。
+
+        moved_srcs 非空说明来自资源管理器的“剪切”：粘贴后源已被移走，
+        按 Windows 习惯清空系统剪贴板（再粘贴无意义），并一并刷新源目录
+        所在窗格，避免网络路径上源窗格残留已移走的条目。
+        """
         if result.success:
             self.status_label.setText(f"已从系统剪贴板粘贴 {count} 个项目")
+            if moved_srcs:
+                try:
+                    from PyQt6.QtWidgets import QApplication
+                    QApplication.clipboard().clear()
+                except Exception:
+                    pass
+                self._refresh_network_sources(moved_srcs)
             self.navigate_to(target_dir)
             if _is_network_path(target_dir):
                 self._force_refresh_current_dir()
@@ -1589,10 +1836,29 @@ class Pane(QWidget):
 
         大文件复制不再阻塞主线程；进度经 _file_progress 信号回主线程更新
         状态栏进度条，完成经 _file_op_done 信号回主线程刷新视图。
+        同名冲突经 _ask_conflict_slot 回主线程弹框询问（“对后续同样
+        处理”记入 _conflict_policy，本次操作剩余冲突不再询问）。
         """
         self.status_label.setText(f"{note}...")
         self.show_progress(0)
         self.file_ops.set_progress_callback(self._on_copy_progress)
+        self._conflict_policy = None
+        self.file_ops.set_conflict_callback(self._handle_file_conflict)
+        # 独立进度对话框（速度/剩余时间/取消）；上一任务遗留的对话框先销毁
+        old_dlg = getattr(self, '_op_dlg', None)
+        if old_dlg is not None:
+            try:
+                old_dlg.close()
+                old_dlg.deleteLater()
+            except Exception:
+                pass
+        try:
+            from widgets.progress_dialog import FileProgressDialog
+            self._op_dlg = FileProgressDialog(self, note)
+            self._op_dlg.cancel_requested.connect(self.file_ops.cancel)
+            self._op_dlg.show()
+        except Exception:
+            self._op_dlg = None
         def worker():
             try:
                 result = fn()
@@ -1604,23 +1870,86 @@ class Pane(QWidget):
         import threading
         threading.Thread(target=worker, daemon=True).start()
 
+    def _handle_file_conflict(self, info: dict) -> str:
+        """冲突回调（后台操作线程调用）：有记忆策略直接用，否则回主线程询问"""
+        if self._conflict_policy:
+            return self._conflict_policy
+        try:
+            return QMetaObject.invokeMethod(
+                self, "_ask_conflict_slot", Qt.ConnectionType.BlockingQueuedConnection,
+                Q_ARG(str, info.get('src', '')), Q_ARG(str, info.get('dst', '')),
+                Q_ARG(bool, bool(info.get('is_dir', False))))
+        except Exception:
+            return 'keep_both'
+
+    @pyqtSlot(str, str, bool, result=str)
+    def _ask_conflict_slot(self, src, dst, is_dir):
+        """主线程弹冲突对话框，返回决策；勾选“对后续同样处理”则记入策略"""
+        try:
+            from widgets.conflict_dialog import ConflictDialog
+            info = dict(src=src, dst=dst, is_dir=is_dir)
+            try:
+                info['src_size'] = 0 if is_dir else os.path.getsize(src)
+            except OSError:
+                info['src_size'] = 0
+            try:
+                info['src_mtime'] = os.path.getmtime(src)
+            except OSError:
+                info['src_mtime'] = 0
+            try:
+                info['dst_size'] = 0 if os.path.isdir(dst) else os.path.getsize(dst)
+            except OSError:
+                info['dst_size'] = 0
+            try:
+                info['dst_mtime'] = os.path.getmtime(dst)
+            except OSError:
+                info['dst_mtime'] = 0
+            dlg = ConflictDialog(self, info)
+            dlg.exec()
+            decision = dlg.chosen
+            try:
+                if dlg.apply_all.isChecked():
+                    self._conflict_policy = decision
+            except Exception:
+                pass
+            return decision
+        except Exception:
+            return 'keep_both'
+
     def _on_copy_progress(self, percent: int, filename: str, copied_bytes: int = 0, total_bytes: int = 0):
         """文件操作进度回调（worker 线程调用）：经信号转发主线程更新 UI"""
         self._file_progress.emit(percent, filename, copied_bytes, total_bytes)
 
     def _on_file_progress_ui(self, percent: int, filename: str, copied_bytes: int, total_bytes: int):
-        """进度 UI 更新（主线程）"""
+        """进度 UI 更新（主线程）：状态栏 + 进度对话框"""
         self.show_progress(percent)
         if total_bytes > 0:
             self.status_label.setText(
                 f"正在复制: {filename} ({self._fmt_size(copied_bytes)}/{self._fmt_size(total_bytes)})")
         else:
             self.status_label.setText(f"正在复制: {filename}")
+        dlg = getattr(self, '_op_dlg', None)
+        if dlg is not None:
+            try:
+                dlg.update_progress(percent, filename, copied_bytes, total_bytes)
+            except RuntimeError:
+                pass  # 对话框已被关闭/销毁
 
     def _on_file_op_done(self, result, note, handler):
         """文件操作完成（主线程）：清理回调 + 刷新视图"""
         self.file_ops.set_progress_callback(None)
+        self.file_ops.set_conflict_callback(None)
+        self._conflict_policy = None
         self.hide_progress()
+        dlg = getattr(self, '_op_dlg', None)
+        self._op_dlg = None
+        if dlg is not None:
+            try:
+                dlg.mark_finished()
+                dlg.close()
+                dlg.deleteLater()
+            except RuntimeError:
+                pass
         if handler is not None:
             handler(result)
         elif result.success:
@@ -1647,27 +1976,56 @@ class Pane(QWidget):
         """删除选中项"""
         self._delete_paths(self._paths_from_selection())
     
-    def _delete_paths(self, paths):
-        """删除指定路径列表（带确认，进回收站）"""
+    def _delete_paths(self, paths, permanent: bool = False):
+        """删除指定路径列表（带确认）。
+
+        文案按实际后果区分：网络位置（UNC/映射网络盘）没有回收站，
+        删除即永久删除不可恢复，不能仍写“到回收站”误导用户；
+        permanent=True（Shift+Delete）时本地也直接永久删除。
+        """
         if not paths:
             return
         
+        names = '\n'.join(os.path.basename(p) or p for p in paths[:5])
+        if len(paths) > 5:
+            names += f"\n… 等共 {len(paths)} 项"
+        
+        if permanent:
+            title, verb = "确认永久删除", f"确定要永久删除 {len(paths)} 个项目吗？此操作不可恢复！"
+        elif os.name == 'nt':
+            net_count = sum(1 for p in paths if _is_network_path(p))
+            local_count = len(paths) - net_count
+            parts = []
+            if net_count:
+                parts.append(f"网络位置的 {net_count} 个项目将被永久删除、无法恢复（网络位置没有回收站）")
+            if local_count:
+                parts.append(f"本地的 {local_count} 个项目将移到回收站")
+            verb = '，；'.join(parts) + "。"
+            title = "确认删除"
+        else:
+            verb = f"确定要删除 {len(paths)} 个项目吗？"
+            title = "确认删除"
+        
         reply = QMessageBox.question(
-            self, "确认删除",
-            f"确定要删除 {len(paths)} 个项目到回收站吗？",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            self, title, f"{verb}\n\n{names}",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
         )
         
         if reply == QMessageBox.StandardButton.Yes:
+            safe = not permanent
             self._run_file_op_async(
                 "正在删除",
-                lambda: self.file_ops.delete(paths, safe=True),
+                lambda: self.file_ops.delete(paths, safe=safe),
                 lambda result: self._on_delete_done(result))
     
     def _on_delete_done(self, result):
         """删除完成（主线程）"""
         if result.success:
             self.status_label.setText(f"已删除 {result.files_affected} 个项目")
+            if result.error:
+                # 网络位置回退永久删除等需告知用户的附带结果
+                QMessageBox.information(self, "删除完成", result.error)
             self.navigate_to(self.current_path)
             if _is_network_path(self.current_path):
                 # SMB 网络共享上 QFileSystemWatcher 变化通知不可靠，
@@ -1717,12 +2075,7 @@ class Pane(QWidget):
         t0 = time.perf_counter()
         model = ExifFileSystemModel()
         model.setRootPath("")
-        model.setFilter(
-            QDir.Filter.AllDirs |
-            QDir.Filter.Files |
-            QDir.Filter.NoDotAndDotDot |
-            QDir.Filter.Hidden
-        )
+        model.setFilter(cls._file_filter())
         cls._shared_file_model = model
         logger.info(f"重建共享文件模型: {((time.perf_counter() - t0) * 1000):.1f}ms")
         for pane in list(cls._instances or ()):
@@ -1969,22 +2322,35 @@ class Pane(QWidget):
         else:
             QMessageBox.warning(self, "错误", "内置终端不可用")
     
+    def _apply_drag_highlight(self, on: bool):
+        """拖拽经过/离开时高亮边框。
+
+        旧实现 dragEnter 用 `self.setStyleSheet(self.styleSheet() + ...)` 累加、
+        dragLeave 调 init_ui_style()（内含硬编码 #1E1E1E 深色）恢复——浅色
+        主题下拖一次文件进来背景就变黑且累加不可控。改为进入前快照原
+        样式、离开时精确还原，不依赖主题、不重复累加。
+        """
+        if on:
+            if getattr(self, '_drag_highlight_on', False):
+                return
+            self._pre_drag_style = self.styleSheet()
+            self._drag_highlight_on = True
+            self.setStyleSheet(self._pre_drag_style + "\nQTreeView { border: 2px solid #2196F3; }")
+        else:
+            if not getattr(self, '_drag_highlight_on', False):
+                return
+            self._drag_highlight_on = False
+            self.setStyleSheet(getattr(self, '_pre_drag_style', '') or '')
+
     def dragEnterEvent(self, event):
         """拖拽进入"""
-        if event.mimeData().hasUrls():
-            self.setStyleSheet(self.styleSheet() + """
-                QTreeView { border: 2px solid #2196F3; }
-            """)
-            event.accept()
-        elif event.mimeData().hasFormat("application/x-pan4dex-drag"):
-            self.setStyleSheet(self.styleSheet() + """
-                QTreeView { border: 2px solid #2196F3; }
-            """)
+        if event.mimeData().hasUrls() or event.mimeData().hasFormat("application/x-pan4dex-drag"):
+            self._apply_drag_highlight(True)
             event.accept()
     
     def dragLeaveEvent(self, event):
         """拖拽离开"""
-        self.init_ui_style()
+        self._apply_drag_highlight(False)
         event.accept()
     
     def dropEvent(self, event):
@@ -1995,7 +2361,7 @@ class Pane(QWidget):
           （同窗格拖动）→ 移动，外部拖入 → 复制；
           Ctrl=强制复制，Shift=强制移动
         """
-        self.init_ui_style()
+        self._apply_drag_highlight(False)
         target_dir = self.current_path
         pos = event.position().toPoint()
         idx = self.tree_view.indexAt(pos)

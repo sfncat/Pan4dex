@@ -492,7 +492,7 @@ class MainWindow(QMainWindow):
         edit_menu.addSeparator()
         
         new_folder_action = QAction("新建文件夹(&N)", self)
-        new_folder_action.setShortcut(QKeySequence("F7"))
+        new_folder_action.setShortcuts([QKeySequence("F7"), QKeySequence("Ctrl+Shift+N")])
         new_folder_action.triggered.connect(self.on_new_folder)
         edit_menu.addAction(new_folder_action)
         
@@ -500,6 +500,24 @@ class MainWindow(QMainWindow):
         new_file_action.setShortcut(QKeySequence("F8"))
         new_file_action.triggered.connect(self.on_new_file)
         edit_menu.addAction(new_file_action)
+
+        edit_menu.addSeparator()
+
+        # 导航快捷键（资源管理器习惯：Alt+Left/Right 后退前进、Alt+Up 上级）
+        nav_back_action = QAction("后退(&K)", self)
+        nav_back_action.setShortcut(QKeySequence("Alt+Left"))
+        nav_back_action.triggered.connect(self.on_nav_back)
+        edit_menu.addAction(nav_back_action)
+
+        nav_forward_action = QAction("前进(&W)", self)
+        nav_forward_action.setShortcut(QKeySequence("Alt+Right"))
+        nav_forward_action.triggered.connect(self.on_nav_forward)
+        edit_menu.addAction(nav_forward_action)
+
+        nav_up_action = QAction("返回上级(&U)", self)
+        nav_up_action.setShortcut(QKeySequence("Alt+Up"))
+        nav_up_action.triggered.connect(self.on_nav_up)
+        edit_menu.addAction(nav_up_action)
         
         # 视图菜单
         view_menu = menubar.addMenu("视图(&V)")
@@ -544,6 +562,19 @@ class MainWindow(QMainWindow):
         tree_action.triggered.connect(self.toggle_tree_sidebar)
         view_menu.addAction(tree_action)
         self.tree_action = tree_action
+
+        # 显示隐藏文件（影响共享模型 QDir.Filter，所有窗格同步）
+        hidden_action = QAction("显示隐藏文件(&H)", self)
+        hidden_action.setShortcut(QKeySequence("Ctrl+H"))
+        hidden_action.setCheckable(True)
+        _sh = self.settings.value("view/show_hidden", True)
+        if isinstance(_sh, str):
+            _sh = _sh.lower() in ("true", "1", "yes")
+        hidden_action.setChecked(bool(_sh))
+        Pane.set_show_hidden(bool(_sh))  # 应用启动时恢复（模型已建则立即生效）
+        hidden_action.triggered.connect(self.toggle_hidden_files)
+        view_menu.addAction(hidden_action)
+        self.hidden_action = hidden_action
 
         preview_action = QAction("预览面板(&P)", self)
         preview_action.setShortcut(QKeySequence("F3"))
@@ -911,7 +942,25 @@ class MainWindow(QMainWindow):
     def on_refresh(self):
         """刷新操作"""
         if self._active_pane:
-            self._active_pane.navigate_to(self._active_pane.current_path)
+            self._active_pane.refresh_current()
+
+    def on_nav_back(self):
+        """后退（活动窗格导航历史）"""
+        if self._active_pane:
+            self._active_pane.go_back()
+
+    def on_nav_forward(self):
+        """前进（活动窗格导航历史）"""
+        if self._active_pane:
+            self._active_pane.go_forward()
+
+    def on_nav_up(self):
+        """返回上级目录"""
+        pane = self._active_pane
+        if pane and pane.current_path:
+            parent = os.path.dirname(os.path.normpath(pane.current_path))
+            if parent and parent != pane.current_path:
+                pane.navigate_to(parent)
 
     def on_new_folder(self):
         """新建文件夹"""
@@ -933,6 +982,14 @@ class MainWindow(QMainWindow):
         self._preview_toggle = not current
         self.preview_panel.setVisible(self._preview_toggle)
         self.preview_action.setChecked(self._preview_toggle)
+    
+    def toggle_hidden_files(self, checked: bool):
+        """切换隐藏文件显示并持久化"""
+        try:
+            Pane.set_show_hidden(checked)
+            self.settings.setValue("view/show_hidden", bool(checked))
+        except Exception:
+            pass
     
     def toggle_bookmark_sidebar(self):
         """切换收藏夹侧边栏"""

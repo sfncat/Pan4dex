@@ -167,15 +167,15 @@ class TestFileOperations:
         assert os.path.exists(os.path.join(self.source_dir, "new_file (1).txt"))
     
     def test_progress_callback(self):
-        """测试进度回调"""
+        """测试进度回调（契约：callback(percent, filename, copied_bytes, total_bytes)）"""
         progress_values = []
-        
-        def on_progress(percent, filename):
+
+        def on_progress(percent, filename, copied_bytes=0, total_bytes=0):
             progress_values.append(percent)
-        
+
         self.ops.set_progress_callback(on_progress)
         self.ops.copy([self.test_file], self.dest_dir)
-        
+
         assert len(progress_values) > 0
         assert progress_values[-1] == 100
     

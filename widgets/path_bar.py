@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (
     QComboBox, QCompleter, QWidget,
     QHBoxLayout, QPushButton, QToolButton, QStyle
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QDir, QSize, QRectF, QPointF
+from PyQt6.QtCore import Qt, pyqtSignal, QDir, QSize, QRectF, QPointF, QStringListModel
 
 logger = logging.getLogger("pan4dex.path_bar")
 
@@ -83,6 +83,9 @@ class PathBar(QWidget):
     
     # 信号
     path_entered = pyqtSignal(str)  # 路径输入信号
+    back_requested = pyqtSignal()   # 后退按钮点击信号
+    forward_requested = pyqtSignal()  # 前进按钮点击信号
+    refresh_requested = pyqtSignal()  # 刷新按钮点击信号
     tree_toggle_requested = pyqtSignal()  # 目录树按钮点击信号
     tabs_toggle_requested = pyqtSignal()  # 标签页按钮点击信号
     terminal_requested = pyqtSignal()  # 终端按钮点击信号
@@ -96,22 +99,24 @@ class PathBar(QWidget):
         self.layout.setContentsMargins(2, 2, 2, 2)
         self.layout.setSpacing(2)
         
-        # 后退按钮（默认隐藏，可在设置中显示）
+        # 后退/前进：接入导航历史（旧版创建了按钮但未连任何信号、默认隐藏，
+        # 导致后退只有鼠标侧键能用）；能否导航由 set_nav_enabled 同步置灰
         self.back_btn = QToolButton()
         self.back_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowBack))
         self.back_btn.setIconSize(QSize(20, 20))
-        self.back_btn.setToolTip("后退")
+        self.back_btn.setToolTip("后退 (Alt+Left)")
         self.back_btn.setFixedSize(28, 28)
-        self.back_btn.setVisible(False)
+        self.back_btn.setEnabled(False)
+        self.back_btn.clicked.connect(self.back_requested.emit)
         self.layout.addWidget(self.back_btn)
 
-        # 前进按钮（默认隐藏，可在设置中显示）
         self.forward_btn = QToolButton()
         self.forward_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowForward))
         self.forward_btn.setIconSize(QSize(20, 20))
-        self.forward_btn.setToolTip("前进")
+        self.forward_btn.setToolTip("前进 (Alt+Right)")
         self.forward_btn.setFixedSize(28, 28)
-        self.forward_btn.setVisible(False)
+        self.forward_btn.setEnabled(False)
+        self.forward_btn.clicked.connect(self.forward_requested.emit)
         self.layout.addWidget(self.forward_btn)
 
         # 上级目录按钮
@@ -128,12 +133,13 @@ class PathBar(QWidget):
         self.up_btn.clicked.connect(self.go_up)
         self.layout.addWidget(self.up_btn)
 
-        # 刷新按钮
+        # 刷新按钮（重扫当前目录，网络路径下强制刷新）
         self.refresh_btn = QToolButton()
         self.refresh_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload))
         self.refresh_btn.setIconSize(QSize(20, 20))
-        self.refresh_btn.setToolTip("刷新")
+        self.refresh_btn.setToolTip("刷新 (F5)")
         self.refresh_btn.setFixedSize(28, 28)
+        self.refresh_btn.clicked.connect(self.refresh_requested.emit)
         self.layout.addWidget(self.refresh_btn)
 
         # 目录树按钮
@@ -206,21 +212,44 @@ class PathBar(QWidget):
 
     
     def _setup_shared_completer(self):
-        """设置共享的 completer 模型"""
-        if PathBar._shared_completer_model is None:
-            PathBar._shared_completer_model = QFileSystemModel()
-            PathBar._shared_completer_model.setRootPath("")
-        
+        """设置路径补全模型。
+
+        旧实现用共享 `QFileSystemModel().setRootPath("")` 作为补全模型：
+        root="" 会触发后台线程递归枚举所有盘符/网络共享，本地冷盘与
+        SMB 上都会引起明显卡顿。改为基于当前目录的非递归子项列表
+        （QStringListModel），导航时只列当前目录一层，零全盘扫描。
+        """
+        self._completer_model = QStringListModel(self)
         self.completer = QCompleter()
-        self.completer.setModel(PathBar._shared_completer_model)
+        self.completer.setModel(self._completer_model)
+        self.completer.setModelSorting(QCompleter.ModelSorting.UnsortedModel)
         self.completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
         self.completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        self.completer.setMaxVisibleItems(20)
         self.combo_box.setCompleter(self.completer)
+
+    def _refresh_completions(self, path: str):
+        """把补全候选刷新为 path 下的一层子项完整路径（非递归，不展开子目录）"""
+        try:
+            d = QDir(path)
+            if not d.exists():
+                self._completer_model.setStringList([])
+                return
+            filters = (QDir.Filter.AllDirs | QDir.Filter.Files |
+                       QDir.Filter.NoDotAndDotDot)
+            entries = d.entryList(filters, QDir.SortFlag.Name)
+            sep = '/'
+            base = d.absolutePath().rstrip(sep)
+            self._completer_model.setStringList([base + sep + e for e in entries])
+        except Exception:
+            pass
     
     
     def set_path(self, path: str):
         """设置路径"""
         self.combo_box.setEditText(path)
+        # 刷新当前目录一层子项作为补全候选（非递归，零全盘扫描）
+        self._refresh_completions(path)
         # 添加到历史
         if self.combo_box.findText(path) == -1:
             self.combo_box.addItem(path)
@@ -241,6 +270,11 @@ class PathBar(QWidget):
         if path:
             self.path_entered.emit(path)
     
+    def set_nav_enabled(self, can_back: bool, can_forward: bool):
+        """按导航历史同步后退/前进按钮可用态"""
+        self.back_btn.setEnabled(can_back)
+        self.forward_btn.setEnabled(can_forward)
+
     def go_up(self):
         """返回上级目录"""
         import os

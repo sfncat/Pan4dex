@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import (
     QComboBox, QCheckBox, QSpinBox, QGroupBox,
     QFileDialog, QMessageBox
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
 
 
 class SearchWorker(QThread):
@@ -225,6 +225,15 @@ class AdvancedSearchDialog(QDialog):
         self.result_tree.setHeaderLabels(["文件路径", "大小", "修改时间"])
         self.result_tree.itemDoubleClicked.connect(self.on_item_double_clicked)
         result_layout.addWidget(self.result_tree)
+
+        # 结果批量缓冲：worker 每个命中都 emit 会触发一次 addTopLevelItem
+        # → 布局/重绘风暴（尤其 SMB 遍历命中多时）。改为主线程侧缓冲，
+        # 定时器每 150ms 一次性 addTopLevelItems（单趟布局），并设显示上限防卡死。
+        self._pending_results = []
+        self._shown_count = 0
+        self._flush_timer = QTimer(self)
+        self._flush_timer.setInterval(150)
+        self._flush_timer.timeout.connect(self._flush_results)
         
         self.layout.addWidget(result_group)
         
@@ -306,6 +315,9 @@ class AdvancedSearchDialog(QDialog):
         }
         
         self.result_tree.clear()
+        self._pending_results = []
+        self._shown_count = 0
+        self._flush_timer.start()
         self.search_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
         self.status_label.setText("搜索中...")
@@ -321,17 +333,46 @@ class AdvancedSearchDialog(QDialog):
             self.worker.stop()
     
     def on_result(self, path: str, size: str, mtime: int):
-        """搜索结果"""
+        """搜索结果：先入缓冲，由定时器批量刷新（避免重绘风暴）"""
+        self._pending_results.append((path, size, mtime))
+
+    def _flush_results(self):
+        """把缓冲区结果一次性插入树（单趟布局），并尊重显示上限"""
+        if not self._pending_results:
+            return
+        batch, self._pending_results = self._pending_results, []
+        max_rows = 5000
+        if self._shown_count >= max_rows:
+            return
         from datetime import datetime
-        time_str = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M")
-        item = QTreeWidgetItem([path, size, time_str])
-        self.result_tree.addTopLevelItem(item)
-    
+        items = []
+        for path, size, mtime in batch:
+            if self._shown_count + len(items) >= max_rows:
+                break
+            try:
+                time_str = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M")
+            except (OSError, ValueError, OverflowError):
+                time_str = ""
+            items.append(QTreeWidgetItem([path, size, time_str]))
+        if items:
+            self.result_tree.setUpdatesEnabled(False)
+            self.result_tree.addTopLevelItems(items)
+            self.result_tree.setUpdatesEnabled(True)
+            self._shown_count += len(items)
+        if self._shown_count >= max_rows and (self._pending_results or batch[len(items):]):
+            self.status_label.setText(f"结果过多，仅显示前 {max_rows} 项（请缩小搜索范围）")
+
     def on_search_finished(self, total: int):
         """搜索完成"""
+        self._flush_timer.stop()
+        self._flush_results()  #  flush 最后一批
         self.search_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
-        self.status_label.setText(f"搜索完成，共找到 {total} 个文件")
+        if self._shown_count >= 5000 and total > self._shown_count:
+            self.status_label.setText(
+                f"共 {total} 个，仅显示前 {self._shown_count} 项")
+        else:
+            self.status_label.setText(f"搜索完成，共找到 {total} 个文件")
     
     def clear_results(self):
         """清除结果"""
