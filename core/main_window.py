@@ -47,6 +47,7 @@ class CollapsibleTabBar(QTabBar):
         return super().minimumSizeHint()
 
 from core.pane import Pane
+from core.lifecycle import call_later
 from widgets.preview_panel import PreviewPanel
 from widgets.bookmark_sidebar import BookmarkSidebar
 from widgets.tree_sidebar import TreeSidebar
@@ -139,8 +140,7 @@ class MainWindow(QMainWindow):
         self.create_terminal_panel()
 
         # 延迟应用主题和恢复布局（避免阻塞启动）
-        from PyQt6.QtCore import QTimer
-        QTimer.singleShot(0, self._deferred_init)
+        call_later(self, 0, self._deferred_init)
         logger.info(f"[启动计时] 延迟初始化已调度: {(time.perf_counter()-_t0)*1000:.1f}ms")
     
     def _deferred_init(self):
@@ -179,8 +179,7 @@ class MainWindow(QMainWindow):
         self._apply_startup_sidebars()
 
         # 窗格分割比例：等延迟创建的 pane2-4 就位（250ms）后再恢复
-        from PyQt6.QtCore import QTimer
-        QTimer.singleShot(400, self._restore_splitter_sizes)
+        call_later(self, 400, self._restore_splitter_sizes)
 
         # 自动恢复上次的布局
         self._auto_load_layout()
@@ -225,21 +224,19 @@ class MainWindow(QMainWindow):
             return
         
         # 等待 UI 初始化完成后恢复布局
-        from PyQt6.QtCore import QTimer
         # 真实显示下 pane2-4 延迟创建可能较慢（慢机/网络盘可达数百 ms），
         # 100ms 触发会在 pane2-4 尚不存在或正在创建时应用布局导致状态丢失，
         # 改为轮询等待 pane2-4 创建完成后再应用
-        QTimer.singleShot(100, lambda: self._delayed_apply_layout(layout, 0))
+        call_later(self, 100, lambda: self._delayed_apply_layout(layout, 0))
 
     def _delayed_apply_layout(self, layout: dict, attempts: int):
         """等待 pane2-4 创建完成后再应用布局（避免与 250ms 延迟创建竞态）。"""
-        from PyQt6.QtCore import QTimer
         current_widget = self.tab_widget.currentWidget()
         if isinstance(current_widget, QuadPaneWidget):
             creating = getattr(current_widget, '_panes_creating', False)
             done = getattr(current_widget, '_all_panes_created', False)
             if creating or (not done and attempts < 40):
-                QTimer.singleShot(100, lambda: self._delayed_apply_layout(layout, attempts + 1))
+                call_later(self, 100, lambda: self._delayed_apply_layout(layout, attempts + 1))
                 return
         self._apply_layout(layout)
 
@@ -295,8 +292,7 @@ class MainWindow(QMainWindow):
         """创建目录树侧边栏（延迟到事件循环后，避免阻塞首屏显示；约省 220ms）"""
         self.tree_sidebar = None
         self._tree_sidebar_ready = False
-        from PyQt6.QtCore import QTimer
-        QTimer.singleShot(300, self._create_tree_sidebar_lazy)
+        call_later(self, 300, self._create_tree_sidebar_lazy)
     
     def _create_tree_sidebar_lazy(self):
         """延迟创建目录树侧边栏"""
@@ -336,8 +332,7 @@ class MainWindow(QMainWindow):
         """创建终端面板（延迟到事件循环后，不阻塞首屏）"""
         self.terminal_panel = None
         self._terminal_ready = False
-        from PyQt6.QtCore import QTimer
-        QTimer.singleShot(400, self._create_terminal_panel_lazy)
+        call_later(self, 400, self._create_terminal_panel_lazy)
 
     def _create_terminal_panel_lazy(self):
         """延迟创建终端面板"""
@@ -1331,6 +1326,15 @@ class MainWindow(QMainWindow):
         """关闭窗口时保存状态"""
         self.save_geometry()
         self._auto_save_layout()
+        # 终止内嵌终端会话：读线程无法与控件销毁同步（Windows 上 pty.read 会始终
+        # 阻塞），不显式关停会残留 shell 子进程，并在控件删除后向已释放的
+        # QObject 投递信号（偶发崩溃源）
+        panel = getattr(self, 'terminal_panel', None)
+        if panel is not None:
+            try:
+                panel.shutdown()
+            except Exception:
+                pass
         super().closeEvent(event)
     
     def _auto_save_layout(self):
@@ -1432,8 +1436,7 @@ class QuadPaneWidget(QWidget):
         self.layout.addWidget(self.main_splitter)
         
         # 事件循环启动后延迟创建其余窗格
-        from PyQt6.QtCore import QTimer
-        QTimer.singleShot(250, self._create_remaining_panes)
+        call_later(self, 250, self._create_remaining_panes)
     
     def _create_remaining_panes(self):
         """延迟创建 pane2/3/4（首屏显示后执行）"""

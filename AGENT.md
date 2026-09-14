@@ -207,6 +207,11 @@ ssh sshuser@192.168.5.55 'cmd /c "taskkill /F /IM pan4dex* /T 2>nul & timeout /t
 - 每个标签页持有独立的 `QuadPaneWidget`（包含 4 个 Pane）
 - 跨窗格拖拽使用自定义 MIME 类型 `application/x-pan4dex-drag`
 - 文件操作在 `QThread` 中执行，避免阻塞 UI
+- 后台线程→主线程投递一律走 `_emit_ui(信号名, ...)`（`Pane` / `TerminalView`）：参数传
+  **信号名字符串**而非信号对象，并在 `try` 里 `getattr` —— 在已销毁的 QObject 上连取
+  信号属性都会抛 RuntimeError
+- 延后执行（启动分阶段 / 防抖 / 轮询）统一用 `core/lifecycle.py:call_later(obj, ms, fn)`
+  而不是 `QTimer.singleShot`：后者的定时器不属于对象，对象先销毁时回调仍会访问已删除子控件
 - 主题系统支持运行时切换，无需重启
 - 目录树导航通过 `_active_pane` 跟踪当前活动窗格
 - 窗格焦点通过 `eventFilter` 监听 `FocusIn` 和 `MouseButtonPress` 事件

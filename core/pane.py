@@ -19,6 +19,7 @@ from widgets.path_bar import PathBar
 from widgets.pane_tree_view import PaneTreeView
 from core.file_operations import FileOperations, FileOperationType, FileOperationResult, _is_network_path
 from core import archive_ops
+from core.lifecycle import call_later
 
 
 # 共享剪贴板：所有窗格（含四窗格/双窗格）共用一份，
@@ -570,6 +571,23 @@ class Pane(QWidget):
             self.pane_tabs.setVisible(False)
             self.path_bar.set_tabs_button_checked(False)
 
+    def _emit_ui(self, signal_name: str, *args):
+        """后台线程向主线程投递信号（对窗格销毁做防御）。
+
+        与 `widgets/terminal_panel.py` 的同名方法同一动机：窗格的 C++ 对象可能在
+        后台任务（拍摄日期预读 / 压缩 / 复制删除）仍在跑时被删除（关闭标签页、
+        退出应用），此时 `self.xxx.emit(...)` 会抛
+        `RuntimeError: wrapped C/C++ object of type Pane has been deleted`。
+
+        参数是信号**名字**而不是信号对象：在已销毁的 QObject 上连取
+        `self.shot_dates_ready` 都会抛 RuntimeError，只有放进 try 的 getattr 才兜得住。
+        丢一帧进度或一次完成通知，远好过让应用崩溃。
+        """
+        try:
+            getattr(self, signal_name).emit(*args)
+        except RuntimeError:
+            pass
+
     def _prefetch_shot_dates(self):
         """后台批量预读当前目录文件的拍摄日期，填充缓存后刷新视图。
 
@@ -612,7 +630,7 @@ class Pane(QWidget):
                 batch_get_shot_dates(paths)
                 # 用信号通知主线程刷新（QTimer.singleShot 在无事件循环的后台线程调用不生效，
                 # 会导致缓存已填充但视图不刷新、列一直空白的问题）
-                self.shot_dates_ready.emit()
+                self._emit_ui("shot_dates_ready")
             except Exception:
                 pass
 
@@ -660,9 +678,8 @@ class Pane(QWidget):
 
             # 经排序代理把当前目录设为视图根（模型侧由 set_directory 管理顶层节点）
             if not self._set_root_index(path):
-                # 模型还没加载完，用 QTimer 延迟重试（避免重复连接 directoryLoaded 信号导致泄漏）
-                from PyQt6.QtCore import QTimer
-                QTimer.singleShot(50, lambda: self._retry_set_root_index(path, 0))
+                # 模型还没加载完，延后重试（避免重复连接 directoryLoaded 信号导致泄漏）
+                call_later(self, 50, lambda: self._retry_set_root_index(path, 0))
 
             # 同步展开内嵌目录树到当前路径（树不可见时不扫描磁盘，显示时会重新定位）
             if self.pane_tree_view.isVisible():
@@ -698,8 +715,7 @@ class Pane(QWidget):
             return  # 用户已导航到其他路径，放弃
         if self._set_root_index(path):
             return
-        from PyQt6.QtCore import QTimer
-        QTimer.singleShot(50, lambda: self._retry_set_root_index(path, attempt + 1))
+        call_later(self, 50, lambda: self._retry_set_root_index(path, attempt + 1))
 
     def go_back(self):
         """后退到上一个目录"""
@@ -1111,8 +1127,7 @@ class Pane(QWidget):
                 # 勾选显示「拍摄日期」列时：立即刷新视口，并补一次 prefetch
                 # （目录可能已加载完导致 directoryLoaded 不再触发，或上次 prefetch 未完成）
                 if checked and c == getattr(self.tree_view.model(), 'SHOT_DATE_COLUMN', -1):
-                    from PyQt6.QtCore import QTimer
-                    QTimer.singleShot(0, self._prefetch_shot_dates)
+                    call_later(self, 0, self._prefetch_shot_dates)
                 self.tree_view.viewport().update()
             action.toggled.connect(_set_col_visible)
         menu.exec(self.tree_view.header().mapToGlobal(position))
@@ -1499,7 +1514,7 @@ class Pane(QWidget):
                 ok, msg = fn()
             except Exception as e:
                 ok, msg = False, str(e)
-            self._archive_done.emit(ok, msg, note)
+            self._emit_ui("_archive_done", ok, msg, note)
         
         import threading
         threading.Thread(target=worker, daemon=True).start()
@@ -1840,7 +1855,7 @@ class Pane(QWidget):
                 result = FileOperationResult(
                     success=False, operation=FileOperationType.COPY,
                     source="", error=str(e))
-            self._file_op_done.emit(result, note, done_handler)
+            self._emit_ui("_file_op_done", result, note, done_handler)
         import threading
         threading.Thread(target=worker, daemon=True).start()
 
@@ -1892,7 +1907,7 @@ class Pane(QWidget):
 
     def _on_copy_progress(self, percent: int, filename: str, copied_bytes: int = 0, total_bytes: int = 0):
         """文件操作进度回调（worker 线程调用）：经信号转发主线程更新 UI"""
-        self._file_progress.emit(percent, filename, copied_bytes, total_bytes)
+        self._emit_ui("_file_progress", percent, filename, copied_bytes, total_bytes)
 
     def _on_file_progress_ui(self, percent: int, filename: str, copied_bytes: int, total_bytes: int):
         """进度 UI 更新（主线程）：状态栏 + 进度对话框"""

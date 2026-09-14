@@ -7,8 +7,9 @@ from PyQt6.QtWidgets import (
     QDockWidget, QTreeView, QWidget, QVBoxLayout,
     QHBoxLayout, QPushButton, QCheckBox, QHeaderView, QMenu
 )
-from PyQt6.QtCore import Qt, QDir, pyqtSignal, QModelIndex, QTimer
+from PyQt6.QtCore import Qt, QDir, pyqtSignal, QModelIndex
 from PyQt6.QtGui import QFileSystemModel, QCursor
+from core.lifecycle import call_later
 
 logger = logging.getLogger("pan4dex.tree_sidebar")
 
@@ -106,7 +107,7 @@ class TreeSidebar(QDockWidget):
         if self._pending_path:
             parts = getattr(self, '_expand_queue', [])
             if parts and self._pending_path in parts:
-                QTimer.singleShot(50, lambda: self._expand_parts(parts, 0))
+                call_later(self, 50, lambda: self._expand_parts(parts, 0))
             self._pending_path = None
     
     def on_item_clicked(self, index: QModelIndex):
@@ -194,7 +195,7 @@ class TreeSidebar(QDockWidget):
         self._expand_queue = parts
         self._expand_parts(parts, 0)
     
-    def _expand_parts(self, parts: list, idx: int):
+    def _expand_parts(self, parts: list, idx: int, attempt: int = 0):
         if idx >= len(parts):
             leaf = self.model.index(parts[-1])
             if leaf.isValid():
@@ -205,10 +206,11 @@ class TreeSidebar(QDockWidget):
         index = self.model.index(p)
         if index.isValid():
             self.tree_view.expand(index)
-            QTimer.singleShot(100, lambda: self._expand_parts(parts, idx + 1))
-        else:
+            call_later(self, 100, lambda: self._expand_parts(parts, idx + 1))
+        elif attempt < 20:
+            # 子节点尚未枚举完：稍后重试同一层（最多 ~6s，避免无望的路径无限轮询）
             self._pending_path = p
-            QTimer.singleShot(300, lambda: self._expand_parts(parts, idx))
+            call_later(self, 300, lambda: self._expand_parts(parts, idx, attempt + 1))
     
     def expand_all(self):
         self.tree_view.expandAll()

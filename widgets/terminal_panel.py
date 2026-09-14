@@ -19,6 +19,8 @@ from PyQt6.QtGui import QFont, QTextCursor, QAction, QKeySequence
 
 import pyte
 
+from core.lifecycle import call_later
+
 logger = logging.getLogger("pan4dex.terminal")
 
 # ---------------------------------------------------------------------------
@@ -278,7 +280,8 @@ class TerminalView(QPlainTextEdit):
         self._user_scrolled_up = False
         self._resize_pending = False
         self._reader = None          # 后台读线程
-        self._closing = False
+        self._closing = False        # 会话已停止：不再投递信号、不再提示退出
+        self._shutdown = False       # 控件即将销毁：禁止再启动会话与任何投递
         self._ime_restore_conv = None  # 进入终端前的输入法状态（离开时恢复）
         self._ime_restore_hkl = None   # TSF 输入法：进入前的键盘布局
 
@@ -297,8 +300,29 @@ class TerminalView(QPlainTextEdit):
 
         # 用户滚动时记录位置（滚到底部即恢复跟随）
         self.verticalScrollBar().valueChanged.connect(self._on_scroll)
+        # 兜底：控件被销毁但未走 closeEvent（如直接丢弃主窗口）时，关掉 shell 并置
+        # 终态，避免残留子进程与读线程访问已删除对象。
+        # 必须用 lambda 包一层：Qt 在发射 destroyed 前已断开“接收者是本对象”的
+        # 连接，绑定方法槽（self._on_destroyed）永远不会被调用；而槽内只做
+        # Python 级操作（不碰已消失的 C++ 对象），因此安全。
+        self.destroyed.connect(lambda *_: self._on_destroyed())
 
         self._start_shell()
+
+    def _on_destroyed(self, *args):
+        """控件已销毁：不能再启动会话、不能再向主线程投递，并回收 shell 子进程。
+
+        只能碰 Python 属性与 `PtyBackend`（纯 Python）；任何 Qt 调用都会抛
+        `RuntimeError: wrapped C/C++ object ... has been deleted`。
+        """
+        self._shutdown = True
+        self._closing = True
+        backend, self._backend = self._backend, None
+        if backend is not None:
+            try:
+                backend.terminate()
+            except Exception:
+                pass
 
     # -- 默认终端程序 ------------------------------------------------------
     @staticmethod
@@ -340,10 +364,13 @@ class TerminalView(QPlainTextEdit):
         return ([shell], None)
 
     def _start_shell(self):
+        if self._shutdown:
+            return
         try:
             self._backend = PtyBackend(self._program, self._cwd, self._cols, self._rows,
                                        env=getattr(self, '_program_env', None))
             self._backend.start()
+            self._closing = False
             self._alive_timer.start(500)
             self._reader = threading.Thread(target=self._read_loop, daemon=True)
             self._reader.start()
@@ -359,6 +386,8 @@ class TerminalView(QPlainTextEdit):
 
     def restart(self, cwd: str = None):
         """重启终端会话（cwd 指定后以该目录启动 shell）"""
+        if self._shutdown:
+            return
         if cwd is not None:
             self._cwd = cwd
         if self._backend is not None:
@@ -375,6 +404,26 @@ class TerminalView(QPlainTextEdit):
         self._start_shell()
 
     # -- 读线程 ------------------------------------------------------------
+    def _emit_ui(self, signal_name: str, *args):
+        """从读线程向主线程投递信号（对控件销毁做防御）。
+
+        后台线程无法与控件销毁同步：Windows 上 `pty.read` 无数据时一直阻塞，
+        `terminate()` 后线程仍可能卡在 read 里，join 不回来。若此时控件的 C++
+        对象已被删除，emit 会抛 `RuntimeError: wrapped C/C++ object of type
+        TerminalView has been deleted`，甚至触发 Qt 内部崩溃。故：会话已停则丢弃，
+        否则吞掉 RuntimeError——丢一帧终端输出远好过让应用崩掉。
+
+        参数是信号**名字**而不是信号对象：在已销毁的 QObject 上取
+        `self.output_received` 就会抛 RuntimeError，写成 `getattr` 放进 try 里
+        才能真正兜住（调用点必须写 `self._emit_ui("output_received", data)`）。
+        """
+        if self._closing or self._shutdown:
+            return
+        try:
+            getattr(self, signal_name).emit(*args)
+        except RuntimeError:
+            pass
+
     def _read_loop(self):
         """后台线程：阻塞读 PTY 输出并转发到主线程。
 
@@ -383,11 +432,11 @@ class TerminalView(QPlainTextEdit):
         否则循环会立即退出并误报"进程已退出"。
         """
         backend = self._backend
-        while backend is not None and backend is self._backend:
+        while backend is not None and backend is self._backend and not self._closing:
             try:
                 data = backend.read(65536)
                 if data:
-                    self.output_received.emit(data)
+                    self._emit_ui("output_received", data)
                     continue
                 # 无数据：Linux 非阻塞读返回空，稍候再读（Windows 阻塞读不至此）
                 time.sleep(0.03)
@@ -395,8 +444,7 @@ class TerminalView(QPlainTextEdit):
                 break
             except Exception:
                 break
-        if not self._closing:
-            self.process_exited.emit()
+        self._emit_ui("process_exited")
 
     # -- 输出渲染 ----------------------------------------------------------
     def _on_output(self, data: str):
@@ -599,7 +647,7 @@ class TerminalView(QPlainTextEdit):
         super().resizeEvent(e)
         if not self._resize_pending:
             self._resize_pending = True
-            QTimer.singleShot(80, self._sync_pty_size)
+            call_later(self, 80, self._sync_pty_size)
 
     def _sync_pty_size(self):
         self._resize_pending = False
@@ -658,11 +706,24 @@ class TerminalView(QPlainTextEdit):
         self._ime_restore_conv = None
         self._ime_restore_hkl = None
 
-    def close_shell(self):
+    def close_shell(self, shutdown: bool = False):
+        """停止 shell 会话（杀子进程 + 停定时器 + 让读线程自然退出）。
+
+        `shutdown=True` 用于控件/主窗口销毁：置终态标志，之后 `_start_shell`
+        直接返回、跨线程投递全部丢弃，因此不会残留 shell 进程，也不会在
+        控件被删除后再 emit。
+        """
+        if shutdown:
+            self._shutdown = True
         self._closing = True
-        if self._backend is not None:
-            self._backend.terminate()
-            self._backend = None
+        for timer in (self._alive_timer, self._render_timer):
+            try:
+                timer.stop()
+            except RuntimeError:
+                pass
+        backend, self._backend = self._backend, None   # 置空后读线程循环自然终止
+        if backend is not None:
+            backend.terminate()
 
 
 class TerminalPanel(QDockWidget):
@@ -691,6 +752,15 @@ class TerminalPanel(QDockWidget):
         """以指定目录重启终端会话（内置终端中打开目录）"""
         self.view.restart(cwd=cwd)
 
+    def shutdown(self):
+        """彻底结束会话：主窗口关闭前调用（避免残留 shell 子进程与悬空投递）"""
+        self.view.close_shell(shutdown=True)
+
     def closeEvent(self, e):
-        self.view.close_shell()
+        """点 dock 的 X 只是隐藏面板，**不**杀 shell。
+
+        dock 关闭不会销毁 QDockWidget 对象，若在此 `close_shell()`，用户从菜单
+        重新打开终端会看到一个永远不会再有输出的死面板（面板对象还活着，
+        会话却已被终止且无人重启）。会话的生命周期改由主窗口关闭接管。
+        """
         super().closeEvent(e)

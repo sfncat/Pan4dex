@@ -10,6 +10,8 @@ from PyQt6.QtWidgets import QListWidget, QListWidgetItem, QStyle, QApplication
 from PyQt6.QtCore import QSize, Qt, QTimer, QRunnable, QThreadPool, QObject, pyqtSignal
 from PyQt6.QtGui import QPixmap, QIcon, QImage, QImageReader
 
+from core.lifecycle import call_later
+
 logger = logging.getLogger("pan4dex.thumbnail_view")
 
 IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.ico', '.tiff', '.tif', '.svg', '.heic', '.heif', '.avif', '.apng'}
@@ -172,7 +174,7 @@ class ThumbnailView(QListWidget):
             logger.info(f"[DEBUG] items added: {len(entries)}")
 
             if any(self._is_image(os.path.join(path, name)) for name, _ in entries):
-                QTimer.singleShot(100, lambda: self._lazy_timer.start())
+                call_later(self, 100, self._lazy_timer.start)
 
         except PermissionError:
             pass

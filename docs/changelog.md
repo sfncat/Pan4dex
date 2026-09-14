@@ -19,6 +19,56 @@
 
 ## 更新记录
 
+### v1.9.003 — 2026-09-14（开发分支 dev/shell-behavior-smb-perf）
+
+#### 🐛 缺陷修复
+- **启动阶段延后初始化的回调会在对象销毁后访问已删除控件**（全量测试偶发
+  `access violation` 的一类根源，实测可稳定复现
+  `RuntimeError: wrapped C/C++ object of type QTabWidget has been deleted`）：
+  - **根因**：`QTimer.singleShot(ms, lambda: self.…)` 的定时器不以业务对象为父，
+    对象先被销毁时回调照样触发并访问子控件（主窗口启动分 0/100/250/300/400ms
+    五档延后工作，“启动就关闭”“快速关标签页”正好踩到）
+  - 新增 `core/lifecycle.py`：`call_later(receiver, ms, fn)` 把定时器挂为对象的子对象，
+    随对象一同销毁；全仓 16 处延后调度（主窗口 / 四窗格组件 / 窗格导航重试 /
+    目录树展开 / 缩略图防抖 / 终端尺寸同步 / 启动图标重设）已全部改用它
+- **目录树 `expand_to_path` 遇到永远不存在的路径会以 300ms 无限自调重试**：
+  现在重试上限 20 次（约 6s）后停止，不再永久占用事件循环
+
+#### 🔧 工程
+- 新增 `tests/test_lifecycle.py`（6 项）：延后回调正常触发、对象销毁/随父销毁后丢弃，
+  以及一条“旧写法仍会报错”的反证基线用例；真 MainWindow 在 60ms 被销毁后跑满
+  900ms 事件循环，断言无任何 Qt 事件循环内异常
+- `tests/conftest.py`：每个测试后确定性回收残留顶层窗口（`sip.delete`）。它把原本
+  不可读的偶发 AV 降级为带栈的 RuntimeError，是上面两条得以定位的前提
+- 全量测试噪声收敛：修正前每轮固定出现 3 条 `TerminalView has been deleted`、
+  约 1/3～1/4 轮直接 AV；修正后连续 8 轮无 AV、无投递异常（残余偶发 AV
+  已记入 `docs/unsolved-issues.md` 问题 13）
+
+#### 📝 文档更新
+- `docs/gotchas.md` 第 20 条（`QTimer.singleShot` 不随对象销毁）+ 审查清单新增延后执行项
+- `docs/architecture.md` 模块表补 `core/lifecycle.py`；`docs/unsolved-issues.md` 新增问题 13
+
+### v1.9.002 — 2026-09-14（开发分支 dev/shell-behavior-smb-perf）
+
+#### 🐛 缺陷修复
+- **内嵌终端的线程/生命周期缺陷**（全量测试里反复出现
+  `RuntimeError: wrapped C/C++ object of type TerminalView has been deleted`，也是潜在崩溃源）：
+  - **根因**：后台读线程直接 `self.xxx_received.emit(...)` 向主线程投递。控件的 C++ 对象
+    可能在读线程仍存活时就被删除（Windows 上 `pty.read` 无数据即一直阻塞，join 不回来），
+    emit 抛异常打死读线程，并丢一批未渲染的终端输出
+  - 现在：投递统一走 `_emit_ui(信号名, ...)` —— **按名字取信号并放进 try**（在已销毁对象上
+    连 `self.output_received` 取值都会抛 RuntimeError，传信号对象的写法防不住），
+    会话已停/控件已销毁则静默丢弃
+  - `MainWindow.closeEvent` 显式 `terminal_panel.shutdown()`：不再残留 shell 子进程；
+    另以 `destroyed` 兼容未走 closeEvent 的销毁路径
+- **终端面板点 X 关闭后，从菜单重开是个再也没有输出的死面板**：dock 关闭不会销毁
+  `QDockWidget` 对象，但旧 `closeEvent` 会杀掉 shell 且无人重启。现在隐藏即保留会话
+  （与 VS Code 一致），会话终止改由主窗口关闭接管
+
+#### 🔧 工程
+- 新增 `tests/test_terminal_lifecycle.py`（12 项）：投递防护、`close_shell`/`shutdown`
+  语义、真删除（`sip.delete`）后的 `destroyed` 兜底与 `_read_loop` 静默退出
+
 ### v1.9.001 — 2026-09-14（开发分支 dev/shell-behavior-smb-perf）
 
 #### ⚡ 性能优化

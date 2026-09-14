@@ -1,6 +1,62 @@
-# Pan4dex 待解决难点（2026-09-02 更新）
+# Pan4dex 待解决难点（2026-09-14 更新）
 
-> 2026-09-02 更新：原始问题 1、2、3、4 全部已解决。后续新增问题（控制台窗口、任务栏图标、浅色主题、标签栏行为、菜单栏空隙、超大图标切换、onedir 构建）也全部已解决。当前无未解决问题。
+> 2026-09-02 更新：原始问题 1、2、3、4 全部已解决。后续新增问题（控制台窗口、任务栏图标、浅色主题、标签栏行为、菜单栏空隙、超大图标切换、onedir 构建）也全部已解决。
+>
+> 2026-09-14 更新：新增问题 13（全量测试偶发 access violation，**未解决**，已定位到范围）。
+
+---
+
+## ⚠️ 未解决
+
+### 问题 13：全量测试偶发 access violation（后台目录枚举 × 控件销毁）
+
+**现象**：
+- `pytest tests -q` 跑全量时偶发进程直接崩溃，faulthandler 打印
+  `Windows fatal exception: access violation`，无 Python 异常可捕
+- 崩溃率：修复延迟回调生命周期前约 1/3～1/4 次运行；v1.9.003 后抽样 8 次全绿、
+  另一次抽样 12 次中出现 1 次（残余但已显著降低）
+- 只在测试全量连跑时复现；单跑 `test_m1_core + test_lifecycle + test_dir_model`
+  10 次全绿；加 `-v`（改变输出/时序）时较难复现
+
+**已取得的证据**（faulthandler 全线程转储）：
+
+```
+Current thread (主线程):
+  pytestqt/plugin.py:220  _process_events        # 崩在 Qt C++ 事件处理内部，无 Python 帧
+其它线程:
+  core/dir_model.py:97 / :122  enumerate_dir     # 2 个后台枚举在飞
+  core/dir_model.py:146        _LoadTask.run -> signals.finished.emit(...)
+```
+
+此前同一类崩溃的栈顶是 `config/theme_manager.py:392 app.setStyleSheet` ←
+`main_window.py:_deferred_init`（`QApplication.setStyleSheet` 会遍历 polish 全部存活控件）。
+
+**已排除/已修掉的部分**：
+1. `MainWindow`/`QuadPaneWidget`/`Pane`/`TreeSidebar`/`ThumbnailView` 的
+   `QTimer.singleShot(ms, lambda: self.…)` 延后初始化 —— 定时器不属于对象，对象先被
+   销毁时回调照跑（实测复现
+   `RuntimeError: wrapped C/C++ object of type QTabWidget has been deleted`）。
+   已统一改用 `core/lifecycle.call_later()`（定时器以业务对象为父），并由
+   `tests/test_lifecycle.py` 锁定（含反证基线用例）。修后 `TerminalView has been
+   deleted` 一类噪声完全消失。
+2. 终端读线程向已删除控件投递信号 —— 见 `docs/gotchas.md` 第七节。
+3. 测试里窗口只建不销、GC 随机时刻删除 —— `tests/conftest.py` 加 autouse
+   `_reap_top_level_widgets` 确定性回收（它本身不是修复，而是把 AV 降级成可见的
+   RuntimeError，才使得上面两条可定位）。
+
+**仍未解决的部分**：残余 AV 与 `QThreadPool.globalInstance()` 上的 `_LoadTask` 相关：
+模型（及其视图）在枚举结果回投前被销毁。按 Qt 语义，接收者销毁会自动断开连接，
+不应崩溃；但实测仍会偶发硬崩，且崩在 C++ 内部 → 无法用 Python 层 try/except 或
+`sip.isdeleted` 守卫解决（只能降低触发频率，不能根除）。
+
+**下一步候选方案**（未实施，需先做可行性验证）：
+- 每个 `DirStoreModel` 记录 in-flight 任务数，销毁前 `waitForDone`（风险：死锁/
+  卡 UI，网络盘上可能数秒）
+- 不用 `QThreadPool`，改用受控 `QThread` + 协作式取消（工作线程自己检查取消标志）
+- 接受现状：生产环境只在退出/关标签时短暂共存，未观察到用户可见崩溃（待 win55 SMB 真机验证）
+
+**相关文件**：`core/dir_model.py`（`_LoadTask`/`_LoadSignals`）、`tests/conftest.py`、
+`core/lifecycle.py`
 
 ---
 

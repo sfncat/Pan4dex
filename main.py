@@ -581,7 +581,7 @@ def main():
         # 2) show 后立即 + 延迟 200ms 再重设 Qt 窗口图标
         # 3) 直接向窗口句柄发 WM_SETICON（Explorer 取任务栏按钮图标的底层通道）
         if sys.platform == "win32":
-            from PyQt6.QtCore import QTimer
+            from core.lifecycle import call_later
 
             def _reapply_window_icon():
                 try:
@@ -597,7 +597,7 @@ def main():
 
             if _ico_for_native:
                 apply_windows_native_icon(int(window.winId()), _ico_for_native)
-            QTimer.singleShot(200, _reapply_window_icon)
+            call_later(window, 200, _reapply_window_icon)
         logger.info(f"[启动计时] window.show() 完成: {(time.perf_counter()-_t0)*1000:.1f}ms")
         logger.info("Main window shown, entering event loop")
         sys.exit(app.exec())

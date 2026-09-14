@@ -35,6 +35,7 @@
 | `main_window.py` | 主窗口管理、标签页、布局切换、菜单栏、状态栏 |
 | `pane.py` | 单个窗格的完整功能：路径栏、文件列表、导航、上下文菜单 |
 | `dir_model.py` | `DirStoreModel`：以目录为单位的异步文件模型（后台枚举 + TTL 缓存 + 定向失效），文件列表专用 |
+| `lifecycle.py` | `call_later(obj, ms, fn)`：以业务对象为父的延后回调，避免 `QTimer.singleShot` 在对象销毁后回调已删除子对象 |
 | `file_operations.py` | 文件复制/移动/删除/重命名，支持进度回调和取消 |
 | `drag_drop.py` | 拖拽事件处理、MIME 数据传输、操作类型判断 |
 | `terminal.py` | 终端应用检测、命令构造、启动外部终端 |

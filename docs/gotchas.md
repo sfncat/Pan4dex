@@ -210,7 +210,73 @@ def _expand_parts(self, parts, idx):
 
 ---
 
-## 七、回归防护机制
+## 七、Qt 对象生命周期与后台线程类
+
+### 17. 后台线程不得直接 emit（控件可能已被删除）
+
+**现象**：stderr 反复出现 `RuntimeError: wrapped C/C++ object of type TerminalView
+has been deleted`，终端输出偶发不再刷新；极端情况下直接段错误。
+
+**根因**：`threading.Thread` 里 `self.some_signal.emit(...)`。主线程删除控件的
+C++ 对象时不会通知 Python 线程；Windows 上 `pty.read` 无数据即永远阻塞，`join()`
+也等不回来，因此“先停线程再销毁”从根本上做不通。
+
+**解决**：统一经 `_emit_ui(信号名, *args)`：先查停止标志，再
+`try: getattr(self, name).emit(...) except RuntimeError: pass`。
+
+关键细节：**参数必须是信号名（字符串），不能是信号对象** ——
+`self._emit_ui(self.output_received, data)` 的 `self.output_received` 在进函数前的
+求值阶段就抛 RuntimeError，try 完全盖不到。
+
+**测试**：`tests/test_terminal_lifecycle.py`
+
+### 18. `self.destroyed.connect(self._slot)` 不会被调用
+
+**现象**：给控件挂了 `destroyed` 兜底槽，控件销毁后槽没跑（清理逻辑静默失效）。
+
+**根因**：Qt 在发射 `destroyed()` 前已断开“接收者是本对象”的所有连接，绑定方法槽
+（receiver == 该对象）永远收不到；lambda / 普通函数没有 receiver，会被调用。
+
+**解决**：`self.destroyed.connect(lambda *_: self._on_destroyed())`；槽内只能做
+Python 级操作（写实例属性、调纯 Python 对象），不能碰任何 Qt 调用。
+
+**另注**：测试里 `widget.destroy()` 对 QWidget **并不会**删除 C++ 对象（信号也不发），
+要用 `from PyQt6 import sip; sip.delete(obj)` 才能真正删除并触发 `destroyed`。
+
+### 19. QDockWidget 的 closeEvent 不等于销毁
+
+**现象**：终端面板点 X 关掉再从菜单打开，是个再也没有输出的死面板。
+
+**根因**：`DockWidgetClosable` 的 X 只是 `hide()`，`QDockWidget` 对象还活着；
+而旧 `closeEvent` 里 `close_shell()` 把会话杀了且无人重启。
+
+**解决**：dock 自己关面板时不回收会话（隐藏即保留）；会话终止放到
+`MainWindow.closeEvent` → `terminal_panel.shutdown()`（终态：不再启动、不再投递）。
+
+### 20. `QTimer.singleShot(ms, lambda: self.…)` 不随对象销毁
+
+**现象**：测试全量连跑偶发 `access violation`，也能退化为
+`RuntimeError: wrapped C/C++ object of type QTabWidget has been deleted`；现场在
+`main_window.py:232` 的 100ms 布局轮询里读 `self.tab_widget`。用户侧对应“启动就
+关闭”“快速关标签页”。
+
+**根因**：静态 `QTimer.singleShot` 建的定时器**不以 receiver 为父对象**，回调持有
+`self` 且一定会等到触发；对象的 C++ 部分先被销毁（测试里 `sip.delete`、GC 随机时刻，
+真实程序里关窗口）后，回调照旧运行并访问已删除的子对象。
+
+**解决**：统一用 `core.lifecycle.call_later(receiver, msec, fn)` —— 定时器以业务对象
+为父，随对象一起销毁，回调自然不再触发（靠 Qt 所有权语义，不在各调用点写
+`sip.isdeleted` 守卫）。新增延后初始化一律用 `call_later`，不要用
+`QTimer.singleShot`（`scripts/` 下的复现脚本除外）。
+
+**测试**：`tests/test_lifecycle.py`（含一条“旧写法仍会报错”的反证基线用例）。
+
+**关联**：`tests/conftest.py` 的 `_reap_top_level_widgets` 会在每个测试后销毁残留
+窗口 —— 它不是修复，但把不可读的 AV 降级成带栈的 RuntimeError，是定位这类问题的前提。
+
+---
+
+## 八、回归防护机制
 
 ### 部署脚本
 ```bash
@@ -234,6 +300,11 @@ python scripts/deploy.py 0.9.618
 - [ ] 涉及 `DirStoreModel` 的：新路径是否走 `entry_is_dir()` 而不是 `index(path)`？
       改动文件系统后是否调了 `refresh_dir` / `_reload_after_mutation`？
 - [ ] 后台枚举结果是否按 `gen` 校验代次（不得直接信任回调）
+- [ ] 从 `threading.Thread` 向主线程投递：是否只走 `_emit_ui(名字, ...)` 这类带
+      RuntimeError 防护的路径（不得直接 `self.sig.emit(...)`）
+- [ ] 新增常驻子进程/后台任务：是否在 `MainWindow.closeEvent` 里显式关停（不能依赖 GC）
+- [ ] 延后执行（启动分阶段 / 防抖 / 轮询）：是否用 `call_later(obj, ms, fn)` 而不是
+      `QTimer.singleShot`（后者在对象销毁后仍会触发）
 - [ ] 切换可见性后是否 `update()` + `repaint()`
 - [ ] 导航是否用 `setRootIndex` 而不是 `setRootPath`
 - [ ] QDockWidget 是否保存了显式 parent 引用
