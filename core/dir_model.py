@@ -1,17 +1,20 @@
 # -*- coding: utf-8 -*-
 """
-Pan4dex 万格 — DirStoreModel：以"当前目录"为单位的扁平异步文件模型
+Pan4dex 万格 — DirStoreModel：以目录节点为单位的异步文件模型
 
 设计目标（第二阶段根治 SMB 性能）：
 - 一次枚举一个目录，杜绝 QFileSystemModel 在 SMB 上的逐项 stat 与 watcher 轮询
-- 后台线程枚举（QThreadPool），主线程零阻塞；未加载完成时 rowCount=0 并发 loading 信号
+- 后台线程枚举（QThreadPool），主线程零阻塞；未加载完成 rowCount=0，canFetchMore/
+  fetchMore 驱动，加载完 begin/endInsertRows 增量插入
 - TTL 缓存 + 定向失效：应用内操作后只失效涉及的目录，F5 只重扫当前目录
-- 提供 QFileSystemModel 兼容的角色/接口，可挂在 PaneSortProxyModel 之下
+- 两层结构（目录节点 → 其条目），与 pane 既有 `model.index(path)` → setRootIndex →
+  枚举该目录子项 的用法天然兼容，pane 侧几乎零改动
 
 作用范围：仅服务文件列表视图（tree_view / 缩略图）。两个侧边目录树
 （pane_tree_view / tree_sidebar）本就按需展开、非瓶颈，继续使用 QFileSystemModel。
 """
 import os
+import time
 import logging
 from datetime import datetime
 
@@ -19,7 +22,6 @@ from PyQt6.QtCore import (
     QAbstractItemModel, QModelIndex, Qt, QDir, QRunnable, QThreadPool,
     QObject, pyqtSignal, pyqtSlot,
 )
-from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import QApplication, QStyle
 
 logger = logging.getLogger("pan4dex.dir_model")
@@ -28,23 +30,43 @@ logger = logging.getLogger("pan4dex.dir_model")
 COL_NAME, COL_SIZE, COL_TYPE, COL_DATE, COL_SHOT = range(5)
 HEADERS = ["名称", "大小", "类型", "修改日期", "拍摄日期"]
 
-# 目录条目
+
+def _key(path):
+    if not path:
+        return ""
+    return os.path.normcase(os.path.normpath(path))
+
+
 class Entry:
-    __slots__ = ("name", "path", "is_dir", "size", "mtime", "hidden", "is_link")
+    """文件/目录条目（某个目录节点的一个子项）。"""
+    __slots__ = ("name", "path", "is_dir", "size", "mtime", "hidden", "is_link", "node")
 
     def __init__(self, name, path, is_dir, size, mtime, hidden, is_link):
         self.name = name
         self.path = path
         self.is_dir = is_dir
-        self.size = size          # 文件字节数；目录为 -1（不显示）
+        self.size = size          # 文件字节数；目录为 -1（大小列不显示）
         self.mtime = mtime        # 修改时间（epoch 秒）；未知为 0
         self.hidden = hidden
         self.is_link = is_link    # 符号链接 / NTFS 重分析点
+        self.node = None          # 所属 DirNode（加载后回填）
+
+
+class DirNode:
+    """一个目录节点：持有其枚举出的条目列表与加载状态。"""
+    __slots__ = ("path", "key", "entries", "loaded", "loading")
+
+    def __init__(self, path):
+        self.path = os.path.normpath(path)
+        self.key = _key(path)
+        self.entries = None        # None=未加载；list=已加载
+        self.loaded = False
+        self.loading = False
 
 
 # ---------- 目录枚举（纯 Python，不触碰 Qt，供后台线程调用） ----------
 
-def _entry_hidden(path, name, is_dir):
+def _entry_hidden(path, name):
     """跨平台隐藏判断：POSIX 以 . 前缀；Windows 读 FILE_ATTRIBUTE_HIDDEN"""
     if name.startswith('.'):
         return True
@@ -87,7 +109,7 @@ def enumerate_dir(path, show_hidden=True):
                         size = getattr(st, "st_size", 0) or 0
                 except OSError:
                     pass
-                hidden = _entry_hidden(e.path, e.name, is_dir)
+                hidden = _entry_hidden(e.path, e.name)
                 if not show_hidden and hidden:
                     continue
                 entries.append(Entry(e.name, os.path.normpath(e.path),
@@ -102,41 +124,45 @@ def enumerate_dir(path, show_hidden=True):
 # ---------- 后台枚举任务 ----------
 
 class _LoadSignals(QObject):
-    finished = pyqtSignal(str, object)   # dir_path, list[Entry]
+    finished = pyqtSignal(object, object)   # DirNode, list[Entry]
 
 
 class _LoadTask(QRunnable):
-    def __init__(self, path, show_hidden, signals):
+    def __init__(self, node, show_hidden, signals):
         super().__init__()
-        self.path = path
+        self.node = node
         self.show_hidden = show_hidden
         self.signals = signals
         self.setAutoDelete(True)
 
     def run(self):
         try:
-            rows = enumerate_dir(self.path, self.show_hidden)
+            rows = enumerate_dir(self.node.path, self.show_hidden)
         except Exception:
             rows = []
         # queued 投递回主线程（signals 属于主线程对象）
-        self.signals.finished.emit(self.path, rows)
+        self.signals.finished.emit(self.node, rows)
 
 
 class DirStoreModel(QAbstractItemModel):
-    """每窗格独立的扁平文件模型，根（invalid index）= 当前目录。"""
+    """目录节点为根、条目为子项的异步模型。pane 用 index(dirPath) + setRootIndex
+    显示某目录的条目；根（invalid）本身不直接展开。"""
 
-    directoryLoaded = pyqtSignal(str)   # 加载完成（含空目录），供 pane 同步 UI
-    loadingStarted = pyqtSignal(str)    # 开始后台加载
+    SHOT_DATE_COLUMN = COL_SHOT   # 兼容 pane 对 ExifFileSystemModel 的列常量引用
+    directoryLoaded = pyqtSignal(str)
+    loadingStarted = pyqtSignal(str)
+
+    # 类级缓存：{dirkey: (timestamp, show_hidden, [Entry])}，跨窗格共享同一目录枚举结果
+    _CACHE = {}
+    _CACHE_TTL = 2.0   # 秒；网络目录 TTL，本地目录主要靠定向失效
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._dir = ""
-        self._entries: list[Entry] = []
-        self._loaded = False
+        self._nodes = {}           # dirkey -> DirNode
+        self._top_node = None      # 当前显示的目录节点（作为模型唯一顶层行）
+        self._top_key = ""         # 顶层节点 key
         self._filter = (QDir.Filter.AllDirs | QDir.Filter.Files |
                         QDir.Filter.NoDotAndDotDot | QDir.Filter.Hidden)
-        self._loading_token = 0          # 递增，用于丢弃过期加载结果
-        self._pending = {}               # token -> path
         self._pool = QThreadPool.globalInstance()
         self._loader = _LoadSignals()
         self._loader.finished.connect(self._on_entries_loaded)
@@ -144,7 +170,7 @@ class DirStoreModel(QAbstractItemModel):
 
     # ---- 兼容 QFileSystemModel 的接口 ----
     def rootPath(self):
-        return self._dir
+        return self._top_node.path if self._top_node else ""
 
     def setFilter(self, filters):
         self._filter = filters
@@ -152,79 +178,71 @@ class DirStoreModel(QAbstractItemModel):
     def filter(self):
         return self._filter
 
-    def _show_hidden(self):
-        return bool(self._filter & QDir.Filter.Hidden)
+    def set_directory(self, path):
+        """pane 导航时调用：把该目录设为模型唯一顶层节点并触发异步加载。
 
-    def isDir(self, index_or_path):
-        if isinstance(index_or_path, str):
-            return os.path.isdir(index_or_path)
-        if not index_or_path.isValid():
-            return True  # 根即当前目录，是目录
-        e = index_or_path.internalPointer()
-        return bool(e and e.is_dir)
-
-    def filePath(self, index):
-        if not index.isValid():
-            return ""
-        e = index.internalPointer()
-        return e.path if e else ""
-
-    def fileName(self, index):
-        if not index.isValid():
-            return ""
-        e = index.internalPointer()
-        return e.name if e else ""
-
-    # ---- 目录切换 / 刷新 / 失效 ----
-    def set_directory(self, path, force=False):
-        """导航到 path：命中新鲜缓存则同步填充，否则清空并后台枚举。"""
+        返回目录节点的顶层索引——它是 invalid 根的唯一行，因此
+        QSortFilterProxyModel.mapFromSource 能正确映射（与 pane 的
+        `_set_root_index` 用法兼容）。切换目录时 beginResetModel 让代理
+        重建根；对同一目录重复调用不重置。
+        """
         path = os.path.normpath(path) if path else ""
-        if not path or not os.path.isdir(path):
-            return False
-        cached = None if force else self._cache_get(path)
+        if not path:
+            return self._invalid
+        node = self._ensure_node(path)
+        key = node.key
+        if self._top_key == key and self._top_node is node:
+            if not node.loaded and not node.loading:
+                self._start_load(node)
+            return self.createIndex(0, 0, node)
         self.beginResetModel()
-        self._dir = path
-        if cached is not None:
-            self._entries = cached
-            self._loaded = True
-        else:
-            self._entries = []
-            self._loaded = False
+        self._top_node = node
+        self._top_key = key
         self.endResetModel()
-        if cached is None:
-            self._start_load(path)
-        self.directoryLoaded.emit(path)
-        return True
+        if not node.loaded and not node.loading:
+            self._start_load(node)
+        return self.createIndex(0, 0, node)
 
-    def refresh(self, _index=None):
-        """重扫当前目录（F5）。index 参数仅为兼容旧调用签名。"""
-        if self._dir:
-            self._cache_invalidate(self._dir)
-            self.set_directory(self._dir, force=True)
+    def isDir(self, idx):
+        if isinstance(idx, str):
+            return os.path.isdir(idx)
+        p = idx.internalPointer() if idx.isValid() else None
+        if isinstance(p, DirNode):
+            return True
+        if isinstance(p, Entry):
+            return p.is_dir
+        return False
 
-    # ---- 缓存（TTL + 定向失效）----
-    # 类级缓存：{path: (timestamp, [Entry])}，跨窗格共享同一目录的枚举结果
-    _CACHE = {}
-    _CACHE_TTL = 2.0  # 秒；网络目录 TTL，本地目录主要靠定向失效
+    def filePath(self, idx):
+        if not idx.isValid():
+            return ""
+        p = idx.internalPointer()
+        return p.path if p else ""
 
+    def fileName(self, idx):
+        if not idx.isValid():
+            return ""
+        p = idx.internalPointer()
+        return getattr(p, "name", "") or (os.path.basename(p.path) if isinstance(p, DirNode) else "")
+
+    # ---- 缓存 / 定向失效 ----
     @classmethod
-    def _cache_get(cls, path):
-        item = cls._CACHE.get(path)
+    def _cache_get(cls, key, show_hidden):
+        item = cls._CACHE.get(key)
         if not item:
             return None
-        import time as _t
-        if _t.time() - item[0] > cls._CACHE_TTL and cls._is_network(path):
+        ts, sh, entries = item
+        if sh != show_hidden:
             return None
-        return item[1]
+        return entries
 
     @classmethod
-    def _cache_put(cls, path, entries):
-        import time as _t
-        cls._CACHE[path] = (_t.time(), entries)
+    def _cache_put(cls, key, show_hidden, entries):
+        cls._CACHE[key] = (time.time(), show_hidden, entries)
 
     @classmethod
     def _cache_invalidate(cls, path):
-        cls._CACHE.pop(os.path.normpath(path), None)
+        cls._CACHE.pop(_key(path), None)
 
     @staticmethod
     def _is_network(path):
@@ -232,63 +250,168 @@ class DirStoreModel(QAbstractItemModel):
             if os.name == 'nt':
                 if path.startswith('\\\\'):
                     return True
-                drive = path[:2]
-                if drive[1] == ':':
+                if len(path) >= 2 and path[1] == ':':
                     import ctypes
                     DRIVE_REMOTE = 4
-                    return ctypes.windll.kernel32.GetDriveTypeW(drive + '\\') == DRIVE_REMOTE
+                    return ctypes.windll.kernel32.GetDriveTypeW(path[:2] + '\\') == DRIVE_REMOTE
             return False
         except Exception:
             return False
 
     @classmethod
     def notify_dir_changed(cls, path):
-        """外部（其它窗格/应用内操作）改了某目录：失效缓存，令正显示它的模型重载。"""
-        cls._cache_invalidate(path)
-        # 由 pane 侧遍历受影响的窗格调用 refresh；此处仅清缓存
+        """外部（其它窗格/应用内操作）改了某目录：失效缓存。
 
-    # ---- 后台加载 ----
-    def _start_load(self, path):
-        self._loading_token += 1
-        token = self._loading_token
-        self._pending[token] = path
-        self.loadingStarted.emit(path)
-        task = _LoadTask(path, self._show_hidden(), self._loader)
+        正显示该目录的窗格由 pane 侧调用 refresh 重载（pane 负责遍历受影响窗格）。
+        """
+        cls._cache_invalidate(path)
+
+    def refresh(self, index=None):
+        """重扫当前显示目录（F5 / 定向失效）：清条目后异步重载，
+        保留顶层节点映射（不重置模型，为§7 保留选中/滚动留余地）。"""
+        node = self._top_node
+        if node is None:
+            return
+        self._cache_invalidate(node.path)
+        if node.loaded and node.entries:
+            parent_idx = self.createIndex(0, 0, node)
+            self.beginRemoveRows(parent_idx, 0, len(node.entries) - 1)
+            node.entries = None
+            node.loaded = False
+            self.endRemoveRows()
+        node.loading = False
+        self._start_load(node)
+
+    # ---- 节点 materialize + 异步加载 ----
+    def _ensure_node(self, path):
+        key = _key(path)
+        node = self._nodes.get(key)
+        if node is not None:
+            return node
+        node = DirNode(path)
+        self._nodes[key] = node
+        show = self._show_hidden()
+        cached = self._cache_get(key, show)
+        if cached is not None and self._fresh_or_local(path):
+            node.entries = cached
+            for e in node.entries:
+                e.node = node
+            node.loaded = True
+        return node
+
+    @classmethod
+    def _fresh_or_local(cls, path):
+        if not cls._is_network(path):
+            return True
+        item = cls._CACHE.get(_key(path))
+        return bool(item) and (time.time() - item[0] <= cls._CACHE_TTL)
+
+    def _show_hidden(self):
+        return bool(self._filter & QDir.Filter.Hidden)
+
+    def _start_load(self, node):
+        if node.loading:
+            return
+        node.loading = True
+        task = _LoadTask(node, self._show_hidden(), self._loader)
+        self.loadingStarted.emit(node.path)
         self._pool.start(task)
 
-    @pyqtSlot(str, object)
-    def _on_entries_loaded(self, path, entries):
-        # 只接受当前目录的结果（用户可能已切走）
-        if os.path.normpath(path) != self._dir:
-            self._pending.pop(self._loading_token, None)
-            return
-        # 合并"拍摄日期"缓存列无关（懒查），此处直接落数据
-        self.beginResetModel()
-        self._entries = entries
-        self._loaded = True
-        self.endResetModel()
-        DirStoreModel._cache_put(self._dir, entries)
-        self.directoryLoaded.emit(self._dir)
+    @pyqtSlot(object, object)
+    def _on_entries_loaded(self, node, entries):
+        node.loading = False
+        if node.key not in self._nodes or self._nodes.get(node.key) is not node:
+            return  # 节点已被丢弃
+        if node.loaded:
+            return  # 幂等：同一节点重复的完成信号不得再次插入（避免重复行）
+        parent_idx = self.createIndex(0, 0, node)
+        first = 0
+        self.beginInsertRows(parent_idx, first, first + len(entries) - 1) \
+            if entries else None
+        node.entries = entries
+        for e in entries:
+            e.node = node
+        node.loaded = True
+        if entries:
+            self.endInsertRows()
+        self._cache_put(node.key, self._show_hidden(), entries)
+        self.directoryLoaded.emit(node.path)
 
-    # ---- QAbstractItemModel 必需实现（扁平：根 = 当前目录）----
-    def index(self, row, column=0, parent=None):
+    # ---- QAbstractItemModel 必需实现 ----
+    def index(self, *args, **kwargs):
+        # 路径形式：index(path_str)
+        if args and isinstance(args[0], str):
+            return self._index_for_path(args[0])
+        # 常规形式：index(row, column, parent)
+        if not args:
+            return self._invalid
+        row = args[0]
+        column = args[1] if len(args) > 1 else kwargs.get('column', 0)
+        parent = args[2] if len(args) > 2 else kwargs.get('parent', self._invalid)
         if row < 0 or column < 0:
             return self._invalid
-        if parent is not None and parent.isValid():
-            return self._invalid  # 扁平模型：目录不作为可展开父节点
-        if row >= len(self._entries):
+        if not parent.isValid():
+            # invalid 根的唯一行 = 当前顶层目录节点
+            if row == 0 and self._top_node is not None:
+                return self.createIndex(0, column, self._top_node)
             return self._invalid
-        return self.createIndex(row, column, self._entries[row])
+        p = parent.internalPointer()
+        if isinstance(p, DirNode):
+            if not p.loaded or not p.entries or row >= len(p.entries):
+                return self._invalid
+            return self.createIndex(row, column, p.entries[row])
+        return self._invalid  # 条目不再有子
+
+    def _index_for_path(self, path):
+        path = os.path.normpath(path) if path else ""
+        if not path:
+            return self._invalid
+        if os.path.isdir(path):
+            if _key(path) == self._top_key and self._top_node is not None:
+                return self.createIndex(0, 0, self._top_node)
+            # 非当前显示目录：返回轻量节点（仅供 isDir/isValid 判定，不触发加载）
+            return self.createIndex(0, 0, self._ensure_node(path))
+        # 文件：查其所属（已加载）目录里的行
+        node = self._nodes.get(_key(os.path.dirname(path)))
+        if node and node.loaded and node.entries:
+            for r, e in enumerate(node.entries):
+                if e.path == path:
+                    return self.createIndex(r, 0, e)
+        return self._invalid
 
     def parent(self, index):
-        return self._invalid  # 所有条目的父即 invisible root（当前目录）
+        if not index.isValid():
+            return self._invalid
+        p = index.internalPointer()
+        if isinstance(p, Entry) and p.node is not None:
+            return self.createIndex(0, 0, p.node)   # 条目的父 = 其目录节点
+        return self._invalid                          # 顶层目录节点的父 = invalid 根
 
-    def rowCount(self, parent=QModelIndex()):
-        if parent.isValid():
-            return 0
-        return len(self._entries)
+    def rowCount(self, parent=None):
+        if parent is None or not parent.isValid():
+            return 1 if self._top_node is not None else 0
+        p = parent.internalPointer()
+        if isinstance(p, DirNode):
+            if p is self._top_node and not p.loaded and not p.loading:
+                self._start_load(p)
+            return len(p.entries) if (p.loaded and p.entries) else 0
+        return 0
 
-    def columnCount(self, parent=QModelIndex()):
+    def canFetchMore(self, parent):
+        if not parent.isValid():
+            return False
+        p = parent.internalPointer()
+        return (p is self._top_node and isinstance(p, DirNode)
+                and not p.loaded and not p.loading)
+
+    def fetchMore(self, parent):
+        if not parent.isValid():
+            return
+        p = parent.internalPointer()
+        if p is self._top_node and isinstance(p, DirNode) and not p.loaded and not p.loading:
+            self._start_load(p)
+
+    def columnCount(self, parent=None):
         return len(HEADERS)
 
     def headerData(self, section, orientation, role=Qt.ItemDataRole.DisplayRole):
@@ -302,10 +425,12 @@ class DirStoreModel(QAbstractItemModel):
         if not index.isValid():
             return base
         e = index.internalPointer()
-        if e and e.is_dir:
-            base |= Qt.ItemFlag.ItemIsDropEnabled | Qt.ItemFlag.ItemHasChildren
-        else:
-            base |= Qt.ItemFlag.ItemIsDragEnabled
+        if isinstance(e, Entry) and e.is_dir:
+            # 目录：可作为拖放目标；是否有子项由 rowCount/canFetchMore 决定
+            base |= Qt.ItemFlag.ItemIsDropEnabled
+        elif isinstance(e, Entry):
+            # 文件：可拖拽、确定无子项
+            base |= Qt.ItemFlag.ItemIsDragEnabled | Qt.ItemFlag.ItemNeverHasChildren
         return base
 
     # ---- 数据角色 ----
@@ -313,7 +438,7 @@ class DirStoreModel(QAbstractItemModel):
         if not index.isValid():
             return None
         e = index.internalPointer()
-        if e is None:
+        if not isinstance(e, Entry):
             return None
         col = index.column()
         if role in (Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.EditRole):
@@ -337,8 +462,6 @@ class DirStoreModel(QAbstractItemModel):
         elif role == Qt.ItemDataRole.ToolTipRole:
             if col == COL_NAME:
                 return e.path
-        elif role == Qt.ItemDataRole.FontRole:
-            pass
         return None
 
     # ---- 重命名（setData）----
@@ -348,6 +471,8 @@ class DirStoreModel(QAbstractItemModel):
         if index.column() != COL_NAME:
             return False
         e = index.internalPointer()
+        if not isinstance(e, Entry):
+            return False
         new_name = (value or "").strip()
         if not new_name or new_name == e.name:
             return False
@@ -360,12 +485,13 @@ class DirStoreModel(QAbstractItemModel):
         except OSError as exc:
             logger.info("重命名失败 %s -> %s: %s", old_path, new_name, exc)
             return False
-        row = index.row()
-        self.beginResetModel()  # 最简单可靠：整目录重载（rename 低频，代价可接受）
+        node = e.node
+        self.beginResetModel()
         e.name = new_name
         e.path = os.path.normpath(new_path)
         self.endResetModel()
-        DirStoreModel._cache_invalidate(self._dir)
+        if node is not None:
+            self._cache_invalidate(node.path)
         self.dataChanged.emit(index, index, [Qt.ItemDataRole.DisplayRole])
         return True
 
@@ -413,11 +539,9 @@ class DirStoreModel(QAbstractItemModel):
 
     @classmethod
     def _icon(cls, e):
+        from PyQt6.QtWidgets import QStyle
         style = QApplication.style()
-        if e.is_dir:
-            sp = QStyle.StandardPixmap.SP_DirIcon
-        else:
-            sp = QStyle.StandardPixmap.SP_FileIcon
+        sp = QStyle.StandardPixmap.SP_DirIcon if e.is_dir else QStyle.StandardPixmap.SP_FileIcon
         if sp not in cls._ICON_CACHE:
             cls._ICON_CACHE[sp] = style.standardIcon(sp)
         return cls._ICON_CACHE[sp]

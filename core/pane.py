@@ -206,6 +206,9 @@ class Pane(QWidget):
         else:
             self.current_path = QDir.homePath()
         self.file_ops = FileOperations()
+        # 第二阶段双轨开关：True 时本窗格文件列表用自研异步模型 DirStoreModel
+        from config.app_config import use_new_model
+        self._use_new_model = use_new_model()
         # 同名冲突记忆策略（“对后续冲突执行相同操作”，仅本次操作内有效）
         self._conflict_policy = None
         self._file_progress.connect(self._on_file_progress_ui)
@@ -428,14 +431,30 @@ class Pane(QWidget):
 
     @classmethod
     def set_show_hidden(cls, show: bool):
-        """全局切换共享模型的隐藏文件过滤（所有窗格同步生效）"""
+        """全局切换隐藏文件过滤（所有窗格同步生效）。
+
+        旧共享模型：直接改共享模型 filter。新模型（DirStoreModel）：
+        逐窗格设自己的模型 filter 并重扫。
+        """
         Pane._show_hidden = bool(show)
+        filt = cls._file_filter()
         model = getattr(Pane, '_shared_file_model', None)
         if model is not None:
-            model.setFilter(cls._file_filter())
+            model.setFilter(filt)
+        for pane in list(getattr(cls, '_instances', None) or ()):
+            if getattr(pane, '_use_new_model', False) and pane.model is not None:
+                try:
+                    pane.model.setFilter(filt)
+                    pane.model.refresh()
+                except RuntimeError:
+                    pass  # 窗格已销毁
 
     def _setup_shared_model(self):
-        """设置共享的 QFileSystemModel"""
+        """设置文件列表模型：新模型开关开则每窗格独立 DirStoreModel，
+        否则沿用共享 ExifFileSystemModel。"""
+        if getattr(self, '_use_new_model', False):
+            self._setup_dir_store_model()
+            return
         # 使用静态共享模型，避免每个窗格都创建
         if not hasattr(Pane, '_shared_file_model') or Pane._shared_file_model is None:
             import time
@@ -504,6 +523,36 @@ class Pane(QWidget):
         except Exception:
             pass
 
+    def _setup_dir_store_model(self):
+        """第二阶段：为本窗格创建独立的异步 DirStoreModel（不共享）。
+
+        目录枚举在后台线程完成、主线程零阻塞；每个窗格一个模型，
+        便于按窗格独立回退与定向刷新。排序仍由每窗格独立的
+        PaneSortProxyModel 负责（与旧路径一致的视图/代理结构）。
+        """
+        from core.dir_model import DirStoreModel
+        import time
+        t0 = time.perf_counter()
+        model = DirStoreModel()
+        model.setFilter(self._file_filter())
+        self.model = model
+        self.sort_proxy = PaneSortProxyModel(self)
+        self.sort_proxy.setSourceModel(model)
+        self.tree_view.setModel(self.sort_proxy)
+        elapsed = (time.perf_counter() - t0) * 1000
+        logger.info(f"[启动计时] DirStoreModel 创建（窗格 {self.pane_id}）: {elapsed:.1f}ms")
+
+        # 恢复列显示状态（拍摄日期列默认隐藏；用户勾选后持久化）
+        self._restore_column_visibility()
+
+        # 后台 prefetch 完成后刷新视图
+        self.shot_dates_ready.connect(self._refresh_shot_date_column)
+        # 目录异步加载完成后，若正好是当前目录则预读拍摄日期
+        model.directoryLoaded.connect(self._on_directory_loaded_shot_dates)
+
+        # 设置根索引
+        self._set_root_index(self.current_path)
+
     def _on_directory_loaded_shot_dates(self, path):
         """共享模型目录加载完成：若是本窗格当前目录，则预读拍摄日期。"""
         try:
@@ -520,11 +569,16 @@ class Pane(QWidget):
 
     def _set_root_index(self, path: str) -> bool:
         """经排序代理设置当前目录的根索引，成功返回 True"""
-        source_index = self.model.index(path)
+        if getattr(self, '_use_new_model', False):
+            # 新模型：把 path 设为唯一顶层节点（触发异步加载），返回可映射的顶层索引
+            source_index = self.model.set_directory(path)
+        else:
+            source_index = self.model.index(path)
         if source_index.isValid():
             proxy_index = self.sort_proxy.mapFromSource(source_index)
-            self.tree_view.setRootIndex(proxy_index)
-            return True
+            if proxy_index.isValid():
+                self.tree_view.setRootIndex(proxy_index)
+                return True
         return False
         
 
@@ -2038,11 +2092,17 @@ class Pane(QWidget):
     def _force_refresh_current_dir(self):
         """强制刷新当前目录显示。
 
-        SMB/网络共享（UNC）上 QFileSystemWatcher 的目录变化通知不可靠，
-        删除/复制等操作后 QFileSystemModel 不会自动更新列表；且模型对相同
-        路径 setRootPath 会直接返回、无公开的目录缓存失效接口，只能重建
-        共享模型全量重扫。
+        旧共享模型（QFileSystemModel）：SMB/UNC 上 QFileSystemWatcher 目录
+        变化通知不可靠，只能重建共享模型全量重扫。
+        新模型（DirStoreModel）：只需失效并重扫当前目录（异步、不阻塞），
+        无需全量重建。
         """
+        if getattr(self, '_use_new_model', False):
+            try:
+                self.model.refresh()
+            except Exception:
+                pass
+            return
         Pane._rebuild_shared_model()
 
     def _refresh_network_sources(self, paths):
