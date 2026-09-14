@@ -486,13 +486,14 @@ class DirStoreModel(QAbstractItemModel):
             logger.info("重命名失败 %s -> %s: %s", old_path, new_name, exc)
             return False
         node = e.node
-        self.beginResetModel()
+        # 就地更新条目并 emit dataChanged：不重置模型，保留选中/滚动；
+        # 名称变化后 PaneSortProxyModel 的 dynamicSortFilter 会自动重排。
         e.name = new_name
         e.path = os.path.normpath(new_path)
-        self.endResetModel()
         if node is not None:
             self._cache_invalidate(node.path)
-        self.dataChanged.emit(index, index, [Qt.ItemDataRole.DisplayRole])
+        self.dataChanged.emit(index, index,
+                              [Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.EditRole])
         return True
 
     # ---- 辅助格式化 ----

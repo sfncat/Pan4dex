@@ -90,3 +90,71 @@ def test_pane_new_model_hidden_filter_toggle(qtbot, monkeypatch, tree):
     finally:
         Pane.set_show_hidden(True)  # 复位，避免污染其他用例
         pane.deleteLater()
+
+
+def _proxy_name_col_index(tv, row):
+    return tv.model().index(row, 0, tv.rootIndex())
+
+
+def _row_of(tv, name):
+    proxy = tv.model()
+    root = tv.rootIndex()
+    for r in range(proxy.rowCount(root)):
+        if proxy.data(proxy.index(r, 0, root)) == name:
+            return r
+    return -1
+
+
+def test_inline_rename_via_setdata_updates_view(qtbot, monkeypatch, tree):
+    """F2 行内改名：模型 setData 就地更新，列表不重置、行数不变、旧名消失新名出现。"""
+    import config.app_config as cfg
+    monkeypatch.setattr(cfg, "use_new_model", lambda: True)
+    from core.pane import Pane
+    from PyQt6.QtCore import Qt
+
+    pane = Pane("t_rename", start_path=str(tree))
+    qtbot.addWidget(pane)
+    _wait_rows(qtbot, pane.tree_view, 3)
+
+    tv = pane.tree_view
+    r = _row_of(tv, "a.txt")
+    assert r >= 0
+    pi = _proxy_name_col_index(tv, r)
+    si = pane.sort_proxy.mapToSource(pi)
+    assert pane.model.setData(si, "renamed.txt", Qt.ItemDataRole.EditRole) is True
+    assert (tree / "renamed.txt").exists() and not (tree / "a.txt").exists()
+    # 未重置模型：仍为 3 行，新名在视图内可见
+    assert tv.model().rowCount(tv.rootIndex()) == 3
+    assert _row_of(tv, "renamed.txt") >= 0
+    assert _row_of(tv, "a.txt") == -1
+    pane.deleteLater()
+
+
+def test_refresh_preserves_selection(qtbot, monkeypatch, tree):
+    """刷新当前目录后，之前选中的项按路径恢复选中。"""
+    import config.app_config as cfg
+    monkeypatch.setattr(cfg, "use_new_model", lambda: True)
+    from core.pane import Pane
+    from PyQt6.QtCore import QItemSelectionModel
+
+    pane = Pane("t_preserve", start_path=str(tree))
+    qtbot.addWidget(pane)
+    _wait_rows(qtbot, pane.tree_view, 3)
+
+    tv = pane.tree_view
+    r = _row_of(tv, "b.md")
+    pi = _proxy_name_col_index(tv, r)
+    sm = tv.selectionModel()
+    sm.select(pi, QItemSelectionModel.SelectionFlag.ClearAndSelect |
+              QItemSelectionModel.SelectionFlag.Rows)
+    tv.setCurrentIndex(pi)
+    assert os.path.join(str(tree), "b.md") in pane._paths_from_selection()
+
+    pane._refresh_preserving_selection()
+
+    # reload 完成后仍为 3 行，且 b.md 仍被选中
+    _wait_rows(qtbot, tv, 3)
+    qtbot.waitUntil(
+        lambda: os.path.join(str(tree), "b.md") in pane._paths_from_selection(),
+        timeout=5000)
+    pane.deleteLater()

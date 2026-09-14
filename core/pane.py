@@ -8,7 +8,8 @@ from PyQt6.QtGui import QFileSystemModel, QAction, QKeySequence, QCursor
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QTreeView, QProgressBar,
     QLabel, QMenu, QMessageBox, QInputDialog, QLineEdit, QHBoxLayout, QTabWidget,
-    QApplication, QSplitter, QDialog, QTableWidget, QHeaderView, QPushButton
+    QApplication, QSplitter, QDialog, QTableWidget, QHeaderView, QPushButton,
+    QStyledItemDelegate
 )
 from PyQt6.QtCore import Qt, QDir, QMimeData, pyqtSignal, pyqtSlot, QThread, QPoint, QEvent, QSortFilterProxyModel, QModelIndex, QPersistentModelIndex, QUrl, QByteArray, QMetaObject, Q_ARG
 import os
@@ -122,6 +123,27 @@ class PaneSortProxyModel(QSortFilterProxyModel):
             return bool(path) and os.path.isdir(path)
         except Exception:
             return False
+
+
+class _NameRenameDelegate(QStyledItemDelegate):
+    """行内改名委托：进入编辑时默认选中主名、不选扩展名（资源管理器习惯）。
+
+    仅用于新模型（DirStoreModel）的文件列表；提交仍走模型 setData(EditRole)
+    完成实际重命名。
+    """
+
+    def setEditorData(self, editor, index):
+        text = index.data(Qt.ItemDataRole.EditRole) or index.data(Qt.ItemDataRole.DisplayRole) or ""
+        try:
+            editor.setText(text)
+        except Exception:
+            return
+        stem, ext = os.path.splitext(os.path.basename(text))
+        if stem and ext:
+            # 选中主名（不含扩展名）
+            editor.setSelection(0, len(stem))
+        else:
+            editor.selectAll()
 
 
 class FileListTreeView(QTreeView):
@@ -346,6 +368,10 @@ class Pane(QWidget):
         self.tree_view.setSortingEnabled(True)
         self.tree_view.setItemsExpandable(False)
         self.tree_view.setAllColumnsShowFocus(True)
+        # 关闭内建编辑触发：新模型条目带 ItemIsEditable，若保留默认触发器
+        # （AnyKeyPressed/SelectedClicked）会导致按字母检索/单击误入行内编辑。
+        # 行内改名统一由 F2 显式调用 tree_view.edit() 驱动。
+        self.tree_view.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.tree_view.doubleClicked.connect(self.on_item_double_clicked)
         # Enter 打开（Windows 习惯：Enter 等价于双击）：QTreeView 对 Enter 只发
         # activated 不发 doubleClicked，旧版未连接导致 Enter 无反应；
@@ -539,6 +565,8 @@ class Pane(QWidget):
         self.sort_proxy = PaneSortProxyModel(self)
         self.sort_proxy.setSourceModel(model)
         self.tree_view.setModel(self.sort_proxy)
+        # 行内改名：选中主名不选扩展名
+        self.tree_view.setItemDelegate(_NameRenameDelegate(self.tree_view))
         elapsed = (time.perf_counter() - t0) * 1000
         logger.info(f"[启动计时] DirStoreModel 创建（窗格 {self.pane_id}）: {elapsed:.1f}ms")
 
@@ -547,8 +575,9 @@ class Pane(QWidget):
 
         # 后台 prefetch 完成后刷新视图
         self.shot_dates_ready.connect(self._refresh_shot_date_column)
-        # 目录异步加载完成后，若正好是当前目录则预读拍摄日期
+        # 目录异步加载完成后：预读拍摄日期 + 恢复待恢复的选中/滚动
         model.directoryLoaded.connect(self._on_directory_loaded_shot_dates)
+        model.directoryLoaded.connect(self._on_dir_loaded_restore)
 
         # 设置根索引
         self._set_root_index(self.current_path)
@@ -967,7 +996,14 @@ class Pane(QWidget):
             self.on_item_double_clicked(index)
 
     def refresh_current(self):
-        """刷新当前目录（F5 / 刷新按钮）：网络路径强制重扫，本地走常规导航"""
+        """刷新当前目录（F5 / 刷新按钮）。
+
+        新模型：定向重扫当前目录并保留选中/滚动。旧模型：网络路径强制
+        重扫（navigate_to 内处理），本地走常规导航。
+        """
+        if getattr(self, '_use_new_model', False):
+            self._refresh_preserving_selection()
+            return
         self.navigate_to(self.current_path)
 
     def _sync_nav_buttons(self):
@@ -2151,10 +2187,92 @@ class Pane(QWidget):
             old.deleteLater()
     
     def rename_selected(self):
-        """重命名选中项"""
+        """重命名选中项。
+
+        新模型（DirStoreModel）：F2 进入行内编辑（资源管理器习惯），
+        提交由模型 setData 完成。旧模型：保留原 QInputDialog 改名。
+        """
+        if getattr(self, '_use_new_model', False):
+            idx = self.tree_view.currentIndex()
+            if not idx.isValid():
+                sel = self.tree_view.selectedIndexes()
+                idx = sel[0] if sel else QModelIndex()
+            if not idx.isValid():
+                return
+            # 定位到该行的名称列（第 0 列）再触发编辑
+            name_idx = idx.siblingAtColumn(0)
+            self.tree_view.setCurrentIndex(name_idx)
+            self.tree_view.edit(name_idx)
+            return
         indexes = self.tree_view.selectedIndexes()
         if indexes:
             self._rename_path(self.model.filePath(self._map_to_source(indexes[0])))
+
+    # ---- 刷新/操作后保留选中与滚动（新模型）----
+    def _snapshot_view_state(self):
+        """记录当前选中路径与光标路径（用于刷新后恢复）。"""
+        paths = self._paths_from_selection()
+        cursor = None
+        cur = self.tree_view.currentIndex()
+        if cur.isValid():
+            cursor = self.model.filePath(self._map_to_source(cur.siblingAtColumn(0)))
+        return (paths, cursor)
+
+    def _restore_view_state(self, paths, cursor):
+        """按路径重新选中，并把光标项滚动到可见。"""
+        from PyQt6.QtCore import QItemSelectionModel
+        sm = self.tree_view.selectionModel()
+        if sm is None:
+            return
+        sm.clearSelection()
+        proxy = self.sort_proxy
+        first_pi = None
+        for p in paths:
+            si = self.model.index(p)
+            if not si.isValid():
+                continue
+            pi = proxy.mapFromSource(si.siblingAtColumn(0))
+            if not pi.isValid():
+                continue
+            if first_pi is None:
+                first_pi = pi
+            sm.select(pi, QItemSelectionModel.SelectionFlag.Select |
+                      QItemSelectionModel.SelectionFlag.Rows)
+        target = None
+        if cursor:
+            si = self.model.index(cursor)
+            if si.isValid():
+                target = proxy.mapFromSource(si.siblingAtColumn(0))
+        if target is None:
+            target = first_pi
+        if target is not None and target.isValid():
+            self.tree_view.setCurrentIndex(target)
+            self.tree_view.scrollTo(target)
+
+    def _on_dir_loaded_restore(self, path):
+        """目录异步加载完成：若此前有快照待恢复且正是当前目录，则恢复选中/滚动。"""
+        pending = getattr(self, '_pending_restore', None)
+        if not pending:
+            return
+        try:
+            if os.path.normpath(path) != os.path.normpath(self.current_path):
+                return
+        except Exception:
+            return
+        self._pending_restore = None
+        paths, cursor = pending
+        self._restore_view_state(paths, cursor)
+
+    def _refresh_preserving_selection(self):
+        """刷新当前目录并保留选中/滚动（新模型）。"""
+        if getattr(self, '_use_new_model', False):
+            self._pending_restore = self._snapshot_view_state()
+            try:
+                self.model.refresh()
+            except Exception:
+                self._pending_restore = None
+            return
+        self._force_refresh_current_dir()
     
     def _rename_path(self, path):
         """重命名指定路径"""
