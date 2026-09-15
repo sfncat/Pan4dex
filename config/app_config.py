@@ -16,7 +16,7 @@
 APP_NAME = "Pan4dex"                  # 应用英文名
 APP_NAME_CN = "万格"                    # 应用中文名
 VERSION = "1.9.006"                    # 版本号（开发分支 dev/shell-behavior-smb-perf 从 1.9.000 起每次发布末位 +1）
-BUILD_TIME = "2026-09-14 22:52:33"                      # 编译时间（YYYY-MM-DD HH:MM:SS），构建时自动写入；源码运行留空
+BUILD_TIME = "2026-09-15 11:33:24"                      # 编译时间（YYYY-MM-DD HH:MM:SS），构建时自动写入；源码运行留空
 
 # ---- 应用级常量 ----
 ORG_NAME = "sfncat"                    # QSettings 组织名（决定配置写入位置）
