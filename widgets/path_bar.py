@@ -275,6 +275,19 @@ class PathBar(QWidget):
         self.back_btn.setEnabled(can_back)
         self.forward_btn.setEnabled(can_forward)
 
+    def focus_for_input(self):
+        """Ctrl+L：聚焦路径输入框并全选现有路径
+
+        全选而不是光标置末：资源管理器的习惯是按一下就能直接打新路径，
+        不必先手动删掉旧的。
+        """
+        line = self.combo_box.lineEdit()
+        if line is None:                # 不可编辑时会返回 None
+            self.combo_box.setFocus()
+            return
+        line.setFocus()
+        line.selectAll()
+
     def go_up(self):
         """返回上级目录"""
         import os

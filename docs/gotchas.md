@@ -543,6 +543,54 @@ widget.deleteLater()
 `_emit(query, force=False)` 只有在 `force` 或“文本真变了”时发射。任何“手动清零”的入口
 （Esc、右键菜单“清除筛选”）都走 `clear_filter()`，不要直接 `lineEdit.clear()`。
 
+### 31. `Tab` 系快捷键必须用 QAction 抢在焦点导航前面
+
+**现象**：标签页「Ctrl+Tab 循环切换」在没注册快捷键时看上去也已经能用 —— 按一下确实
+换了页。实测（把 QAction 的键改成 `Ctrl+Alt+Tab` 后再真按 Ctrl+Tab）：`currentIndex()`
+仍然 0 → 1，而 QAction **没被触发**。也就是说“看起来对了”，但走的是另一条路。
+
+**机制**：`Tab` 是焦点导航键，控件不接就沿父链往上做 `focusNextChild`；焦点一落到
+另一个标签页里的控件，`QStackedLayout`（`QTabWidget` 内部）会**跟着焦点换当前页**。
+但这条路的换页是副作用：它按的是**整个窗口焦点链**的顺序，而不是标签页顺序 ——
+实测焦点会停在工具栏某个 `QToolButton` 上；而一页里有 N 个可聚焦控件时，按 Ctrl+Tab
+要 N 次才真的跳到下一页，其余几次只“在同一页里换控件焦点”（看起来就是“按了没反应”）。
+
+**写法**：`Ctrl+Tab` / `Ctrl+Shift+Tab` 这类与焦点导航同键的快捷键，一定要挂成窗口作
+用域的 QAction（本仓是文件菜单里 `on_next_tab`/`on_prev_tab` → `_cycle_tab(±1)`），让它
+抢在键事件进入焦点导航之前。测试也不能只调 `on_next_tab()`（那测不到抢键），得用
+`qtbot.keyClick` 真发一次 `Key_Tab + ControlModifier`，并**接住 `QAction.triggered` 计数**
+断言确实是 QAction 干的（`tests/test_nav_shortcuts.py::test_ctrl_tab_key_press_reaches_the_action`）。
+
+另两个约束：`QKeySequence` 在 **QtGui**（不在 QtCore，从 QtCore 导是 ImportError），且
+不可哈希（进不了 set，比较用 `toString()`）；快捷键只对“活动窗口”生效，测试里先
+`win.activateWindow()` + `processEvents()`。
+
+### 32. 测试里发带修饰键的合成按键，会把修饰键态漏给后面的测试
+
+**现象**：新加一个真按 `Ctrl+Tab` 的测试后，隔一个文件的
+`test_pane_dir_store.py::test_refresh_preserves_selection` 开始挂 —— 它在**自己**
+的 `assert` 第一行就失败（刚 `select()` 完，`selectedIndexes()` 就是空）。单独跑那个
+文件又全绿；只看失败信息会去查选中恢复逻辑，方向完全错。
+
+**机制**：`qtbot.keyClick(w, key, modifier)` 发的 press 与 release **都带着修饰键掩码**，
+所以 `QApplication.keyboardModifiers()` 在整个测试结束后仍是 `ControlModifier`（真键盘
+不会：物理松开时掩码为空）。而 `QAbstractItemView::setCurrentIndex()` 在没有按键事件时
+会拿**全局** `keyboardModifiers()` 去算 `selectionCommand()` —— Ctrl 在场就按
+“Ctrl+点击 = 切换选中”处理，于是把刚选上的那一行**取消**了。选中本来就没坏，
+坏在测试之间的全局态。
+
+**写法**：任何用带修饰键的合成按键的测试，收尾补一次不带修饰键的同一个键把态归零，
+并断言归零成功（不然下次又没人发现）：
+```python
+qtbot.keyClick(tree, Qt.Key.Key_Tab, Qt.ControlModifier)
+...
+qtbot.keyClick(tree, Qt.Key.Key_Control)          # 抹回 NoModifier
+assert QApplication.keyboardModifiers() == Qt.KeyboardModifier.NoModifier
+```
+适用范围：`qtbot.keyClick` / `QTest.keyClick` 全都算（它们走同一套合成事件）；
+`keyClick` 不带修饰键时无此问题。排查这类“隔文件挂”的线索：先打
+`QApplication.keyboardModifiers()`，再怀疑业务逻辑。
+
 ---
 
 ## 八、回归防护机制

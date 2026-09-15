@@ -19,6 +19,46 @@
 
 ## 更新记录
 
+### v1.9.007 — 2026-09-15（开发分支 dev/shell-behavior-smb-perf）
+
+#### 🚀 功能增强：补齐上版查实为「未实现」的三个快捷键
+- **Ctrl+Tab / Ctrl+Shift+Tab 循环切换标签页**（清单 4.3 / 12.3）：到端点回绕（浏览器习惯），
+  只有一个标签页时不异常；走 `setCurrentIndex`，与点击标签页同一条路径（状态保持、
+  标签栏同步都不额外做）。文件菜单新增两项可见菜单项（快捷键不隐藏）
+- **Ctrl+L 聚焦当前窗格路径栏**（清单 3.4 / 12.4）：`PathBar.focus_for_input()` 把现有路径
+  **全文选中**（不是光标置末），按一下就能直接打新路径；窗格已销毁时静默返回
+- **Ctrl+D 切换深色/浅色主题**（清单 11.2 / 11.3 / 12.5）：菜单里两个主题项改为**可勾选**
+  并跟随当前主题（之前看不出现在用的是哪个），菜单项与 Ctrl+D 同源走 `set_theme()`
+- **主题切换现在会持久化**：`set_theme()` 写回 QSettings `theme`。启动时读的就是这个键，
+  不写回去就是“按了 Ctrl+D、重启又跳回去”（设置对话框早就在写，菜单/Ctrl+D 忘了写）
+
+#### 🐛 缺陷修复
+- **Ctrl+Tab 在没注册快捷键时“看上去已经能用”**：`Tab` 是焦点导航键，焦点一落到另一个
+  标签页里的控件，`QStackedLayout` 就跟着焦点换页 —— 但换页按的是**整个窗口焦点链**
+  而不是标签页顺序，一页里有 N 个可聚焦控件时要按 N 次才真翻页（余下几次“按了没反应”），
+  焦点落在哪也完全随机。实测（把 QAction 的键改成 `Ctrl+Alt+Tab` 后真按 Ctrl+Tab）
+  `currentIndex()` 仍然 0 → 1 而 QAction 未触发 —— 只断言索引会把这条假路当成实现
+- 清单表格里 21 行多了一个前导竖线（行首写成两个竖线），渲染出来整表左边多一个
+  空单元格（第 4 / 13 节等），已修正
+
+#### 🧪 测试
+- 新增 `tests/test_nav_shortcuts.py` 9 项：循环与回绕、单标签 noop、真按键事件必须
+  **接到 `QAction.triggered` 计数**（防止靠焦点导航碰巧过的假绿）、路径栏全选、死窗格守卫、
+  主题双向切换 + 持久化 + 菜单打勾、快捷键确实挂在 QAction 上
+- **修掉一个“隔文件污染”**：合成按键（`qtbot.keyClick(..., ControlModifier)`）会把 Ctrl 留在
+  `QApplication.keyboardModifiers()` 里，而 `setCurrentIndex()` 无事件时拿这个全局态算
+  `selectionCommand()` → 把已选行取消，导致不相干的
+  `test_pane_dir_store.py::test_refresh_preserves_selection` 挂掉。现在测试收尾抹回
+  `NoModifier` 并断言（`docs/gotchas.md` 第 32 条）
+- 全量套件：`258 passed / 1 skipped`（0 失败），连续 3 轮 rc=0 无硬崩
+
+#### 📝 文档
+- `docs/gotchas.md` 第 31（`Tab` 系快捷键必须用 QAction 抢在焦点导航前面）、
+  第 32（带修饰键的合成按键漏给后续测试）
+- `docs/feature-checklist.md`（v1.3）：3.4 / 4.3 / 11.2 / 11.3 / 12.3 / 12.4 / 12.5 转 🟢 并填实现位置
+
+---
+
 ### v1.9.006 — 2026-09-15（开发分支 dev/shell-behavior-smb-perf）
 
 #### ✨ 新功能：列表筛选（Ctrl+F）

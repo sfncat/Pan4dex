@@ -437,6 +437,17 @@ class MainWindow(QMainWindow):
         close_tab_action.triggered.connect(self.close_current_tab)
         file_menu.addAction(close_tab_action)
         
+        # 标签页循环切换（浏览器习惯：到端点回绕）
+        next_tab_action = QAction("下一个标签页(&X)", self)
+        next_tab_action.setShortcut(QKeySequence("Ctrl+Tab"))
+        next_tab_action.triggered.connect(self.on_next_tab)
+        file_menu.addAction(next_tab_action)
+
+        prev_tab_action = QAction("上一个标签页(&Z)", self)
+        prev_tab_action.setShortcut(QKeySequence("Ctrl+Shift+Tab"))
+        prev_tab_action.triggered.connect(self.on_prev_tab)
+        file_menu.addAction(prev_tab_action)
+        
         file_menu.addSeparator()
         
         exit_action = QAction("退出(&Q)", self)
@@ -486,6 +497,12 @@ class MainWindow(QMainWindow):
         filter_action.setShortcut(QKeySequence("Ctrl+F"))
         filter_action.triggered.connect(self.on_filter_current_dir)
         edit_menu.addAction(filter_action)
+
+        # 聚焦路径栏（资源管理器习惯：按下即可直接改当前路径）
+        focus_path_action = QAction("编辑路径(&L)", self)
+        focus_path_action.setShortcut(QKeySequence("Ctrl+L"))
+        focus_path_action.triggered.connect(self.on_focus_path_bar)
+        edit_menu.addAction(focus_path_action)
         
         edit_menu.addSeparator()
         
@@ -625,13 +642,25 @@ class MainWindow(QMainWindow):
 
         view_menu.addSeparator()
         
-        dark_theme_action = QAction("深色主题(&D)", self)
+        toggle_theme_action = QAction("切换深色/浅色主题(&D)", self)
+        toggle_theme_action.setShortcut(QKeySequence("Ctrl+D"))
+        toggle_theme_action.triggered.connect(self.toggle_theme)
+        view_menu.addAction(toggle_theme_action)
+        
+        # 两个内置主题作为可勾选项，打勾状态跟随当前主题（否则用户无从得知
+        # 现在到底是哪个）；菜单项与 Ctrl+D 都汇到 `set_theme`
+        dark_theme_action = QAction("深色主题", self)
+        dark_theme_action.setCheckable(True)
         dark_theme_action.triggered.connect(lambda: self.set_theme("dark"))
         view_menu.addAction(dark_theme_action)
+        self.dark_theme_action = dark_theme_action
         
-        light_theme_action = QAction("浅色主题(&L)", self)
+        light_theme_action = QAction("浅色主题", self)
+        light_theme_action.setCheckable(True)
         light_theme_action.triggered.connect(lambda: self.set_theme("light"))
         view_menu.addAction(light_theme_action)
+        self.light_theme_action = light_theme_action
+        self._sync_theme_actions(self.theme_manager.current_theme)
         
         # 工具菜单
         tools_menu = menubar.addMenu("工具(&T)")
@@ -857,6 +886,25 @@ class MainWindow(QMainWindow):
         """关闭当前标签页"""
         self.close_tab(self.tab_widget.currentIndex())
     
+    def _cycle_tab(self, delta: int):
+        """在标签页间循环（到端点回绕，与浏览器一致）
+
+        走 `setCurrentIndex`，因此与点击标签页同一条路径（`currentChanged` →
+        `on_tab_changed`，窗格路径/选中状态本来就在各自 QuadPaneWidget 里）。
+        """
+        count = self.tab_widget.count()
+        if count < 2:
+            return                      # 只有一个标签：没东西可环
+        self.tab_widget.setCurrentIndex((self.tab_widget.currentIndex() + delta) % count)
+
+    def on_next_tab(self):
+        """Ctrl+Tab：下一个标签页"""
+        self._cycle_tab(1)
+
+    def on_prev_tab(self):
+        """Ctrl+Shift+Tab：上一个标签页"""
+        self._cycle_tab(-1)
+    
     def eventFilter(self, obj, event):
         """事件过滤器：检测标签栏空白区域双击"""
         if obj == self.tab_widget and event.type() == event.Type.MouseButtonDblClick:
@@ -961,6 +1009,15 @@ class MainWindow(QMainWindow):
         except RuntimeError:
             pass        # 窗格已销毁（`_active_pane` 可能握着死包装器）：没东西可筛
 
+    def on_focus_path_bar(self):
+        """Ctrl+L：聚焦当前窗格的路径栏并全选现有路径"""
+        pane = self._active_pane
+        try:
+            if pane is not None and hasattr(pane, "path_bar"):
+                pane.path_bar.focus_for_input()
+        except RuntimeError:
+            pass        # 同上：窗格已销毁，没东西可聚焦
+
     def on_select_all(self):
         """全选操作"""
         if self._active_pane:
@@ -1046,11 +1103,29 @@ class MainWindow(QMainWindow):
         self.tab_bar_action.setChecked(self._tab_bar_visible)
     
     def set_theme(self, name: str):
-        """设置主题"""
+        """设置主题（视图菜单、Ctrl+D、设置对话框都汇到这里）"""
         if self.theme_manager.apply_theme(name):
             theme_info = self.theme_manager.get_theme(name)
             display_name = theme_info['display_name'] if theme_info else name
             self.status_bar.showMessage(f"已切换到 {display_name}")
+            # 切换即持久化：启动时读的就是 QSettings "theme"，不写回去会变成
+            # “按 Ctrl+D 切了主题，重启又跳回上一个”（设置对话框早就在写这个键）
+            self.settings.setValue("theme", name)
+            self._sync_theme_actions(name)
+
+    def _sync_theme_actions(self, name: str):
+        """同步菜单里两个主题项的打勾状态（菜单在 `__init__` 里晚于主题应用才建，
+        所以两处都要用 getattr 兜）"""
+        for attr, attr_name in (("dark_theme_action", "dark"),
+                                ("light_theme_action", "light")):
+            act = getattr(self, attr, None)
+            if act is not None:
+                act.setChecked(name == attr_name)
+
+    def toggle_theme(self):
+        """Ctrl+D：在深色/浅色间切换（目前只有两个内置主题）"""
+        current = getattr(self.theme_manager, "current_theme", None) or "dark"
+        self.set_theme("light" if current == "dark" else "dark")
     
     def open_batch_rename(self):
         """打开批量重命名"""

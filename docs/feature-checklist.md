@@ -41,17 +41,17 @@
 | 3.1 | 返回上级目录 | P0 | 🟢 | 点击路径栏上一级按钮或 Alt+Up | 路径栏按钮 + 主窗口 QAction | main_window.py `on_nav_up()` / path_bar.py `go_up()` |
 | 3.2 | 路径自动补全 | P1 | 🟢 | 输入路径时弹出候选；只补当前一层，绝不全盘扫描 | QCompleter + QStringListModel（按需填充） | path_bar.py `_setup_completer()` |
 | 3.3 | 路径历史 | P1 | 🟢 | 后退/前进按钮 + Alt+Left/Right；按窗格各自记史，前进截断正确处理 | 历史栈 `_nav_history` + `_nav_index` | pane.py `go_back()` / `go_forward()` |
-| 3.4 | 快速跳转 | P1 | 🔴 | 未实现（新增待办）：Ctrl+L 聚焦路径栏。路径栏本身可点击输入并回车跳转 | 快捷键 | - |
+| 3.4 | 快速跳转 | P1 | 🟢 | Ctrl+L 聚焦当前窗格路径栏并全选现有路径，直接键入即可跳转 | PathBar.focus_for_input() | main_window.py `on_focus_path_bar()` / path_bar.py |
 
 ## 4. 标签页
 
 | # | 功能 | 优先级 | 状态 | 验证方式 | 说明 | 实现情况 |
 |---|---|---|---|---|---|---|
-|| 4.1 | 多标签页 | P1 | 🟢 | Ctrl+T 新建标签页，每个标签页独立四窗格 | QTabWidget | main_window.py new_tab() |
-|| 4.2 | 关闭标签页 | P1 | 🟢 | Ctrl+W 关闭当前标签页，Tab 栏关闭按钮 | tabCloseRequested | main_window.py close_tab() |
-|| 4.3 | 标签页切换 | P1 | 🟡 | 点击标签栏切换、双击空白新建、双击标签关闭已实现；**Ctrl+Tab 循环切换未实现（新增待办）** | tabBarDoubleClicked + eventFilter | main_window.py |
-|| 4.4 | 标签页状态保持 | P1 | 🟢 | 切换标签页时保留各窗格路径和选中状态 | QuadPaneWidget 独立持有 4 个 Pane | main_window.py |
-|| 4.5 | 标签页重命名 | P1 | 🟢 | 右键标签页 → 重命名（双击标签是关闭，不是重命名） | QInputDialog | main_window.py rename_tab() |
+| 4.1 | 多标签页 | P1 | 🟢 | Ctrl+T 新建标签页，每个标签页独立四窗格 | QTabWidget | main_window.py new_tab() |
+| 4.2 | 关闭标签页 | P1 | 🟢 | Ctrl+W 关闭当前标签页，Tab 栏关闭按钮 | tabCloseRequested | main_window.py close_tab() |
+| 4.3 | 标签页切换 | P1 | 🟢 | 点击标签栏切换、Ctrl+Tab / Ctrl+Shift+Tab 循环（到端点回绕）、双击空白新建、双击标签关闭 | `setCurrentIndex` 走与点击同一条路径 | main_window.py `_cycle_tab()` |
+| 4.4 | 标签页状态保持 | P1 | 🟢 | 切换标签页时保留各窗格路径和选中状态 | QuadPaneWidget 独立持有 4 个 Pane | main_window.py |
+| 4.5 | 标签页重命名 | P1 | 🟢 | 右键标签页 → 重命名（双击标签是关闭，不是重命名） | QInputDialog | main_window.py rename_tab() |
 
 ## 5. 快速预览
 
@@ -75,9 +75,9 @@
 
 | # | 功能 | 优先级 | 状态 | 验证方式 | 说明 | 实现情况 |
 |---|---|---|---|---|---|---|
-|| 7.1 | 终端自动检测 | P1 | 🟢 | 自动检测可用终端（Windows: wt.exe/pwsh.exe, Linux: xdg-mime/配置） | which + 配置回退 | pane.py open_terminal_here() |
-|| 7.2 | 在此处打开终端 | P1 | 🟢 | 右键菜单 → 在当前目录打开终端 | subprocess 启动终端 | pane.py open_terminal_here() |
-|| 7.3 | 终端应用配置 | P2 | 🟢 | 用户可通过 settings.json 指定自定义终端应用 | JSON 配置持久化 | pane.py 读取 settings.json |
+| 7.1 | 终端自动检测 | P1 | 🟢 | 自动检测可用终端（Windows: wt.exe/pwsh.exe, Linux: xdg-mime/配置） | which + 配置回退 | pane.py open_terminal_here() |
+| 7.2 | 在此处打开终端 | P1 | 🟢 | 右键菜单 → 在当前目录打开终端 | subprocess 启动终端 | pane.py open_terminal_here() |
+| 7.3 | 终端应用配置 | P2 | 🟢 | 用户可通过 settings.json 指定自定义终端应用 | JSON 配置持久化 | pane.py 读取 settings.json |
 
 ## 8. 收藏夹
 
@@ -104,17 +104,17 @@
 
 | # | 功能 | 优先级 | 状态 | 验证方式 | 说明 | 实现情况 |
 |---|---|---|---|---|---|---|
-|| 10.1 | 四窗格模式 | P0 | 🟢 | 默认 2×2 四窗格，每个标签页独立 | QSplitter 网格 + QuadPaneWidget | main_window.py switch_to_quad() |
-|| 10.2 | 双窗格模式 | P1 | 🟢 | Ctrl+2 切换到上下双窗格 | 隐藏 pane2/pane4 | main_window.py switch_to_dual() |
-|| 10.3 | 模式切换 | P1 | 🟢 | 菜单或快捷键切换，保留路径状态 | show()/hide() 窗格 | main_window.py |
+| 10.1 | 四窗格模式 | P0 | 🟢 | 默认 2×2 四窗格，每个标签页独立 | QSplitter 网格 + QuadPaneWidget | main_window.py switch_to_quad() |
+| 10.2 | 双窗格模式 | P1 | 🟢 | Ctrl+2 切换到上下双窗格 | 隐藏 pane2/pane4 | main_window.py switch_to_dual() |
+| 10.3 | 模式切换 | P1 | 🟢 | 菜单或快捷键切换，保留路径状态 | show()/hide() 窗格 | main_window.py |
 
 ## 11. 主题系统
 
 | # | 功能 | 优先级 | 状态 | 验证方式 | 说明 | 实现情况 |
 |---|---|---|---|---|---|---|
 | 11.1 | 系统主题 | P1 | 🟢 | 跟随桌面环境主题 | QApplication 默认样式 | theme_manager.py |
-| 11.2 | 深色主题 | P1 | 🟢 | 视图菜单 → 「深色主题」（无 Ctrl+D 快捷键，见 12.5） | qdarkstyle 样式表 | theme_manager.py apply_theme() |
-| 11.3 | 浅色主题 | P2 | 🟢 | 视图菜单 → 「浅色主题」 | 写死的浅色 QSS | theme_manager.py apply_theme() |
+| 11.2 | 深色主题 | P1 | 🟢 | 视图菜单→「深色主题」（可勾选，打勾跟随当前主题）或 Ctrl+D 切到深色 | qdarkstyle 样式表 | theme_manager.py apply_theme() |
+| 11.3 | 浅色主题 | P2 | 🟢 | 视图菜单→「浅色主题」或 Ctrl+D；切换写回 QSettings，重启后保持 | 写死的浅色 QSS | theme_manager.py apply_theme() |
 | 11.4 | 自定义主题接口 | P2 | 🔴 | 未实现：主题只有内置 dark/light 两项，无 JSON 保存/导入导出 | 需先定「主题包」的文件格式 | tests/test_m4_theme.py `test_no_custom_theme_persistence_api` 卡住这个事实 |
 | 11.5 | 主题热切换 | P1 | 🟢 | 切换主题无需重启 | QSS 动态加载 | theme_manager.py apply_theme() |
 
@@ -127,9 +127,9 @@
 |---|---|---|---|---|---|---|
 | 12.1 | Ctrl+T 新建标签页 | P1 | 🟢 | 按下后新建一个完整四窗格标签页 | 文件菜单 QAction | main_window.py `new_tab()` |
 | 12.2 | Ctrl+W 关闭标签页 | P1 | 🟢 | 按下后关闭当前标签页（最后一个不关窗口） | 文件菜单 QAction | main_window.py `close_current_tab()` |
-| 12.3 | Ctrl+Tab 切换标签页 | P1 | 🔴 | 未实现（新增待办）：目前只能点击标签栏切换 | - | - |
-| 12.4 | Ctrl+L 聚焦路径栏 | P1 | 🔴 | 未实现（新增待办，见 3.4） | - | - |
-| 12.5 | Ctrl+D 切换主题 | P2 | 🔴 | 未实现（新增待办）：主题切换实际在视图菜单 | - | - |
+| 12.3 | Ctrl+Tab 切换标签页 | P1 | 🟢 | 真按键能切；单标签时不异常（另见 Ctrl+Shift+Tab 反向） | 文件菜单 QAction + `_cycle_tab(±1)` | main_window.py `on_next_tab()` |
+| 12.4 | Ctrl+L 聚焦路径栏 | P1 | 🟢 | 按下后路径全文选中（见 3.4） | 编辑菜单 QAction | main_window.py `on_focus_path_bar()` |
+| 12.5 | Ctrl+D 切换主题 | P2 | 🟢 | 深浅互切，菜单打勾与 QSettings 同步更新 | 视图菜单 QAction | main_window.py `toggle_theme()` |
 | 12.6 | Ctrl+4 四窗格模式 | P1 | 🟢 | 切换到四窗格模式 | 视图菜单 QAction | main_window.py `switch_to_quad()` |
 | 12.7 | Ctrl+2 双窗格模式 | P1 | 🟢 | Ctrl+2 上下双窗格、Ctrl+Shift+2 横向、Ctrl+5/Ctrl+6 上2下1/上1下2 | 视图菜单 QAction | main_window.py `switch_to_dual*()` |
 | 12.8 | F3 预览面板 | P2 | 🟢 | 切换右侧预览面板显示（可勾选项） | 视图菜单 QAction | main_window.py `toggle_preview()` |
@@ -148,16 +148,16 @@
 
 | # | 功能 | 优先级 | 状态 | 验证方式 | 说明 | 实现情况 |
 |---|---|---|---|---|---|---|
-|| 13.1 | 打开 | P0 | 🟢 | 双击或右键打开文件 | 按配置应用打开 | pane.py open_selected() |
-|| 13.2 | 复制 | P0 | 🟢 | 右键复制，然后到目标窗格粘贴 | 剪贴板机制 | pane.py copy_selected() |
-|| 13.3 | 剪切 | P0 | 🟢 | 右键剪切 | 剪贴板机制 | pane.py cut_selected() |
-|| 13.4 | 粘贴 | P0 | 🟢 | 右键粘贴到当前目录 | 剪贴板机制 | pane.py paste() |
-|| 13.5 | 删除 | P0 | 🟢 | 右键删除到回收站 | send2trash | pane.py delete_selected() |
-|| 13.6 | 重命名 | P0 | 🟢 | 右键重命名 | 内联编辑 | pane.py rename_selected() |
-|| 13.7 | 新建文件夹 | P1 | 🟢 | 右键新建文件夹 | os.makedirs | pane.py create_folder() |
-|| 13.8 | 新建文件 | P1 | 🟢 | 右键新建文件 | open(path, 'w') | pane.py create_file() |
-|| 13.9 | 打开终端 | P1 | 🟢 | 右键在当前目录打开终端 | subprocess | pane.py open_terminal_here() |
-|| 13.11 | 添加到收藏夹 | P2 | 🟢 | 选中目录后右键添加到收藏夹 | BookmarkSidebar.add_bookmark_with_path() | pane.py |
+| 13.1 | 打开 | P0 | 🟢 | 双击或右键打开文件 | 按配置应用打开 | pane.py open_selected() |
+| 13.2 | 复制 | P0 | 🟢 | 右键复制，然后到目标窗格粘贴 | 剪贴板机制 | pane.py copy_selected() |
+| 13.3 | 剪切 | P0 | 🟢 | 右键剪切 | 剪贴板机制 | pane.py cut_selected() |
+| 13.4 | 粘贴 | P0 | 🟢 | 右键粘贴到当前目录 | 剪贴板机制 | pane.py paste() |
+| 13.5 | 删除 | P0 | 🟢 | 右键删除到回收站 | send2trash | pane.py delete_selected() |
+| 13.6 | 重命名 | P0 | 🟢 | 右键重命名 | 内联编辑 | pane.py rename_selected() |
+| 13.7 | 新建文件夹 | P1 | 🟢 | 右键新建文件夹 | os.makedirs | pane.py create_folder() |
+| 13.8 | 新建文件 | P1 | 🟢 | 右键新建文件 | open(path, 'w') | pane.py create_file() |
+| 13.9 | 打开终端 | P1 | 🟢 | 右键在当前目录打开终端 | subprocess | pane.py open_terminal_here() |
+| 13.11 | 添加到收藏夹 | P2 | 🟢 | 选中目录后右键添加到收藏夹 | BookmarkSidebar.add_bookmark_with_path() | pane.py |
 
 ---
 
@@ -258,8 +258,9 @@
 | 2026-08-26 | 初始版本，列出全部功能 | - |
 | 2026-08-28 | 更新标签页、目录树、终端、四窗格等功能状态；新增标签页重命名、活动窗格跟踪 | - |
 | 2026-09-15 | 校正与代码不符的状态：筛选（9.1–9.7）本版接通；永久删除/重命名/取消/导航历史/路径补全改 🟢；Ctrl+Tab、Ctrl+L、Ctrl+D、自定义主题接口查实为未实现（原标 🟢 的「Ctrl+D 切主题」等为假）；新增 12.13–12.18 已实现快捷键；补上清单遗漏的 1.8 列头排序 | - |
+| 2026-09-15 | 上一行查实为未实现的三项做完并转 🟢：3.4 / 12.4（Ctrl+L）、4.3 / 12.3（Ctrl+Tab 与 Ctrl+Shift+Tab）、12.5（Ctrl+D，连带主题持久化）；顺手修正表格 21 行多余前导竖线 | - |
 
 ---
 
-**文档版本**：v1.2  
+**文档版本**：v1.3  
 **最后更新**：2026-09-15
