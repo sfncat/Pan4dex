@@ -217,6 +217,15 @@ ssh sshuser@192.168.5.55 'cmd /c "taskkill /F /IM pan4dex* /T 2>nul & timeout /t
 - **不要把 Qt 对象的生死交给分代 GC**：`removeTab` 之后必须握住 Python 引用（如
   `MainWindow._closed_tabs`）再 `deleteLater()`，否则信号→绑定方法构成的引用环一被回收就当场
   `delete` C++ 并级联拆光子树，销毁时机变成“任意 Python 分配点”（见 `docs/gotchas.md` 第 28 条）
+- **列表筛选只用一层代理**：条件由 `widgets/filter_bar.py:compile_filter()` 编译成 `EntryFilter`，
+  在已有的 `PaneSortProxyModel.filterAcceptsRow` 里生效（排序与过滤同一代理，不叠第二层，
+  也不重扫目录）；`filterAcceptsRow` 里**禁止** `stat`/`isdir` 等碰磁盘的调用，只用 `Entry`
+  已缓存的 `name`/`is_dir`/`size`/`mtime`；筛选语义对齐资源管理器：只筛当前目录、不递归、
+  不影响“隐藏文件”规则（见 `docs/gotchas.md` 第 29、30 条）
+- **排序比较也只读条目缓存属性**：`lessThan` 一次排序跑 O(n log n) 次比较，里面一个
+  `os.path.isdir()` 就能把 SMB 大目录的延时按比较次数乘回去；大小/日期必须按
+  `Entry.size`/`Entry.mtime` 比，不能比格式化字符串（“4.0 KB” 字典序小于 “5 B”）；
+  “目录优先”在**两个方向**都要保持，降序只反转同类内部顺序
 - 两个侧边目录树（`widgets/pane_tree_view.py` / `widgets/tree_sidebar.py`）仍用 `QFileSystemModel`（按需展开，非瓶颈）
 - 每个标签页持有独立的 `QuadPaneWidget`（包含 4 个 Pane）
 - 跨窗格拖拽使用自定义 MIME 类型 `application/x-pan4dex-drag`

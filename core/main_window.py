@@ -480,6 +480,12 @@ class MainWindow(QMainWindow):
         rename_action.setShortcut(QKeySequence("F2"))
         rename_action.triggered.connect(self.on_rename)
         edit_menu.addAction(rename_action)
+
+        # 筛选当前窗格的目录列表（与「高级搜索」不同：不递归、不开对话框）
+        filter_action = QAction("筛选当前目录(&I)…", self)
+        filter_action.setShortcut(QKeySequence("Ctrl+F"))
+        filter_action.triggered.connect(self.on_filter_current_dir)
+        edit_menu.addAction(filter_action)
         
         edit_menu.addSeparator()
         
@@ -945,6 +951,15 @@ class MainWindow(QMainWindow):
         """重命名操作"""
         if self._active_pane:
             self._active_pane.rename_selected()
+
+    def on_filter_current_dir(self):
+        """唤出当前窗格的筛选栏（Ctrl+F）：只筛当前目录，全盘搜索走「高级搜索」"""
+        pane = self._active_pane
+        try:
+            if pane is not None and hasattr(pane, "show_filter_bar"):
+                pane.show_filter_bar()
+        except RuntimeError:
+            pass        # 窗格已销毁（`_active_pane` 可能握着死包装器）：没东西可筛
 
     def on_select_all(self):
         """全选操作"""

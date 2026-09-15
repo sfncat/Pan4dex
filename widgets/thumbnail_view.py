@@ -117,6 +117,9 @@ class ThumbnailView(QListWidget):
         self._thumbnail_cache = OrderedDict()
         self._loading = set()
         self._item_map = {}  # path -> QListWidgetItem，O(1) 查找
+        # 列表筛选条件（`widgets.filter_bar.EntryFilter`）：本视图自己扫目录，
+        # 所以筛选得在这条枚举路径上再过一道，否则超大图标视图与列表不一致
+        self._entry_filter = None
         
         self._thread_pool = QThreadPool()
         self._thread_pool.setMaxThreadCount(4)
@@ -132,6 +135,12 @@ class ThumbnailView(QListWidget):
         self._scroll_timer.setInterval(200)
         self._scroll_timer.timeout.connect(self._start_lazy_load)
     
+    def set_entry_filter(self, entry_filter):
+        """装上/摘掉筛选条件；正显示着时立即重列，藏着时等下一次 `load_directory` 自取"""
+        self._entry_filter = entry_filter if (entry_filter and entry_filter.active) else None
+        if self._current_path and self.isVisible():
+            self.load_directory(self._current_path)
+
     def load_directory(self, path: str):
         logger.info(f"[DEBUG] load_directory START: {path}")
         t0 = time.perf_counter()
@@ -145,10 +154,30 @@ class ThumbnailView(QListWidget):
         self._current_path = path
         
         try:
+            filt = self._entry_filter
+            # 名称/扩展名/类型只需 name+is_dir；只有 size/date 条件才补一次 stat
+            # （本视图不靠模型的枚举快照，无信息可偷；网络盘上这一步要提醒用户）
+            need_stat = bool(filt) and filt.needs_stat
             entries = []
             with os.scandir(path) as it:
                 for entry in it:
-                    entries.append((entry.name, entry.is_dir()))
+                    try:
+                        is_dir = entry.is_dir()
+                    except OSError:
+                        is_dir = False
+                    if filt is not None:
+                        if need_stat:
+                            try:
+                                st = entry.stat()
+                                size = -1 if is_dir else st.st_size
+                                mtime = st.st_mtime
+                            except OSError:
+                                size, mtime = -1, 0.0
+                        else:
+                            size, mtime = -1, 0.0
+                        if not filt.matches(entry.name, is_dir, size, mtime):
+                            continue
+                    entries.append((entry.name, is_dir))
             # 目录优先，再按名称排序
             entries.sort(key=lambda x: (not x[1], x[0].lower()))
 

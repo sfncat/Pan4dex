@@ -33,7 +33,7 @@
 | 模块 | 职责 |
 |---|---|
 | `main_window.py` | 主窗口管理、标签页、布局切换、菜单栏、状态栏 |
-| `pane.py` | 单个窗格的完整功能：路径栏、文件列表、导航、上下文菜单 |
+| `pane.py` | 单个窗格的完整功能：路径栏、文件列表、导航、上下文菜单；持有 `PaneSortProxyModel`（排序 + 筛选同一个代理）与 `FilterBar`（Ctrl+F 唤出，状态栏显示「筛选后 M / N 项」） |
 | `dir_model.py` | `DirStoreModel`：以目录为单位的异步文件模型（后台枚举走限流专用线程池 `dir_pool()` + TTL 缓存 + 定向失效；只给**当前显示的本地目录**挂 `QFileSystemWatcher` 自动重扫，监视器是全进程唯一的 `_WatchHub`，网络目录不挂），文件列表专用 |
 | `lifecycle.py` | `call_later(obj, ms, fn)`：以业务对象为父的延后回调，避免 `QTimer.singleShot` 在对象销毁后回调已删除子对象；`exec_and_drain(app)` / `drain_background_pool()`：退出时排空后台线程，避免未派发的跨线程投递在解释器收尾阶段被释放（退码 0xC0000409） |
 | `file_operations.py` | 文件复制/移动/删除/重命名，支持进度回调和取消 |
@@ -47,7 +47,7 @@
 | `path_bar.py` | 可编辑路径栏，支持自动补全、历史下拉、书签按钮 |
 | `preview_panel.py` | 快速预览面板：文本显示、语法高亮、图片缩略图 |
 | `bookmark_sidebar.py` | 收藏夹侧边栏，支持拖拽添加、分组管理 |
-| `filter_bar.py` | 筛选栏，按扩展名/日期/大小过滤 |
+| `filter_bar.py` | 筛选栏 UI（字段下拉 + 250ms 防抖 + Esc/行内 ✕ 清除）与**查询编译器** `compile_filter()` → `EntryFilter`：名称包含、`*.log` 通配符、`ext:`/`date:`/`size:`/`type:`/`is:`/`re:`（中英字段别名），条件编译一次、逐行只做内存比较；筛选在 `PaneSortProxyModel.filterAcceptsRow` 生效（不叠第二层代理、不发行信号），解析不了的条件降级为名称包含并在状态栏提示 |
 
 ### 2.3 config/ — 配置管理
 

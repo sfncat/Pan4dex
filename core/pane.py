@@ -18,6 +18,7 @@ import sys
 
 from widgets.path_bar import PathBar
 from widgets.pane_tree_view import PaneTreeView
+from core.dir_model import Entry, COL_DATE, COL_SIZE
 from core.file_operations import FileOperations, FileOperationType, FileOperationResult, _is_network_path
 from core import archive_ops
 from core.lifecycle import call_later
@@ -37,42 +38,97 @@ class PaneSortProxyModel(QSortFilterProxyModel):
     同时保持“目录优先”的文件管理器习惯排序。
 
     「拍摄日期」列（第 4 列）由源模型直接提供，本代理只需按字符串比较。
+
+    本代理还承担**列表筛选**：`set_entry_filter` 装上 `widgets.filter_bar.EntryFilter`
+    后按条件隐藏不匹配的行（只筛当前目录、不递归）。刻意不再叠第二层
+    `QSortFilterProxyModel`：两层代理就是两次索引映射，而本模型只有「一个顶层
+    节点 + 其条目」两层，多一层映射多一处错行风险（见 `dir_model._index_for_path`）。
     """
 
     SHOT_DATE_COLUMN = 4  # 拍摄日期列（源模型第 4 列）
 
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._entry_filter = None
+
+    def set_entry_filter(self, entry_filter):
+        """装上/摘掉筛选条件（`None` 或不生效的条件＝无筛选），并让视图重算可见行。
+
+        筛选只影响可见行，不动模型数据：不重扫目录、不增行信号（行信号是本
+        项目崩溃率的主因，见 `docs/unsolved-issues.md` 问题 13）。
+        """
+        self._entry_filter = entry_filter if (entry_filter and entry_filter.active) else None
+        self.invalidateFilter()
+
+    def entry_filter(self):
+        return self._entry_filter
+
+    def _entry(self, index):
+        """取索引背后的 `Entry`（非本模型条目/顶层节点返回 None）。
+
+        `QSortFilterProxyModel::lessThan` 传入的 left/right 是「源模型索引」
+        （而非代理索引），`internalPointer()` 直接可用，不需要 mapToSource。
+
+        排序比较一律只读枚举时已缓存的条目属性，**不得**回退到
+        `os.path.isdir()`/`stat()`：`lessThan` 一次排序要跑 O(n log n) 次比较，
+        大目录（尤其 SMB）上等于把磁盘/网络往返按比较次数乘回去，就是
+        “点一下列头排序界面停一下”的直接成因（与 `filterAcceptsRow` 同一条
+        约束，见 `docs/gotchas.md` 第 29 条）。旧版 `_is_dir()` 就是这么写的，已删。
+        """
+        if index is None or not index.isValid():
+            return None
+        try:
+            e = index.internalPointer()
+        except Exception:
+            return None
+        return e if isinstance(e, Entry) else None
+
+    def filterAcceptsRow(self, source_row, source_parent):
+        f = self._entry_filter
+        if f is None:
+            return True
+        src = self.sourceModel()
+        if src is None:
+            return True
+        idx = src.index(source_row, 0, source_parent)
+        e = self._entry(idx)
+        if e is None:
+            return True                 # 顶层目录节点本身（视图把它当根）不参与筛选
+        # 条件已在 `compile_filter` 里编译好：这里只做内存比较，不 stat、不碰网络
+        return f.matches(e.name, e.is_dir, e.size, e.mtime)
+
     def lessThan(self, left, right):
         col = left.column()
+        le, re = self._entry(left), self._entry(right)
+        if le is not None and re is not None:
+            # 目录始终排在文件前面：降序时也只能反转同类内部顺序
+            # （否则点一下「大小」倒序，所有文件夹就跑到最后去了）
+            if le.is_dir != re.is_dir:
+                if self.sortOrder() == Qt.SortOrder.AscendingOrder:
+                    return le.is_dir
+                return re.is_dir
+            if col == COL_SIZE:
+                # 按**字节数**比，不按格式化字符串（旧比较把
+                # “4.0 KB” 排在“5 B” 前面，大目录上大小列基本是乱的）；
+                # 目录没大小，并列时按名称（与资源管理器一致）
+                if le.is_dir:
+                    return le.name.lower() < re.name.lower()
+                return le.size < re.size
+            if col == COL_DATE:
+                return le.mtime < re.mtime
         # 拍摄日期列：按字符串比较（无拍摄日期的排最后）
         if col == self.SHOT_DATE_COLUMN:
             l = left.data(Qt.ItemDataRole.DisplayRole) or ""
             r = right.data(Qt.ItemDataRole.DisplayRole) or ""
             if l != r:
                 return l < r
-        # 目录始终排在文件前面（任意列排序都保持）
-        l_is_dir = self._is_dir(left)
-        r_is_dir = self._is_dir(right)
-        if l_is_dir != r_is_dir:
-            return l_is_dir
         # 名称列：不区分大小写
         if col == 0:
-            return left.data(Qt.ItemDataRole.DisplayRole).lower() < right.data(Qt.ItemDataRole.DisplayRole).lower()
-        # 其他列（大小/类型/修改时间/拍摄日期相同值）用默认比较
+            l = left.data(Qt.ItemDataRole.DisplayRole) or ""
+            r = right.data(Qt.ItemDataRole.DisplayRole) or ""
+            return l.lower() < r.lower()
+        # 其他列（类型/拍摄日期相同值）用默认比较
         return super().lessThan(left, right)
-
-    def _is_dir(self, index):
-        """判断是否为目录。
-
-        注意：QSortFilterProxyModel::lessThan 传入的 left/right 是「源模型索引」
-        （而非代理索引），因此直接经 sourceModel().filePath 取路径，不能 mapToSource。
-        """
-        try:
-            if self.sourceModel() is None or index is None or not index.isValid():
-                return False
-            path = self.sourceModel().filePath(index)
-            return bool(path) and os.path.isdir(path)
-        except Exception:
-            return False
 
 
 class _NameRenameDelegate(QStyledItemDelegate):
@@ -138,6 +194,11 @@ class FileListTreeView(QTreeView):
         self._pane.dropEvent(event)
 
     def keyPressEvent(self, event):
+        # Ctrl+F：唤出本窗格筛选栏（资源管理器习惯：搜索框只筛当前目录）
+        if (event.key() == Qt.Key.Key_F
+                and event.modifiers() & Qt.KeyboardModifier.ControlModifier):
+            self._pane.show_filter_bar()
+            return
         # Shift+Delete 永久删除（Windows 习惯）；普通 Delete 不在此拦截，
         # 仍由主窗口 QAction(Delete) → delete_selected 走回收站路径，
         # 避免两条入口同时触发弹两次确认框
@@ -187,6 +248,9 @@ class Pane(QWidget):
         
         # 拖拽起始位置
         self.drag_start_pos = None
+
+        # 筛选：无法解析的条件片段（状态栏提示用，不弹错）
+        self._filter_bad = ()
         
         # 创建 UI
         self.init_ui()
@@ -307,6 +371,14 @@ class Pane(QWidget):
         self.file_list_layout = QVBoxLayout(self.file_list_widget)
         self.file_list_layout.setContentsMargins(0, 0, 0, 0)
         self.file_list_layout.setSpacing(0)
+
+        # 筛选栏（默认隐藏，Ctrl+F 唤出）：必须在 tree_view 之前加入，才能排在列表上方
+        from widgets.filter_bar import FilterBar
+        self.filter_bar = FilterBar(self)
+        self.filter_bar.setVisible(False)
+        self.filter_bar.filter_changed.connect(self._on_filter_changed)
+        self.filter_bar.escape_pressed.connect(self.hide_filter_bar)
+        self.file_list_layout.addWidget(self.filter_bar)
 
         # 文件列表
         self.tree_view = FileListTreeView(self)
@@ -1102,7 +1174,7 @@ class Pane(QWidget):
         """
         try:
             n = len([i for i in self.tree_view.selectedIndexes() if i.column() == 0])
-            base = getattr(self, '_status_summary', '') or ''
+            base = (getattr(self, '_status_summary', '') or '') + self._filter_suffix()
             if n:
                 self.status_label.setText(f"{base}    已选 {n} 项" if base else f"已选 {n} 项")
             elif base:
@@ -1110,6 +1182,55 @@ class Pane(QWidget):
         except Exception:
             pass
     
+    # ---- 列表筛选（Ctrl+F）----
+    def show_filter_bar(self):
+        """唤出筛选栏并聚焦输入框（已有条件保留，可接着改）"""
+        self.filter_bar.setVisible(True)
+        self.filter_bar.focus_input()
+
+    def hide_filter_bar(self):
+        """收起筛选栏：连条件一并清掉 —— 输入框藏起来而条件还在，用户只会得到
+        「列表凭空少了一半」的困惑（与资源管理器一致：Esc 清空搜索框）。"""
+        self.filter_bar.setVisible(False)
+        self.filter_bar.clear_filter()
+
+    def _on_filter_changed(self, query: str):
+        """筛选文本 → 编译 → 交给排序代理过滤（空串＝摘掉）。
+
+        只重算可见行：不重扫目录、不发行信号，因此不会扞动目录枚举与缓存。
+        筛选在导航后保留（输入框就在列表上方、一眼看得见，右上角还有 ✕）。
+        """
+        from widgets.filter_bar import compile_filter
+        try:
+            entry_filter = compile_filter(query)
+            self._filter_bad = entry_filter.bad
+            proxy = getattr(self, "sort_proxy", None)
+            if proxy is not None and not sip.isdeleted(proxy):
+                proxy.set_entry_filter(entry_filter)
+            thumbs = getattr(self, "thumbnail_view", None)
+            if thumbs is not None and not sip.isdeleted(thumbs):
+                thumbs.set_entry_filter(entry_filter)   # 超大图标视图同步，保持两视图一致
+            self._update_selection_status()
+        except RuntimeError:
+            pass                       # 筛选信号在窗格销毁后才到达（防抖定时器已停但仍可越界）
+
+    def _filter_suffix(self) -> str:
+        """状态栏后缀「筛选后 M / N 项」：行数只问代理与模型，不额外扫盘"""
+        try:
+            if not self.filter_bar.query():
+                return ""
+            root = self.tree_view.rootIndex()
+            proxy = self.sort_proxy
+            visible = proxy.rowCount(root)
+            total = self.model.rowCount(proxy.mapToSource(root))
+            text = f"    筛选后 {visible} / {total} 项"
+            bad = getattr(self, "_filter_bad", ())
+            if bad:
+                text += f"（条件未识别：{' '.join(bad)}）"
+            return text
+        except (RuntimeError, AttributeError):
+            return ""
+
     def update_status_bar(self):
         """更新状态栏
 
@@ -1318,6 +1439,20 @@ class Pane(QWidget):
             menu.addAction(paste_action)
             
             menu.addSeparator()
+            
+            # 筛选当前目录：Ctrl+F 的鼠标入口（不熟键盘快捷键的人也要能找到）。
+            # 已有条件时这一项直接变成「清除筛选」，而不是仍叫「筛选…」却暗地里清掉条件
+            if getattr(self, 'filter_bar', None) is not None:
+                if self.filter_bar.query():
+                    clear_filter_action = QAction("清除筛选(&E)", self)
+                    clear_filter_action.triggered.connect(self.filter_bar.clear_filter)
+                    menu.addAction(clear_filter_action)
+                else:
+                    filter_action = QAction("筛选当前目录(&L)… Ctrl+F", self)
+                    filter_action.triggered.connect(self.show_filter_bar)
+                    menu.addAction(filter_action)
+                
+                menu.addSeparator()
             
             new_tab_action = QAction("新建标签页(&T)", self)
             new_tab_action.triggered.connect(lambda: self.add_pane_tab())

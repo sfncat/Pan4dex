@@ -503,6 +503,48 @@ widget.deleteLater()
 
 ---
 
+### 29. 筛选只改“可见行”：别叠第二层代理，也别在过滤判断里碰磁盘
+
+**背景**：新模型（`DirStoreModel`）把目录内容挂在 `Entry` 对象上，窗格已经有一个
+`PaneSortProxyModel` 做排序。加“按名称/扩展名/日期/大小筛选”时，最顺手的写法是
+再叠一层 `QSortFilterProxyModel`（旧 `widgets/filter_bar.py` 里就躺着这么一个未被引用的
+`FilterProxyModel`，它依赖 `sourceModel().fileName(index)`，新模型根本没这个方法）。
+
+**为何不这样写**：
+1. **两层代理 = 两次索引映射**。本模型只有“一个顶层节点 + 条目”两层，视图/代理/源模型
+   之间的 mapping 越长，错行、`internalPointer()` 拿到意外类型、选中恢复找不到行这些风险
+   叠得越多。排序和过滤本来就是同一个视图层职责，合并进 `filterAcceptsRow` 即可。
+2. **`filterAcceptsRow` 每轮重筛会对每一行都跑一遍**，在里面 `os.stat()`/`os.path.isdir()`
+   等于把 SMB 目录的延迟按行数乘回来（大目录上万行 × 网络往返）。条目上的
+   `size`/`mtime`/`is_dir` 在枚举时已经缓存，筛选必须只吃内存里的字段。
+3. **筛选不得发行信号**。本仓崩溃率的主因是行信号量（见 `docs/unsolved-issues.md` 问题 13），
+   而过滤只该改 `QAbstractItemView` 的 hidden 状态 —— `invalidateFilter()` 不增删行，
+   正是想要的语义。因此“源模型 `rowCount` 在筛选前后不变”写进了测试（
+   `tests/test_filter_bar.py::test_proxy_hides_rows_that_do_not_match`），防止哪天“优化”成重建模型。
+
+**顺手一个易漏点**：超大图标视图（`ThumbnailView`）不走这个代理，它自己枚举。要么让它
+接受同一个 `EntryFilter`（已做），要么会出现“列表筛过了、图标视图还是全量”的不一致。
+它拿不到缓存属性时才用 `entry.stat()` 补，且只在条件真含 size/date 时（`EntryFilter.needs_stat`）。
+
+**同一条约束也适用于 `lessThan`（而且更严格）**：一次排序要做 O(n log n) 次比较，
+旧 `PaneSortProxyModel._is_dir()` 每次比较一个 `os.path.isdir(filePath)` —— “点一下列头
+排序界面停一下”就是这么来的（SMB 上按比较次数乘网络延时）。现在排序与过滤一样只读
+`Entry` 缓存属性，代理里**不存在**任何碰磁盘的代码路径（旧 `_is_dir()` 已删，
+`tests/test_filter_bar.py::test_sorting_does_not_touch_the_filesystem` 把 `os.path.isdir`
+换成计数器后断言一次排序也没调用过）。
+
+### 30. “清除”必须无条件补发一次空条件
+
+**现象**：筛选栏有 250ms 防抖。用户连续输入后马上点行内 ✕，旧写法是“清空文本，
+等防抖定时器触发”，结果 `_last_query` 已是新值、和空串比较后认为“没变化”而不发信号
+—— 输入框空了，列表还是筛过的状态（比“没筛”更难诊断，因为用户看见的就是“没筛”）。
+
+**写法**：`clear_filter()` 先 `stop()` 防抖定时器，再清文本，最后 `_emit("", force=True)`；
+`_emit(query, force=False)` 只有在 `force` 或“文本真变了”时发射。任何“手动清零”的入口
+（Esc、右键菜单“清除筛选”）都走 `clear_filter()`，不要直接 `lineEdit.clear()`。
+
+---
+
 ## 八、回归防护机制
 
 ### 部署脚本

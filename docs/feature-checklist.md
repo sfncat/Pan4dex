@@ -17,6 +17,7 @@
 | 1.5 | 窗格底部进度条 | P0 | 🟢 | 文件操作时在窗格底部显示进度条 | QProgressBar 内嵌窗格底部 | pane.py |
 | 1.6 | 拖拽目标高亮 | P0 | 🟢 | 跨窗格拖拽时目标窗格边框高亮（蓝色） | QSS 动态样式 | pane.py dragEnterEvent |
 | 1.7 | 主窗口框架 | P0 | 🟢 | 菜单栏、工具栏、状态栏、QDockWidget 区域 | QMainWindow | main_window.py |
+| 1.8 | 列头排序 | P0 | 🟢 | 点「名称/大小/修改日期」列头切换升降序；**任一方向下目录都排在文件前**；大小按字节数而非“4.0 KB”字符串 | `PaneSortProxyModel.lessThan` 只读条目缓存属性（不 stat、不碰网络） | pane.py |
 
 ## 2. 文件操作
 
@@ -25,11 +26,11 @@
 | 2.1 | 复制文件 | P0 | 🟢 | 跨窗格拖拽复制，进度条显示，完成后目标窗格刷新 | shutil.copy2 + QThread | file_operations.py copy() |
 | 2.2 | 移动文件 | P0 | 🟢 | 窗格内拖拽移动，或 Shift+跨窗格拖拽 | shutil.move + QThread | file_operations.py move() |
 | 2.3 | 安全删除 | P0 | 🟢 | 右键删除 → 文件进入回收站，可恢复 | send2trash | file_operations.py delete() |
-| 2.4 | 永久删除 | P1 | 🔴 | Shift+Delete 直接删除，不可恢复 | os.remove / os.rmdir | - |
-| 2.5 | 重命名 | P0 | 🟢 | 右键重命名，QTreeView 内联编辑 | os.rename | file_operations.py rename() |
+| 2.4 | 永久删除 | P1 | 🟢 | Shift+Delete 直接删除（确认框明写「不可恢复」） | 走 `delete(safe=False)`；网络位置本就无回收站，文案同样区分 | pane.py `FileListTreeView.keyPressEvent` → `_delete_paths(permanent=True)` |
+| 2.5 | 重命名 | P0 | 🟢 | F2 / 右键重命名 → 行内编辑，提交走模型 setData | 新模型条目带 ItemIsEditable，内建触发器关掉以免误编辑 | pane.py `rename_selected()` |
 | 2.6 | 新建文件夹 | P1 | 🟢 | 右键菜单 → 新建文件夹，自动进入重命名 | os.makedirs | file_operations.py create_folder() |
 | 2.7 | 新建文件 | P1 | 🟢 | 右键菜单 → 新建空文件 | open(path, 'w') | file_operations.py create_file() |
-| 2.8 | 复制/移动取消 | P1 | 🔴 | 进度条显示取消按钮，点击后中止操作 | QThread 安全终止 | - |
+| 2.8 | 复制/移动取消 | P1 | 🟢 | 独立进度对话框带取消；统计阶段也检查取消标志（SMB 大目录不会卡到跑完） | `cancel_requested` → `file_ops.cancel()` | widgets/progress_dialog.py / file_operations.py |
 | 2.9 | 跨窗格拖拽复制 | P0 | 🟢 | 从 pane A 拖拽文件到 pane B，B 中高亮边框，松手复制 | 自定义 MIME 类型 | pane.py mouseMoveEvent/dropEvent |
 | 2.10 | 跨窗格拖拽移动 | P0 | 🟢 | Shift+拖拽从 A 到 B，源文件消失，目标出现 | 自定义 MIME 类型 | pane.py mouseMoveEvent/dropEvent |
 
@@ -37,10 +38,10 @@
 
 | # | 功能 | 优先级 | 状态 | 验证方式 | 说明 | 实现情况 |
 |---|---|---|---|---|---|---|
-| 3.1 | 返回上级目录 | P0 | 🔴 | 点击按钮或 Alt+Up 返回上级 | QFileSystemModel.setRootPath | - |
-| 3.2 | 路径自动补全 | P1 | 🔴 | 输入路径时弹出匹配列表 | QCompleter + QDir | - |
-| 3.3 | 路径历史 | P1 | 🔴 | 前进/后退按钮，记录导航历史 | 历史栈 | - |
-| 3.4 | 快速跳转 | P1 | 🔴 | Ctrl+L 聚焦路径栏 | 快捷键 | - |
+| 3.1 | 返回上级目录 | P0 | 🟢 | 点击路径栏上一级按钮或 Alt+Up | 路径栏按钮 + 主窗口 QAction | main_window.py `on_nav_up()` / path_bar.py `go_up()` |
+| 3.2 | 路径自动补全 | P1 | 🟢 | 输入路径时弹出候选；只补当前一层，绝不全盘扫描 | QCompleter + QStringListModel（按需填充） | path_bar.py `_setup_completer()` |
+| 3.3 | 路径历史 | P1 | 🟢 | 后退/前进按钮 + Alt+Left/Right；按窗格各自记史，前进截断正确处理 | 历史栈 `_nav_history` + `_nav_index` | pane.py `go_back()` / `go_forward()` |
+| 3.4 | 快速跳转 | P1 | 🔴 | 未实现（新增待办）：Ctrl+L 聚焦路径栏。路径栏本身可点击输入并回车跳转 | 快捷键 | - |
 
 ## 4. 标签页
 
@@ -48,9 +49,9 @@
 |---|---|---|---|---|---|---|
 || 4.1 | 多标签页 | P1 | 🟢 | Ctrl+T 新建标签页，每个标签页独立四窗格 | QTabWidget | main_window.py new_tab() |
 || 4.2 | 关闭标签页 | P1 | 🟢 | Ctrl+W 关闭当前标签页，Tab 栏关闭按钮 | tabCloseRequested | main_window.py close_tab() |
-|| 4.3 | 标签页切换 | P1 | 🟢 | Ctrl+Tab 切换到下一个标签页，双击空白新建 | tabBarDoubleClicked | main_window.py |
+|| 4.3 | 标签页切换 | P1 | 🟡 | 点击标签栏切换、双击空白新建、双击标签关闭已实现；**Ctrl+Tab 循环切换未实现（新增待办）** | tabBarDoubleClicked + eventFilter | main_window.py |
 || 4.4 | 标签页状态保持 | P1 | 🟢 | 切换标签页时保留各窗格路径和选中状态 | QuadPaneWidget 独立持有 4 个 Pane | main_window.py |
-|| 4.5 | 标签页重命名 | P1 | 🟢 | 右键菜单或双击标签页，弹出输入对话框 | QInputDialog | main_window.py rename_tab() |
+|| 4.5 | 标签页重命名 | P1 | 🟢 | 右键标签页 → 重命名（双击标签是关闭，不是重命名） | QInputDialog | main_window.py rename_tab() |
 
 ## 5. 快速预览
 
@@ -91,10 +92,13 @@
 
 | # | 功能 | 优先级 | 状态 | 验证方式 | 说明 | 实现情况 |
 |---|---|---|---|---|---|---|
-| 9.1 | 按扩展名筛选 | P2 | 🔴 | 输入 *.txt 只显示 txt 文件 | QSortFilterProxyModel | - |
-| 9.2 | 按日期筛选 | P3 | 🔴 | 只显示指定日期范围的文件 | QSortFilterProxyModel | - |
-| 9.3 | 按大小筛选 | P3 | 🔴 | 只显示指定大小范围的文件 | QSortFilterProxyModel | - |
-| 9.4 | 清除筛选 | P2 | 🔴 | 一键清除筛选条件，显示全部 | 重置 proxy model | - |
+| 9.1 | 按扩展名筛选 | P2 | 🟢 | 输入 `*.txt` 或 `ext:py,md` 只显示对应扩展名 | `filter_bar.compile_filter()` → `PaneSortProxyModel.filterAcceptsRow` | filter_bar.py / pane.py |
+| 9.2 | 按日期筛选 | P3 | 🟢 | `date:本周` / `date:>=2026-01-01` / `date:2026-01-01..2026-03-01` | 同上（比较模型已缓存的 mtime，不 stat） | filter_bar.py |
+| 9.3 | 按大小筛选 | P3 | 🟢 | `size:>10mb` / `size:1mb-100mb` / `size:大型` | 同上（比较条目已缓存的 size） | filter_bar.py |
+| 9.4 | 清除筛选 | P2 | 🟢 | 输入框行内 ✕、Esc（同时收起筛选栏）、右键「清除筛选」 | `FilterBar.clear_filter()` 无条件补发空条件 | filter_bar.py / pane.py |
+| 9.5 | 按名称/通配符/正则筛选 | P2 | 🟢 | 裸文本＝名称包含；`*.log`/`?at` 整名匹配；`re:` 正则 | 条件编译一次，逐行只做内存比较 | filter_bar.py |
+| 9.6 | 只看目录 / 只看文件 | P3 | 🟢 | `is:folder` / `is:file` / `类型:目录` | 条目 `is_dir` 属性 | filter_bar.py |
+| 9.7 | 筛选与隐藏文件开关、两视图一致 | P2 | 🟢 | 筛到的行同时受「显示隐藏文件」约束；超大图标视图同步生效 | 列表走代理，图标视图在自身枚举里过一道 | pane.py / thumbnail_view.py |
 
 ## 10. 布局模式
 
@@ -109,27 +113,36 @@
 | # | 功能 | 优先级 | 状态 | 验证方式 | 说明 | 实现情况 |
 |---|---|---|---|---|---|---|
 | 11.1 | 系统主题 | P1 | 🟢 | 跟随桌面环境主题 | QApplication 默认样式 | theme_manager.py |
-| 11.2 | 深色主题 | P1 | 🟢 | Ctrl+D 切换到深色主题 | QSS 样式表 | theme_manager.py |
-| 11.3 | 浅色主题 | P2 | 🟢 | 切换到浅色主题 | QSS 样式表 | theme_manager.py |
-| 11.4 | 自定义主题接口 | P2 | 🟢 | 预留接口，支持 JSON 主题文件 | ThemeManager 注册机制 | theme_manager.py |
+| 11.2 | 深色主题 | P1 | 🟢 | 视图菜单 → 「深色主题」（无 Ctrl+D 快捷键，见 12.5） | qdarkstyle 样式表 | theme_manager.py apply_theme() |
+| 11.3 | 浅色主题 | P2 | 🟢 | 视图菜单 → 「浅色主题」 | 写死的浅色 QSS | theme_manager.py apply_theme() |
+| 11.4 | 自定义主题接口 | P2 | 🔴 | 未实现：主题只有内置 dark/light 两项，无 JSON 保存/导入导出 | 需先定「主题包」的文件格式 | tests/test_m4_theme.py `test_no_custom_theme_persistence_api` 卡住这个事实 |
 | 11.5 | 主题热切换 | P1 | 🟢 | 切换主题无需重启 | QSS 动态加载 | theme_manager.py apply_theme() |
 
 ## 12. 快捷键
 
+> 快捷键统一由主窗口菜单的 QAction 携带（WindowShortcut，作用于整个主窗口）；
+> 只有少数需要拦在视图内部的（Shift+Delete、Ctrl+F）写在 `FileListTreeView.keyPressEvent`。
+
 | # | 功能 | 优先级 | 状态 | 验证方式 | 说明 | 实现情况 |
 |---|---|---|---|---|---|---|
-| 12.1 | Ctrl+T 新建标签页 | P1 | 🔴 | 按下后新建空白标签页 | QShortcut | - |
-| 12.2 | Ctrl+W 关闭标签页 | P1 | 🔴 | 按下后关闭当前标签页 | QShortcut | - |
-| 12.3 | Ctrl+Tab 切换标签页 | P1 | 🔴 | 按下后切换到下一个标签页 | QShortcut | - |
-| 12.4 | Ctrl+L 聚焦路径栏 | P1 | 🔴 | 按下后光标定位到当前窗格路径栏 | QShortcut | - |
-| 12.5 | Ctrl+D 切换主题 | P2 | 🔴 | 按下后在深色/浅色间切换 | QShortcut | - |
-| 12.6 | Ctrl+4 四窗格模式 | P1 | 🔴 | 切换到四窗格模式 | QShortcut | - |
-| 12.7 | Ctrl+2 双窗格模式 | P1 | 🔴 | 切换到双窗格模式 | QShortcut | - |
-| 12.8 | F3 预览面板 | P2 | 🔴 | 切换预览面板显示 | QShortcut | - |
-| 12.9 | F5 刷新 | P1 | 🔴 | 刷新当前窗格 | QShortcut | - |
-| 12.10 | Delete 安全删除 | P0 | 🔴 | 删除选中项到回收站 | QShortcut | - |
-| 12.11 | Shift+Delete 永久删除 | P1 | 🔴 | 直接删除选中项 | QShortcut | - |
-| 12.12 | F2 重命名 | P0 | 🔴 | 进入重命名模式 | QShortcut | - |
+| 12.1 | Ctrl+T 新建标签页 | P1 | 🟢 | 按下后新建一个完整四窗格标签页 | 文件菜单 QAction | main_window.py `new_tab()` |
+| 12.2 | Ctrl+W 关闭标签页 | P1 | 🟢 | 按下后关闭当前标签页（最后一个不关窗口） | 文件菜单 QAction | main_window.py `close_current_tab()` |
+| 12.3 | Ctrl+Tab 切换标签页 | P1 | 🔴 | 未实现（新增待办）：目前只能点击标签栏切换 | - | - |
+| 12.4 | Ctrl+L 聚焦路径栏 | P1 | 🔴 | 未实现（新增待办，见 3.4） | - | - |
+| 12.5 | Ctrl+D 切换主题 | P2 | 🔴 | 未实现（新增待办）：主题切换实际在视图菜单 | - | - |
+| 12.6 | Ctrl+4 四窗格模式 | P1 | 🟢 | 切换到四窗格模式 | 视图菜单 QAction | main_window.py `switch_to_quad()` |
+| 12.7 | Ctrl+2 双窗格模式 | P1 | 🟢 | Ctrl+2 上下双窗格、Ctrl+Shift+2 横向、Ctrl+5/Ctrl+6 上2下1/上1下2 | 视图菜单 QAction | main_window.py `switch_to_dual*()` |
+| 12.8 | F3 预览面板 | P2 | 🟢 | 切换右侧预览面板显示（可勾选项） | 视图菜单 QAction | main_window.py `toggle_preview()` |
+| 12.9 | F5 刷新 | P1 | 🟢 | 刷新当前窗格，保留选中与滚动位置 | 编辑菜单 QAction | main_window.py `on_refresh()` |
+| 12.10 | Delete 安全删除 | P0 | 🟢 | 删除选中项到回收站；网络位置文案改为「永久删除」 | 编辑菜单 QAction | main_window.py `on_delete()` → pane `_delete_paths` |
+| 12.11 | Shift+Delete 永久删除 | P1 | 🟢 | 直接删除选中项，二次确认明写不可恢复 | 在视图 keyPressEvent 拦，不与 QAction(Delete) 双弹确认框 | pane.py `FileListTreeView.keyPressEvent` |
+| 12.12 | F2 重命名 | P0 | 🟢 | 进入当前行行内编辑 | 编辑菜单 QAction | main_window.py `on_rename()` → pane `rename_selected()` |
+| 12.13 | Ctrl+C / Ctrl+X / Ctrl+V | P0 | 🟢 | 复制/剪切/粘贴，与系统剪贴板互通（含 MoveEffect 识别） | 编辑菜单 QAction | main_window.py / pane.py |
+| 12.14 | Ctrl+A 全选 | P1 | 🟢 | 选中当前窗格全部条目 | 编辑菜单 QAction | main_window.py `on_select_all()` |
+| 12.15 | Ctrl+F 筛选当前目录 | P2 | 🟢 | 唤出筛选栏，只筛当前目录不递归；Esc 收起并清除 | 视图与菜单双入口 | main_window.py `on_filter_current_dir()` / pane.py |
+| 12.16 | Ctrl+H 显示隐藏文件 | P2 | 🟢 | 全局同步切换所有窗格的隐藏文件显示 | 视图菜单可勾选项 | main_window.py `toggle_hidden_files()` |
+| 12.17 | Alt+Left / Alt+Right / Alt+Up | P1 | 🟢 | 后退 / 前进 / 返回上级 | 编辑菜单 QAction | main_window.py `on_nav_back/forward/up()` |
+| 12.18 | F7/F8、F4、Ctrl+B、Ctrl+Shift+T、Ctrl+Q | P2 | 🟢 | 新建文件夹/新建文件、终端面板、收藏夹、目录树、退出 | 菜单 QAction | main_window.py |
 
 ## 13. 右键菜单
 
@@ -244,8 +257,9 @@
 |---|---|---|
 | 2026-08-26 | 初始版本，列出全部功能 | - |
 | 2026-08-28 | 更新标签页、目录树、终端、四窗格等功能状态；新增标签页重命名、活动窗格跟踪 | - |
+| 2026-09-15 | 校正与代码不符的状态：筛选（9.1–9.7）本版接通；永久删除/重命名/取消/导航历史/路径补全改 🟢；Ctrl+Tab、Ctrl+L、Ctrl+D、自定义主题接口查实为未实现（原标 🟢 的「Ctrl+D 切主题」等为假）；新增 12.13–12.18 已实现快捷键；补上清单遗漏的 1.8 列头排序 | - |
 
 ---
 
-**文档版本**：v1.1  
-**最后更新**：2026-08-28
+**文档版本**：v1.2  
+**最后更新**：2026-09-15
