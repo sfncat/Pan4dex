@@ -6,8 +6,9 @@ import logging
 import os
 import subprocess
 import sys
-from pathlib import Path
 from typing import Optional
+
+from config.paths import default_config_dir
 
 logger = logging.getLogger("pan4dex.file_associations")
 
@@ -101,11 +102,8 @@ class FileAssociations:
         self.load()
     
     def _get_default_config_dir(self) -> str:
-        """获取默认配置目录"""
-        if sys.platform == "win32":
-            return os.path.join(os.environ.get("APPDATA", ""), "pan4dex")
-        else:
-            return os.path.join(Path.home(), ".config", "pan4dex")
+        """获取默认配置目录（规则在 `config.paths`，与已保存搜索共用一处）"""
+        return default_config_dir()
     
     def load(self):
         """加载配置"""

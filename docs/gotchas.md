@@ -626,6 +626,43 @@ been deleted`。子菜单没被删过，是它的**父菜单**（一个函数局
 或让夹具持有。这与第 28 条是同族问题（Qt 对象的销毁时机由 Python 引用决定），区别在
 这里是“**父**没了连带删子”，不是“子的 deleteLater 落进 GC”。
 
+### 35. 两种匹配语义（glob / 正则）写在两处，就会有一处默默骗人
+
+**现象**：高级搜索的文件名框 placeholder 教用户写 `*.txt`，而非正则分支的实现是把输入
+`re.escape` 后 `search` —— 于是 `*.txt` 被当成“名字里含字面 `*.txt`”（转义后 `*\.`），
+**按提示写必然 0 结果**，与“这个目录真的没文件”看起来一模一样。列表筛选栏早就把
+`*.log` 做成了整名通配匹配，两处各写一份就各演化一套。
+
+**写法**：全仓只留一份 `widgets/filter_bar.py::glob_to_regex`（`*`→`.*`、`?`→`.`、其余
+`re.escape`、锚定整名、默认不区分大小写），高级搜索由 `build_name_matcher` 调它。
+语义分工写在那个函数的 docstring 里：勾了正则 → `search`（局部匹配，旧行为）；
+含 `*`/`?` 且未勾正则 → 整名通配；否则 → 名称包含。
+
+另两条同类硬约束（改动时别退回去）：**匹配器在遍历循环外编译一次**，不在每个文件上
+重编（`build_name_matcher` 返回 `bool(name)` 闭包）；**正则写错必须在开始搜索时就
+报错**（`collect_params` 先试编译），不能带着坏条件去扫盘然后返回 0。
+分别由 `tests/test_saved_search.py` 的 `test_glob_pattern_matches_by_extension`、
+`test_worker_finds_files_with_glob`、`test_collect_params_validates` 盯住。
+
+### 36. 把界面换算后的值存进配置：往返要双向可逆，表示不了要说
+
+**现象**（设计阶段发现，未上线就算掉）：大小条件是“数值 spin × 单位下拉”，存字节数就
+必须能反算回去 —— 而两个输入框**共用一个**单位下拉。若反算时给每个框各选一个“能
+整除的最大单位”，min=1 KB 与 max=1 MB 会被填回 KB / MB 两种单位，再采集时按下拉里
+最后那个单位统一乘回去 → 1 KB 变成 1024 MB。不报错、不丢字段，只是搜不到东西。
+
+**写法**（`widgets/advanced_search.py`）：① 存的是**真正喂给 worker 的那份 params**
+（字节数、归一化后的扩展名），不是界面上的 `1`；② 开始搜索与保存共用同一个
+`collect_params`，两边不可能不一致；③ 反算时选“能让两者都整除且不超 spin 上限的**最大**
+单位”（`_restore_sizes`），整除不了就退到放得下的最小单位并**返回一句失真说明**，由
+载入槽拼进状态栏 —— 静默把 1 字节归到 0（＝无限制）比不改还糟。
+
+测试的核心不变式就是这一条：`apply_params → collect_params` 与原值逐项相等
+（`test_round_trip_params_to_widgets_and_back`，含“一侧无限制”与“上限边界 99999 KB”），
+失真路径单独由 `test_unrepresentable_sizes_say_so_instead_of_quietly_changing` 盯。
+另：`FileAssociations` 与 `SavedSearchStore` 的配置目录规则收拢到 `config/paths.py`，
+再加一类 JSON 存储不再多算一份路径。
+
 ---
 
 ## 八、回归防护机制
@@ -676,6 +713,10 @@ python scripts/deploy.py 0.9.618
       扫盘）是否**延迟到真要显示时** + 带 TTL 缓存 + 失败只少一项不外抛（见第 33 条）？
 - [ ] 测试里手工造的父 `QMenu` / 父 widget：是否被调用方握住（只返回子对象会被 GC
       连带删掉整棵子树，见第 34 条）？
+- [ ] 写盘的用户条件/偏好：存的是“界面上的数字”还是“真正参与执行的那份值”？能否
+      `apply → collect` 原样回到同一个值（单位换算、共用下拉，见第 36 条）？
+- [ ] 同一类文本匹配（glob / 正则 / 包含）是否只有一份实现？新写的匹配器是否在遍历
+      循环外编译、正则写错时是否当场报错而不是返回 0 结果（见第 35 条）？
 - [ ] 切换可见性后是否 `update()` + `repaint()`
 - [ ] 导航是否用 `setRootIndex` 而不是 `setRootPath`
 - [ ] QDockWidget 是否保存了显式 parent 引用

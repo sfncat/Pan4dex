@@ -48,14 +48,17 @@
 | `path_bar.py` | 可编辑路径栏，支持自动补全、历史下拉、书签按钮 |
 | `preview_panel.py` | 快速预览面板：文本显示、语法高亮、图片缩略图 |
 | `bookmark_sidebar.py` | 收藏夹侧边栏，支持拖拽添加、分组管理 |
-| `filter_bar.py` | 筛选栏 UI（字段下拉 + 250ms 防抖 + Esc/行内 ✕ 清除）与**查询编译器** `compile_filter()` → `EntryFilter`：名称包含、`*.log` 通配符、`ext:`/`date:`/`size:`/`type:`/`is:`/`re:`（中英字段别名），条件编译一次、逐行只做内存比较；筛选在 `PaneSortProxyModel.filterAcceptsRow` 生效（不叠第二层代理、不发行信号），解析不了的条件降级为名称包含并在状态栏提示 |
+| `filter_bar.py` | 筛选栏 UI（字段下拉 + 250ms 防抖 + Esc/行内 ✕ 清除）与**查询编译器** `compile_filter()` → `EntryFilter`：名称包含、`*.log` 通配符、`ext:`/`date:`/`size:`/`type:`/`is:`/`re:`（中英字段别名），条件编译一次、逐行只做内存比较；筛选在 `PaneSortProxyModel.filterAcceptsRow` 生效（不叠第二层代理、不发行信号），解析不了的条件降级为名称包含并在状态栏提示。`glob_to_regex()` 是全仓**唯一**一份通配符→正则实现（高级搜索也用它） |
+| `advanced_search.py` | 高级搜索对话框：`collect_params()`（界面 → worker 条件，含大小换算与扩展名归一化）与 `apply_params()`（反向填回）共用一套语义；`build_name_matcher()` 定“正则 → `search` / 含 `*?` → 整名通配 / 否则 → 包含”；「已保存的搜索」下拉（存/载入/删，清单 20.4）读写 `config/saved_searches.py`，存储由 `MainWindow` 注入 |
 
 ### 2.3 config/ — 配置管理
 
 | 模块 | 职责 |
 |---|---|
 | `settings.py` | QSettings 封装，提供类型安全的 get/set |
-| `file_associations.py` | 文件类型 → 应用映射的增删改查 |
+| `paths.py` | `default_config_dir()`：用户级 JSON 存储的唯一落点（win `%APPDATA%/pan4dex`，其余 `~/.config/pan4dex`），文件关联与已保存搜索共用 |
+| `file_associations.py` | 文件类型 → 应用映射的增删改查（配置目录向 `paths.py` 委托） |
+| `saved_searches.py` | `SavedSearchStore`：已保存的搜索条件（清单 20.4）单文件 JSON，存的是真正喂给 worker 的 params；读坏当空表、逐条校验、上限 50 条、写失败返回 (False, 文本) 而不抛 |
 | `theme_manager.py` | 主题注册、切换、自定义主题加载 |
 
 ## 3. 数据流设计

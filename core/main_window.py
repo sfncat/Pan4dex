@@ -52,6 +52,7 @@ from widgets.preview_panel import PreviewPanel
 from widgets.bookmark_sidebar import BookmarkSidebar
 from widgets.tree_sidebar import TreeSidebar
 from config.file_associations import FileAssociations
+from config.saved_searches import SavedSearchStore
 from config.theme_manager import ThemeManager
 from config.app_config import (
     APP_NAME,
@@ -105,6 +106,9 @@ class MainWindow(QMainWindow):
         
         # 文件关联
         self.file_associations = FileAssociations()
+        
+        # 已保存的搜索条件（高级搜索对话框用；与关联表同一配置目录）
+        self.saved_searches = SavedSearchStore()
         
         # 主题管理器
         self.theme_manager = ThemeManager()
@@ -1189,7 +1193,7 @@ class MainWindow(QMainWindow):
     def open_advanced_search(self):
         """打开高级搜索"""
         from widgets.advanced_search import AdvancedSearchDialog
-        dialog = AdvancedSearchDialog(parent=self)
+        dialog = AdvancedSearchDialog(parent=self, store=self.saved_searches)
         dialog.exec()
     
     def switch_to_quad(self):

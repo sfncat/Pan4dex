@@ -190,8 +190,8 @@ def _date_token_to_range(value: str):
     return None
 
 
-def _glob_to_regex(pattern: str):
-    """`*.log` 之类：整名匹配，不区分大小写"""
+def glob_to_regex(pattern: str, flags=re.IGNORECASE):
+    """`*.log` 之类 → 整名匹配（全仓一套通配符语义，高级搜索也用它）"""
     out = []
     for ch in pattern:
         if ch == "*":
@@ -200,7 +200,7 @@ def _glob_to_regex(pattern: str):
             out.append(".")
         else:
             out.append(re.escape(ch))
-    return re.compile("^" + "".join(out) + "$", re.IGNORECASE)
+    return re.compile("^" + "".join(out) + "$", flags)
 
 
 def _ext_list(value: str):
@@ -301,7 +301,7 @@ def _add_term(terms, bad, kind, value):
         if not v:
             return False
         if "*" in v or "?" in v:
-            terms.append(("name", (v, _glob_to_regex(v))))
+            terms.append(("name", (v, glob_to_regex(v))))
         else:
             terms.append(("name", (v, None)))
         return True

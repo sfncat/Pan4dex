@@ -1,15 +1,48 @@
 """
 Pan4dex 万格 — 高级搜索工具
+
+匹配语义与列表筛选栏保持一套（见 `widgets/filter_bar.py`）：通配符整名匹配、
+普通字符串是名称包含、正则走 `search`。搜索条件可存为「已保存的搜索」
+（`config/saved_searches.py`，清单 20.4），存的是**真正喂给 worker 的那份 params**。
 """
+import logging
 import os
 import re
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, 
     QPushButton, QLineEdit, QTreeWidget, QTreeWidgetItem,
     QComboBox, QCheckBox, QSpinBox, QGroupBox,
-    QFileDialog, QMessageBox
+    QFileDialog, QMessageBox, QInputDialog
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
+
+from widgets.filter_bar import glob_to_regex
+
+logger = logging.getLogger("pan4dex.advanced_search")
+
+
+def build_name_matcher(pattern: str, use_regex: bool, case_sensitive: bool):
+    """文件名模式 → `bool(name)` 判定函数（编译一次，不在遍历循环里重编）
+
+    - 正则：对名字 `search`（局部匹配，与旧行为一致）
+    - 含 `*` / `?` 且未勾正则：整名通配匹配（`*.txt` 就是“扩展名是 txt”）
+    - 其他：名称包含
+
+    旧实现把非正则一律 `re.escape` 后 `search`，于是界面上教的 `*.txt` 被当成
+    “名字里含字面 `*.txt`”——按 placeholder 写必然 0 结果（修于 v1.9.009）。
+    """
+    pat = (pattern or "").strip()
+    flags = 0 if case_sensitive else re.IGNORECASE
+    if use_regex:
+        rx = re.compile(pat, flags)
+        return lambda name: bool(rx.search(name)), rx.pattern
+    if "*" in pat or "?" in pat:
+        rx = glob_to_regex(pat, flags)
+        return lambda name: bool(rx.match(name)), rx.pattern
+    if case_sensitive:
+        return (lambda name, p=pat: p in name), pat
+    low = pat.lower()
+    return (lambda name, p=low: p in name.lower()), pat
 
 
 class SearchWorker(QThread):
@@ -38,16 +71,13 @@ class SearchWorker(QThread):
             self.finished.emit(0)
             return
         
-        # 编译正则
-        flags = 0 if case_sensitive else re.IGNORECASE
-        if use_regex:
-            try:
-                regex = re.compile(pattern, flags)
-            except re.error:
-                self.finished.emit(0)
-                return
-        else:
-            regex = re.compile(re.escape(pattern), flags)
+        # 文件名匹配规则（与筛选栏一套）；正则写错直接结束，不带着坏条件去扫盘
+        try:
+            match_name, _shown = build_name_matcher(pattern, use_regex, case_sensitive)
+        except re.error as e:
+            logger.warning("搜索正则无效 %r: %s", pattern, e)
+            self.finished.emit(0)
+            return
         
         for root, dirs, files in os.walk(search_dir):
             if self._stop:
@@ -58,7 +88,7 @@ class SearchWorker(QThread):
                     break
                 
                 # 文件名匹配
-                if not regex.search(filename):
+                if not match_name(filename):
                     continue
                 
                 filepath = os.path.join(root, filename)
@@ -82,14 +112,17 @@ class SearchWorker(QThread):
                     if ext not in file_types:
                         continue
                 
-                # 内容搜索
+                # 内容搜索（“区分大小写”对名与内容同一个口径，不另设选项）
                 if content_search:
                     try:
                         with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
                             content = f.read(1024 * 1024)  # 只读前 1MB
-                            if content_search not in content:
-                                continue
-                    except:
+                    except OSError:
+                        continue
+                    if case_sensitive:
+                        if content_search not in content:
+                            continue
+                    elif content_search.lower() not in content.lower():
                         continue
                 
                 found += 1
@@ -110,16 +143,23 @@ class SearchWorker(QThread):
 
 class AdvancedSearchDialog(QDialog):
     """高级搜索对话框"""
-    
-    def __init__(self, parent=None):
+
+    # 大小单位（与 `size_unit` 下拉的项一一对应）
+    _SIZE_MULT = (1024, 1024 * 1024, 1024 * 1024 * 1024)
+
+    def __init__(self, parent=None, store=None):
         super().__init__(parent)
         
         self.setWindowTitle("高级搜索")
         self.setMinimumSize(700, 500)
         
         self.worker = None
+        # 已保存搜索的存储：由主窗口注入（全仓一份，与 file_associations 同做法）；
+        # 没注入时惰性建一个（单用这个对话框 / 测试时）
+        self._store = store
         
         self.init_ui()
+        self.reload_saved_names()
     
     def init_ui(self):
         """初始化 UI"""
@@ -128,6 +168,28 @@ class AdvancedSearchDialog(QDialog):
         # 搜索条件
         cond_group = QGroupBox("搜索条件")
         cond_layout = QVBoxLayout(cond_group)
+        
+        # 已保存的搜索（清单 20.4）：选中即载入全部条件，不自动开搜
+        saved_layout = QHBoxLayout()
+        saved_layout.addWidget(QLabel("已保存:"))
+        self.saved_combo = QComboBox()
+        self.saved_combo.setToolTip(
+            "选一条之前存下的条件，所有输入框会按它填好（不自动开始搜索）。\n"
+            "存的是这组条件的最终值（含大小换算），载入后与原样一致")
+        self.saved_combo.activated.connect(self.on_saved_selected)
+        saved_layout.addWidget(self.saved_combo)
+        
+        self.save_saved_btn = QPushButton("保存当前条件…")
+        self.save_saved_btn.setToolTip("给当前这组搜索条件起个名字存下来")
+        self.save_saved_btn.clicked.connect(self.save_current_search)
+        saved_layout.addWidget(self.save_saved_btn)
+        
+        self.del_saved_btn = QPushButton("删除")
+        self.del_saved_btn.setToolTip("删掉下拉里选中的那条已保存搜索")
+        self.del_saved_btn.clicked.connect(self.delete_saved_search)
+        saved_layout.addWidget(self.del_saved_btn)
+        saved_layout.addStretch()
+        cond_layout.addLayout(saved_layout)
         
         # 搜索目录
         dir_layout = QHBoxLayout()
@@ -268,52 +330,63 @@ class AdvancedSearchDialog(QDialog):
         if path:
             self.dir_edit.setText(path)
     
-    def start_search(self):
-        """开始搜索"""
-        directory = self.dir_edit.text()
-        pattern = self.pattern_edit.text()
-        
+    def collect_params(self) -> tuple:
+        """界面上的条件 → worker params。返回 `(params, 错误文本)`，有错时 params 为 None
+
+        开始搜索与「保存当前条件」共用这一函数，保证存下来的就是真正会执行的
+        那份条件（含大小换算、扩展名归一化）。
+        """
+        directory = self.dir_edit.text().strip()
+        pattern = self.pattern_edit.text().strip()
+
         if not directory:
-            QMessageBox.warning(self, "警告", "请输入搜索目录")
-            return
-        
+            return None, "请输入搜索目录"
         if not pattern:
-            QMessageBox.warning(self, "警告", "请输入搜索模式")
-            return
-        
+            return None, "请输入搜索模式"
         if not os.path.isdir(directory):
-            QMessageBox.warning(self, "错误", "目录不存在")
-            return
-        
-        # 解析文件类型
-        type_text = self.type_edit.text().strip()
+            return None, "目录不存在"
+
+        use_regex = self.regex_check.isChecked()
+        case_sensitive = self.case_check.isChecked()
+        if use_regex:
+            # 正则写错在旧版会“静默找到 0 个”，跟“搜不到”看起来一模一样
+            try:
+                build_name_matcher(pattern, True, case_sensitive)
+            except re.error as e:
+                return None, f"正则表达式无效：{e}"
+
+        # 解析文件类型（与筛选栏一样：逗号/分号都可，统一带开头的点、小写）
         file_types = []
-        if type_text:
-            file_types = [t.strip() if t.strip().startswith('.') else f".{t.strip()}" for t in type_text.split(",")]
-        
-        # 计算大小范围
+        for part in self.type_edit.text().replace("，", ",").replace(";", ",").split(","):
+            t = part.strip().lower()
+            if not t:
+                continue
+            file_types.append(t if t.startswith('.') else f".{t}")
+
+        # 大小范围：存字节数（worker 需要的就是字节），载入时再反算单位
+        multiplier = self._SIZE_MULT[self.size_unit.currentIndex()]
         min_size = self.min_size_spin.value()
         max_size = self.max_size_spin.value()
-        unit = self.size_unit.currentIndex()
-        multipliers = [1024, 1024*1024, 1024*1024*1024]
-        multiplier = multipliers[unit]
-        
-        if min_size > 0:
-            min_size *= multiplier
-        if max_size > 0:
-            max_size *= multiplier
-        
+
         params = {
             'directory': directory,
             'pattern': pattern,
-            'use_regex': self.regex_check.isChecked(),
-            'case_sensitive': self.case_check.isChecked(),
+            'use_regex': use_regex,
+            'case_sensitive': case_sensitive,
             'file_types': file_types,
-            'min_size': min_size,
-            'max_size': max_size,
-            'content': self.content_edit.text()
+            'min_size': min_size * multiplier if min_size > 0 else 0,
+            'max_size': max_size * multiplier if max_size > 0 else 0,
+            'content': self.content_edit.text(),
         }
-        
+        return params, ""
+
+    def start_search(self):
+        """开始搜索"""
+        params, err = self.collect_params()
+        if err:
+            QMessageBox.warning(self, "警告", err)
+            return
+
         self.result_tree.clear()
         self._pending_results = []
         self._shown_count = 0
@@ -326,6 +399,144 @@ class AdvancedSearchDialog(QDialog):
         self.worker.result.connect(self.on_result)
         self.worker.finished.connect(self.on_search_finished)
         self.worker.start()
+
+    # ---------- 已保存的搜索（清单 20.4） ----------
+
+    @property
+    def store(self):
+        if self._store is None:
+            from config.saved_searches import SavedSearchStore
+            self._store = SavedSearchStore()
+        return self._store
+
+    def reload_saved_names(self, keep: str = ""):
+        """重填下拉（保留 `keep` 为当前项）；第一项是占位，不算已保存项"""
+        combo = self.saved_combo
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItem("（选择已保存的搜索…）")
+        combo.addItems(self.store.names())
+        combo.setCurrentIndex(max(0, combo.findText(keep)))
+        combo.blockSignals(False)
+        self.del_saved_btn.setEnabled(combo.count() > 1)
+
+    def on_saved_selected(self, index: int):
+        if index <= 0:
+            return
+        name = self.saved_combo.itemText(index)
+        params = self.store.get(name)
+        if params is None:
+            self.status_label.setText(f"「{name}」已不存在")
+            self.reload_saved_names()
+            return
+        note = self.apply_params(params)
+        stamp = self.store.updated(name)
+        self.status_label.setText(
+            f"已载入「{name}」" + (f"（存于 {stamp}）" if stamp else "") +
+            note + "，点「开始搜索」运行")
+
+    def save_current_search(self):
+        params, err = self.collect_params()
+        if err:
+            QMessageBox.warning(self, "无法保存", err + "（保存与搜索用同一套校验）")
+            return
+        # 默认名：已选中的那条（没选则用文件名模式 / 目录名），不是占位那一项
+        default = ""
+        if self.saved_combo.currentIndex() > 0:
+            default = self.saved_combo.currentText().strip()
+        if not default:
+            default = self.pattern_edit.text().strip() or \
+                os.path.basename(os.path.normpath(self.dir_edit.text().strip()))
+        name, ok = QInputDialog.getText(
+            self, "保存搜索", "给这组搜索条件起个名字：", text=default)
+        name = (name or "").strip()
+        if not ok or not name:
+            return                      # 取消：什么都不做
+        if name in self.store.entries:
+            if QMessageBox.question(
+                    self, "覆盖已保存的搜索",
+                    f"已经有一条叫「{name}」的搜索，覆盖它吗？") \
+                    != QMessageBox.StandardButton.Yes:
+                return
+        saved, err = self.store.save_search(name, params)
+        if not saved:
+            QMessageBox.warning(self, "保存失败", err or "写入失败")
+            return
+        self.reload_saved_names(keep=name)
+        self.status_label.setText(f"已保存搜索「{name}」")
+
+    def delete_saved_search(self):
+        index = self.saved_combo.currentIndex()
+        if index <= 0:
+            return
+        name = self.saved_combo.itemText(index)
+        if QMessageBox.question(self, "删除已保存的搜索",
+                                f"删除「{name}」？只删条件，不影响文件。") \
+                != QMessageBox.StandardButton.Yes:
+            return
+        self.store.remove(name)
+        self.reload_saved_names()
+        self.status_label.setText(f"已删除「{name}」")
+
+    def apply_params(self, params: dict) -> str:
+        """已保存的条件 → 控件（`collect_params` 的反向）
+
+        返回值是“哪一项没能原样填回去”的说明，空串表示全部一致；调用方（载入槽）
+        把它拼进状态栏 —— 宁可啰嗦一句，也不能悄悄把 1 字节变成“无限制”。
+        """
+        self.dir_edit.setText(str(params.get('directory') or ""))
+        self.pattern_edit.setText(str(params.get('pattern') or ""))
+        self.regex_check.setChecked(bool(params.get('use_regex')))
+        self.case_check.setChecked(bool(params.get('case_sensitive')))
+        self.type_edit.setText(",".join(params.get('file_types') or []))
+        self.content_edit.setText(str(params.get('content') or ""))
+        return self._restore_sizes(int(params.get('min_size') or 0),
+                                   int(params.get('max_size') or 0))
+
+    def _restore_sizes(self, min_size: int, max_size: int) -> str:
+        """字节数 →（数值 + 单位）放回控件。返回失真说明（无失真时空串）
+
+        两个输入框共用一个单位下拉（这是现有界面的形状），所以单位要选一个能让两者
+        都不失真的**最大**单位。存进来的值基本都是 `collect_params` 自己算的（整数 ×
+        单位），一定能整除；整除不了或超出 spin 上限的只可能来自手工改过的 JSON，
+        那时必须说出来 —— 静默把 1 字节改成 0（＝无限制）比不改还糟。
+        """
+        spins = (self.min_size_spin, self.max_size_spin)
+        values = (min_size, max_size)
+        positive = [v for v in values if v > 0]
+        limit = self.min_size_spin.maximum()      # 两个 spin 同一个上限（见 init_ui）
+        if not positive:
+            for spin, v in zip(spins, values):
+                spin.setValue(min(v, spin.maximum()))
+            return ""
+        chosen = 0
+        for i in (2, 1, 0):
+            m = self._SIZE_MULT[i]
+            if all(v % m == 0 and v // m <= limit for v in positive):
+                chosen = i
+                break
+        else:
+            # 整除不了：换成放得下的最小单位（粒度越细失真越小），最后如实报出
+            for i in (0, 1, 2):
+                m = self._SIZE_MULT[i]
+                if all(v // m <= limit for v in positive):
+                    chosen = i
+                    break
+        m = self._SIZE_MULT[chosen]
+        self.size_unit.setCurrentIndex(chosen)
+        lost = False
+        for spin, v in zip(spins, values):
+            if v:
+                spin.setValue(min(max(int(round(v / m)), 0), spin.maximum()))
+                if spin.value() * m != v:
+                    lost = True
+            else:
+                spin.setValue(0)
+        if lost:
+            return (f"（大小范围无法按 {self.size_unit.itemText(chosen)} 原样表示，"
+                    "已按最接近的值填入）")
+        return ""
+
     
     def stop_search(self):
         """停止搜索"""
