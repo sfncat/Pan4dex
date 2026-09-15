@@ -117,6 +117,10 @@ class MainWindow(QMainWindow):
         
         self._active_pane = None
 
+        # 已关闭、等事件循环销毁的标签页。必须握住它们的 Python 引用，否则
+        # 包装器被回收时会当场 delete C++ 对象（销毁时机落进 GC 手里，见 `close_tab`）
+        self._closed_tabs = []
+
         # 创建 UI
         self.create_menu_bar()
         logger.info(f"[启动计时] 菜单栏: {(time.perf_counter()-_t0)*1000:.1f}ms")
@@ -828,6 +832,19 @@ class MainWindow(QMainWindow):
         if self.tab_widget.count() > 1:
             widget = self.tab_widget.widget(index)
             self.tab_widget.removeTab(index)
+            # 销毁要分两步：握住引用 + `deleteLater`。
+            # `removeTab` 把 widget 的 C++ 父指针置空，从那刻起 sip 把它当“Python 拥有”
+            # 的对象（实测：仅 `setParent` 归还所有权拦不住）：包装器一旦被回收，就当场
+            # `delete` C++ 对象，级联拆光它的子控件。而包装器何时回收不确定 —— 信号→绑定
+            # 方法构成的引用环只能等分代 GC，而 GC 会在**任意** Python 分配点执行；落在
+            # 另一个窗格的构造途中，就是随机的 `wrapped C/C++ object of type QVBoxLayout
+            # has been deleted`，更坏时直接 access violation（同一组合在 `gc.disable()`
+            # 下 22/22 通过，实证时机来自 GC）。握住引用后，销毁时机完全由事件循环决定。
+            from PyQt6 import sip
+            self._closed_tabs = [w for w in self._closed_tabs
+                                 if not sip.isdeleted(w)]      # 收掉已销毁的上一轮
+            self._closed_tabs.append(widget)
+            widget.hide()
             widget.deleteLater()
     
     def close_current_tab(self):
@@ -1442,6 +1459,14 @@ class QuadPaneWidget(QWidget):
         """延迟创建 pane2/3/4（首屏显示后执行）"""
         if getattr(self, '_all_panes_created', False):
             return
+        # 宿主可能已经没了：这个回调是 250ms 定时器排定的，期间用户关掉标签页/窗口
+        # 都会拆掉这棵子树。入口先判死，构造途中再兜底 —— 否则 `Pane(parent=self)` 抛的
+        # RuntimeError 会逃进 Qt 事件循环（表现为随机的 `wrapped C/C++ object of type
+        # ... has been deleted`，更坏时直接 access violation）。
+        from PyQt6 import sip
+        if sip.isdeleted(self):
+            logger.debug("延迟建窗格跳过：宿主窗口已销毁")
+            return
         # 防重入：250ms 定时器与 _ensure_all_panes（布局恢复等路径）可能同时触发，
         # 真实显示下 Pane 构造较慢时若重复创建会把已恢复状态的窗格替换成全新默认窗格，
         # 导致布局"恢复后仍显示默认"并随之覆盖保存。提前置位 + finally 复位。
@@ -1466,6 +1491,12 @@ class QuadPaneWidget(QWidget):
             self._placeholder4.deleteLater()
             self._all_panes_created = True
             logger.info(f"[启动计时] 延迟创建 pane2-4: {(time.perf_counter()-_t0)*1000:.1f}ms")
+        except RuntimeError as exc:
+            # 只在宿主确实已死时吞掉：这种中断可能发生在构造的任意一步（包括 `init_ui`
+            # 中途）；其它 RuntimeError 仍是真错误，继续上抛
+            if not sip.isdeleted(self):
+                raise
+            logger.info(f"延迟建窗格中断（宿主已销毁）: {exc}")
         finally:
             self._panes_creating = False
     

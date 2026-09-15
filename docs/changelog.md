@@ -19,6 +19,115 @@
 
 ## 更新记录
 
+### v1.9.005 — 2026-09-14（开发分支 dev/shell-behavior-smb-perf）
+
+#### ✨ 新功能
+- **本地目录自动更新**：用 Explorer 或别的程序新建/删除/改名文件，窗格列表自己跟上
+  （不再需要按 F5）。`DirStoreModel` 只给**当前显示的那个本地目录**挂 `QFileSystemWatcher`
+  - 网络目录**一律不登记** watcher —— 那正是拖垮 SMB 的轮询源，网络仍走 TTL 2s + 定向失效
+  - 监视器改为**进程级唯一** `_WatchHub`（以 `QApplication` 为父，弱引用计数：同一目录
+    被多个窗格监视只占一个句柄）。per-model watcher 不行 —— 模型可被任意时刻的 GC 销毁，
+    而 Windows 上目录监视共用一个全局线程，析构与在飞通知会竞态
+  - **只监视看得见的那个目录，切走即摘**：监视“曾导航过的所有目录”会把句柄数与通知流量
+    随会话无界堆积，实测全量测试崩溃率 0/10（不监视）→ 2/8（per-model）→ **10/10**
+    （hub 监视全部）；只监视当前目录 + 登记延迟到事件循环顶层后 0/14
+  - **native 登记（`addPath`/`removePath`）不在 `set_directory` 调用栈里做**：只记下目标
+    路径，用 0ms 定时器推到事件循环顶层一次性 flush —— 同一轮事件里的连续导航（测试里一个
+    用例能连切十几个目录）自动合并成一次登记，不会来回折腾监视线程
+  - 通知经 350ms 防抖合并：一次粘贴 N 个文件只重扫一次，不会把列表反复清空重建
+  - 应用内改动（粘贴/新建/删除/行内改名）用**类级** `_self_change` 时间戳抑制紧随其后的
+    文件系统通知，避免同一次改动被重扫两遍（用户侧＝列表闪一下）；必须类级，因为
+    跨窗格 `dirChanged` 同步会让没“改过”的窗格也收到同一次物理改动的通知
+  - 代价补回：不监视的目录靠「快照 TTL 过期 + 导航回来重扫一次」保证新鲜（本地/网络
+    统一 2s，以前本地快照永久新鲜）
+  - 已知残余：抑制窗口 1.5s 内的**外部**改动会被一并跳过；不在屏上的本地目录最多陈旧 2s
+
+#### 🐛 缺陷修复
+- **同一次加载白发两遍枚举**（性能 + 稳定性）：`beginInsertRows` / `endRemoveRows` 内部会
+  回调 `rowCount(parent)`，而 `rowCount` 里留着「顶层节点未 loaded 且未 loading → 惰性
+  `_start_load`」的兼容写法；只要那一刻节点正处于「已清 loading、未置 loaded」的过渡态，
+  就会多起一次枚举（新枚举的 `gen` 还把正要采纳的结果算作过期）。现在 `loading` 推至行
+  插入完成后才清，并用 `_rows_signal()` 上下文包住每一对 begin/end，期间 `rowCount` /
+  `canFetchMore` 不做惰性加载。实测探针：改前每个目录加载调 `_start_load` 2 次，改后 1 次
+- **去掉「本地目录到达即重扫」**：刚写过一版（只要已加载就 `_reload_top`），列表行为更正确
+  但崩溃率从 1/8 到 **9/10**（枚举量与行信号量翻倍，9 份 dump 全落在 `endInsertRows`）；
+  换成上面的 TTL 过期作废（且只走 reset，不额外 removeRows）
+- **目录枚举不再用全局线程池**：改用限流的专用池 `dir_pool()`（`_ENUM_POOL_THREADS = 4`，
+  与窗格数一致）。此前 `QThreadPool.globalInstance()` 的并发数 = CPU 核数（本机 24），
+  faulthandler 转储里能看到 **10 个线程同时卡在 `enumerate_dir`**：数十路并发枚举在 SMB 上
+  互抢通道比串行更慢，且成倍的结果投递与条目对象同时砸回主线程（实测崩溃率 1/12 → 0/14）。
+  `drain_background_pool()` 相应改为逐池排空（全局池 + 枚举池）
+- **残留死窗格把测试（和新窗口）带崩成一片级联失败**：某轮全量测试从平时的 5 个失败
+  变成 22 个，全部同一句 `RuntimeError: wrapped C/C++ object of type Pane has been deleted`，
+  现场是 `MainWindow.create_menu_bar` → `Pane.set_show_hidden` 里在 `try` 外碰 `pane.model`。
+  两个原因叠加：① 窗格在 `super().__init__()` 后就进 `_instances`，延迟建窗格失败时
+  一个连 `model` 都没有的废窗格留在注册表里；② WeakSet 反映不了 C++ 侧已删（实测：
+  sip 删 C++ 部分时**不清空** `__dict__`，读已有属性不报错，只有读不存在的属性才落到
+  Qt 元对象上报 deleted）。现在：入册改到 `__init__` 最后一步，类级操作统一走
+  `Pane._live_instances()`（用 `sip.isdeleted` 判死，这是实测唯一可靠手段）。
+  生产侧等价故障是“用过一段时间后开新标签/新开窗口直接报错”
+- **Qt 对象的销毁时机落在分代 GC 手里 —— 构造中途被拆掉子树**（问题 13 现场 B 的根因，
+  本轮定性）：`MainWindow.close_tab` 旧写法 `removeTab` + `deleteLater` 看似确定，实际销毁
+  时机完全由 GC 决定：`signal.connect(self.method)` 构成引用环（self → 子控件 → receivers
+  → 绑定方法 → self），环只能等分代 GC；而 GC 会在**任意** Python 分配点执行。当一个对象
+  同时满足「sip 视为 Python 拥有」+「此刻 C++ 父指针为空」（`removeTab` 正是后者），包装器
+  一被回收就当场 `delete` C++ 并级联拆光子树 —— 那一刻若另一个窗格正在构造，拆掉的就是它
+  正在用的东西（用户侧＝关标签页后随机崩，或 `RuntimeError: ... QVBoxLayout has been deleted`）
+  - 决定性实验：`test_lifecycle + test_m1_core` 组合平时随机失败，`gc.disable()` 下 **22/22 通过**
+  - 修复：`close_tab` **握住 Python 引用**（`self._closed_tabs`）+ `hide()` + `deleteLater()`，
+    把时机交给事件循环；`tests/conftest.py` 在每个用例边界主动 `gc.collect()`，把由 GC
+    决定的销毁集中到没有构造在飞的安全点。**只 `setParent(self)` 归还所有权拦不住**（实测）
+  - `_create_remaining_panes`（250ms 延迟建窗格）入口 `sip.isdeleted(self)` 早退，并在确认
+    宿主已死时吞掉 RuntimeError（其余继续上抛，不掩盖真错误）—— 旧写法会把异常丢进事件循环
+- **`removeTab` 不销毁页内容 → 窗格内标签页越开越多内存只增不减**：`Pane.set_state` 清标签页
+  与 `close_pane_tab` 补 `page.deleteLater()`（否则摘下来的页是无主对象，销毁时机同样在 GC 手里）
+- **已经试过并回退的做法**（重要）：在生产路径的批量构造入口（`new_tab()`、
+  `_create_remaining_panes()` 开头）先 `gc.collect()` 再构造 —— 实测**反而制造新故障**（主动
+  回收把“已该死但拖着没死”的对象集中删掉，其中就有即将被使用的宿主：`Pane(parent=self)` 报
+  `QuadPaneWidget has been deleted`，一轮从 5 passed 变 2 failed）。**回收本身不是修复，
+  消除“随时会被回收”这个状态才是。**
+- **条目对象生命周期**（同一段取证导出）：`createIndex(row, col, py_obj)` 交给 Qt 的是裸
+  指针，PyQt **不**替我们保持引用（实测：丢引用 + `gc.collect()` 后 300 个条目当场回收，
+  而视图仍有 300 行）。因此失效不能直接归还 GC：旧快照挂 `DirNode._stale`，到下一个
+  安全点（`endResetModel()` / `endRemoveRows()` 之后）才由 `_drop_stale()` 释放
+
+#### 🧪 测试
+- `tests/test_dir_model.py` 新增本地目录监视 9 项：端到端外部新建、只监视本地不监视网络、
+  防抖合并、自变更抑制、hub 共享与弱引用计数、死模型的登记被回收、只监视当前目录、
+  连续导航句柄不累积、**同一轮多次导航只登记最后一次**；生命周期 2 项：旧快照只在安全点
+  释放、节点封顶不删交出过条目的节点
+- 新增枚举量约束 3 项：一次加载只发一次枚举、TTL 内导航回来不重扫、枚举池线程数限流
+  （锁住上面的三个坑）
+- `tests/test_pane_dir_store.py` 新增 2 项（真实 `Pane`）：外部改动自动出现在列表、
+  两窗格看同目录时外部改动不互相放大成重扫循环；依赖真文件系统通知的两条端到端用例在
+  通知不可用的机器上 **skip 而非假绿**（本机实测通过）
+- 注册表存活过滤 2 项（均已回滚验证过判别力）：死窗格不得打断 `set_show_hidden`、
+  半途死的窗格不入册
+- `tests/test_lifecycle.py` 新增 2 项（均已回滚验证过判别力）：关掉的标签页 widget 必须活到
+  `DeferredDelete` 派发（`del` + `gc.collect()` 后子树仍在）、宿主已销毁时延迟建窗格必须静默
+  返回而不是抛进事件循环
+- 修一个自身会误报的用例：`test_repeating_single_shot_semantics` 等固定 150ms 再断言回调列表，
+  全量测试负载高时定时器晚到 → 偶发只剩一条（单跑永远通过）。改为 `waitUntil` + 不依赖到达顺序
+- 全量测试：本版本最终设计下连续 12 轮无硬崩（旧基线 3/8；各阶段 10/10 → 9/10 → 2/12 →
+  1/12 → 0/14 → 0/12，全部记入 `docs/unsolved-issues.md` 问题 13）；207 项中 201 passed
+  / 1 skipped / 5 failed，5 个失败全是 `test_m4_theme` 的陈旧断言（与本版改动无关，已列入待办）
+
+#### 📝 文档更新
+- `docs/gotchas.md`：第 12 条改写（现有 watcher）、第 23 条重写为六个约束（只本地、抑制
+  自变更、防抖、进程级 hub、只监视当前目录、登记推到事件循环顶层），新增第 24 条（行信号
+  重入 `rowCount`）、第 25 条（不要到达即重扫）、第 26 条（枚举不用全局线程池）、
+  第 27 条（类级注册表要判死 + 入册时机）+ 审查清单 4 项
+- `AGENT.md`：改写“不挂 `QFileSystemWatcher`”的旧说法，新增目录监视六约束
+- `docs/architecture.md`：`dir_model.py` 行补充本地 watcher / 网络不挂，并补“为何只监视
+  一个目录”
+- `docs/unsolved-issues.md` 问题 13：补入本段取证（完整的崩溃率 A/B 表，以及
+  三个被探针否证的假设：句柄数超 `MAXIMUM_WAIT_OBJECTS`、`addPath` 跑嵌套事件循环重入、
+  通知派发到模型槽才会崩）与“可迁移的结论”；**现场 B 根因已定**（销毁时机落在 GC 手里，
+  含三步逐行探针取证链、三处修复、已回退的做法）
+- `docs/gotchas.md` 第 28 条：不要把 Qt 对象的生死交给分代 GC —— 移出容器后握住引用再
+  `deleteLater`（含三个反直觉关键点：`setParent` 归还所有权无效、`processEvents` 不处理
+  deferred delete、测试边界同理）+ 审查清单 1 项
+
 ### v1.9.004 — 2026-09-14（开发分支 dev/shell-behavior-smb-perf）
 
 #### 🐛 缺陷修复

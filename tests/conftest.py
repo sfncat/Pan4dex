@@ -46,6 +46,7 @@ def _reap_top_level_widgets(qapp):
     fast-fail / AV；在每个测试边界上把它们排空，就不留竞态窗口。
     """
     yield
+    import gc
     from PyQt6 import sip
     from core.lifecycle import drain_background_pool
     for w in list(qapp.topLevelWidgets()):
@@ -58,6 +59,14 @@ def _reap_top_level_widgets(qapp):
         except RuntimeError:
             pass
     drain_background_pool()
+    QCoreApplication.processEvents()
+    # 把“由循环 GC 决定时机的 Qt 对象销毁”集中到这个安全点：业务对象之间有
+    # 信号→绑定方法的引用环，包装器只能等分代 GC 回收；而 GC 会在**任意** Python
+    # 分配点执行，那时若另一个窗口正在构造，sip 的 delete 会级联拆掉它正在用的子树
+    # （Windows 下 ~QWidget 还要 DestroyWindow → 重入消息派发）。实测（一轮
+    # `test_lifecycle + test_m1_core`）：不禁用/不前置 GC 时随机报 `QVBoxLayout has
+    # been deleted` 与 access violation，`gc.disable()` 下 22/22 通过。
+    gc.collect()
     QCoreApplication.processEvents()
 
 

@@ -1,8 +1,8 @@
 """
 Pan4dex 万格 — 退出阶段后台线程收拢（drain_background_pool）回归测试
 
-覆盖的缺陷：窗格销毁 / 进程退出时，`QThreadPool.globalInstance()` 上仍有在飞的目录
-枚举任务与其未派发的跨线程投递。这些投递事件持有 Python 对象，Qt 在解释器已开始
+覆盖的缺陷：窗格销毁 / 进程退出时，后台线程池（全局池 + 目录枚举专用池）上仍有在飞
+的目录枚举任务与其未派发的跨线程投递。这些投递事件持有 Python 对象，Qt 在解释器已开始
 收尾时才去销毁它们 —— Windows 上表现为无可捕异常的 fast-fail（退出码 0xC0000409），
 用户侧就是「关掉程序时报错」；在测试全量连跑时则是偶发 access violation。
 
@@ -17,8 +17,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from PyQt6.QtCore import QThreadPool
-
+from core.dir_model import dir_pool
 from core.lifecycle import drain_background_pool
 
 PROJECT_ROOT = str(Path(__file__).resolve().parents[1])
@@ -41,7 +40,7 @@ def test_drain_delivers_pending_load_result(qapp, big_dir):
     m = DirStoreModel()
     node = m._ensure_node(big_dir)
     m._start_load(node)
-    QThreadPool.globalInstance().waitForDone(10000)   # 任务跑完，但结果还挂在队列里
+    dir_pool().waitForDone(10000)   # 任务跑完，但结果还挂在队列里
     assert node.loaded is False, "前置条件不成立：结果已被派发，测不到投递"
 
     drain_background_pool()
@@ -59,7 +58,7 @@ def test_drain_leaves_pool_idle(qapp, big_dir):
         m.set_directory(big_dir)
         models.append(m)          # 持有引用：不让模型先于排空被回收
     drain_background_pool()
-    assert QThreadPool.globalInstance().waitForDone(0) is True
+    assert dir_pool().waitForDone(0) is True
 
 
 def test_exec_and_drain_drains_right_after_the_loop(monkeypatch):
@@ -88,7 +87,7 @@ def test_exec_and_drain_drains_right_after_the_loop(monkeypatch):
 CHILD_SOURCE = '''
 import os, sys, time
 sys.path.insert(0, sys.argv[1])
-from PyQt6.QtCore import QCoreApplication, QThreadPool
+from PyQt6.QtCore import QCoreApplication
 from PyQt6.QtWidgets import QApplication
 
 app = QApplication([])
@@ -107,7 +106,8 @@ for _ in range(rounds):
     models.append(m)
 
 # 只等后台跑完，**不转事件循环**：枚举结果全部以挂起的 queued 投递留在队列里
-QThreadPool.globalInstance().waitForDone(30000)
+from core.dir_model import dir_pool
+dir_pool().waitForDone(30000)
 
 if mode == "drain":
     from core.lifecycle import drain_background_pool

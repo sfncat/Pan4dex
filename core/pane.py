@@ -4,6 +4,7 @@ Pan4dex 万格 — 单窗格组件
 import logging
 
 logger = logging.getLogger("pan4dex.pane")
+from PyQt6 import sip
 from PyQt6.QtGui import QAction, QKeySequence, QCursor
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QTreeView, QProgressBar,
@@ -164,12 +165,7 @@ class Pane(QWidget):
     
     def __init__(self, pane_id: str, parent=None, start_path: str = None):
         super().__init__(parent)
-        
-        import weakref
-        if Pane._instances is None:
-            Pane._instances = weakref.WeakSet()
-        Pane._instances.add(self)
-        
+
         self.pane_id = pane_id
         # 默认打开目录：设置了有效目录用之，否则用户目录
         if start_path and os.path.isdir(start_path):
@@ -199,6 +195,15 @@ class Pane(QWidget):
         
         # 设置默认路径
         self.navigate_to(self.current_path)
+
+        # 最后一步才入注册表：半途死的窗格（延迟建窗格的回调被拆窗打断等，
+        # 实测现场：`init_ui` 中 `self.layout` 已被删）不得出现在跨窗格类级操作的
+        # 迭代里 —— 它连 `model` 属性都没有，碰它就报 RuntimeError，会把后续每个
+        # MainWindow 的启动带崩（见 `_live_instances`）
+        import weakref
+        if Pane._instances is None:
+            Pane._instances = weakref.WeakSet()
+        Pane._instances.add(self)
     
     def focusInEvent(self, a0):
         """窗格获得焦点时发出激活信号"""
@@ -402,17 +407,42 @@ class Pane(QWidget):
         return base
 
     @classmethod
+    def _live_instances(cls):
+        """列出仍存活的窗格（跨窗格类级操作的唯一入口）。
+
+        `_instances` 是 WeakSet，但包装器可以在 C++ 部分已销毁后仍被迭代到：
+        GC 之前弱引用不会失效，而且 sip **不会**清空 `__dict__`（实测：
+        `sip.delete(窗格)` 后 `pane.model` 照样返回，只有 `sip.isdeleted(pane)` 为真）。
+        真止不住的是“已删 + 属性不在 `__dict__`”的组合（半途构造的窗格），那时
+        碰任何属性都抛 RuntimeError。
+        类级操作是在**新建**的 MainWindow 启动路径上调的（`create_menu_bar` 里恢复
+        隐藏文件开关），一个残留死窗格就会当场打断启动，并把之后每个用例带崩成
+        一片级联失败（实测一轮 22 个失败）。死项不需手动剔除：WeakSet 会在 GC 时自动回收。
+        """
+        live = []
+        for pane in list(getattr(cls, '_instances', None) or ()):
+            try:
+                if sip.isdeleted(pane):
+                    continue
+            except TypeError:
+                continue              # 不是 QObject 包装器（不应出现，宁可跳过）
+            live.append(pane)
+        return live
+
+    @classmethod
     def set_show_hidden(cls, show: bool):
         """全局切换隐藏文件过滤（逐窗格同步：设模型 filter 并重扫）。"""
         Pane._show_hidden = bool(show)
         filt = cls._file_filter()
-        for pane in list(getattr(cls, '_instances', None) or ()):
-            if pane.model is not None:
-                try:
+        for pane in cls._live_instances():
+            try:
+                if pane.model is not None:
                     pane.model.setFilter(filt)
                     pane.model.refresh()
-                except RuntimeError:
-                    pass  # 窗格已销毁
+            except (RuntimeError, AttributeError):
+                continue  # 窗格已销毁 / 尚未建好模型
+            except Exception:
+                pass
 
     def _setup_model(self):
         """为本窗格创建独立的异步 DirStoreModel（文件列表唯一数据源）。
@@ -532,9 +562,12 @@ class Pane(QWidget):
         # 恢复标签页
         tab_paths = state.get('tab_paths', [])
         if tab_paths:
-            # 清除现有标签页
+            # 清除现有标签页（`removeTab` 不销毁页内容：不显式删就成了没人拥有的对象）
             while self.pane_tabs.count() > 0:
+                page = self.pane_tabs.widget(0)
                 self.pane_tabs.removeTab(0)
+                if page is not None:
+                    page.deleteLater()
             self._pane_tab_paths = []
             
             # 恢复标签页
@@ -859,7 +892,10 @@ class Pane(QWidget):
         """关闭窗格内标签页；关到 0 个时自动隐藏标签栏"""
         if self.pane_tabs.count() <= 0:
             return
+        page = self.pane_tabs.widget(index)
         self.pane_tabs.removeTab(index)
+        if page is not None:
+            page.deleteLater()          # 同 `set_state`：removeTab 不销毁页内容
         if index < len(self._pane_tab_paths):
             self._pane_tab_paths.pop(index)
         if self.pane_tabs.count() == 0:
@@ -2037,7 +2073,7 @@ class Pane(QWidget):
         """
         if not path:
             return
-        for pane in list(cls._instances or ()):
+        for pane in cls._live_instances():
             if pane is skip:
                 continue
             try:
@@ -2051,9 +2087,10 @@ class Pane(QWidget):
     def _reload_after_mutation(self, path):
         """应用内改动后刷新：失效并重扫涉及目录（本地/网络统一），再导航过去。
     
-        DirStoreModel 不挂文件系统 watcher（那正是 SMB 卡顿根因之一），且本地
-        目录缓存不因过期而重扫，因此改动必须显式失效，否则新建/删除的项
-        不会出现在列表里。
+        本地目录虽挂了 watcher（见 core/dir_model.py），但通知有系统延迟且经
+        350ms 合并，网络目录则完全不挂 watcher（那正是 SMB 卡顿根因之一），
+        因此应用内改动必须显式失效，不能等 watcher。模型会记下这次失效，
+        随后到期的 watcher 通知因而被抑制，不会重扫两遍。
         """
         Pane._refresh_dir_everywhere(path)
         self.navigate_to(path)

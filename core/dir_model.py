@@ -7,6 +7,9 @@ Pan4dex 万格 — DirStoreModel：以目录节点为单位的异步文件模型
 - 后台线程枚举（QThreadPool），主线程零阻塞；未加载完成 rowCount=0，canFetchMore/
   fetchMore 驱动，加载完 begin/endInsertRows 增量插入
 - TTL 缓存 + 定向失效：应用内操作后只失效涉及的目录，F5 只重扫当前目录
+- 本地目录挂 QFileSystemWatcher（只挂「当前显示的那一个」，外部程序改动时自动重扫）；
+  监视器全进程共用一个 _WatchHub；网络目录一律不挂 watcher（那正是拖垮 SMB 的
+  轮询源），靠 TTL + 定向失效；不显示的本地目录靠快照 TTL 过期后重扫
 - 结构：当前显示目录作为 invalid 根的唯一顶层行（rowCount(invalid)=1），
   因此 pane 拿到的索引一定能被 QSortFilterProxyModel.mapFromSource 映射
 
@@ -16,11 +19,14 @@ Pan4dex 万格 — DirStoreModel：以目录节点为单位的异步文件模型
 import os
 import time
 import logging
+import contextlib
+import weakref as _weakref
 from datetime import datetime
 
 from PyQt6.QtCore import (
-    QAbstractItemModel, QModelIndex, Qt, QDir, QRunnable, QThreadPool,
-    QObject, pyqtSignal, pyqtSlot,
+    QAbstractItemModel, QCoreApplication, QModelIndex, Qt, QDir,
+    QFileSystemWatcher, QTimer, QRunnable, QThreadPool, QObject,
+    pyqtSignal, pyqtSlot,
 )
 from PyQt6.QtWidgets import QApplication, QStyle
 
@@ -54,7 +60,7 @@ class Entry:
 
 class DirNode:
     """一个目录节点：持有其枚举出的条目列表与加载状态。"""
-    __slots__ = ("path", "key", "entries", "loaded", "loading", "gen")
+    __slots__ = ("path", "key", "entries", "loaded", "loading", "gen", "_stale", "ts")
 
     def __init__(self, path):
         self.path = os.path.normpath(path)
@@ -63,6 +69,99 @@ class DirNode:
         self.loaded = False
         self.loading = False
         self.gen = 0               # 枚举请求代次：只采纳最新一次的结果
+        self._stale = None         # 上一代条目快照（见 _discard_node：不能直接还给 GC）
+        self.ts = 0.0              # 快照生成时刻，判过期用（见 _snapshot_fresh）
+
+
+# ---------- 进程级目录监视器 ----------
+
+class _WatchHub(QObject):
+    """全进程唯一的 QFileSystemWatcher，以 QApplication 为父。
+
+    为何不用 per-model watcher：模型（窗格）可被任意时刻的 GC 销毁，而 Qt 在
+    Windows 上的目录监视共用一个全局线程，析构与在飞的变更通知会竞态。实测
+    接上 per-model watcher（监视所有曾导航过的目录）后全量测试 2/8 轮 access
+    violation；改成 hub 但依旧监视全部目录 → 10/10 必崩；hub + 只监视当前显示
+    目录 → 0/6（见 docs/gotchas.md 第 23 条与 unsolved-issues 问题 13）。
+    监视器随应用生灭（时刻确定），模型只做登记/注销；通知经本类的
+    `directoryNotice` 转发，接收者是模型本身→模型销毁时 Qt 自动断连。
+
+    登记用弱引用计数：同一目录可被多个窗格监视，最后一个监视者消失时摘句柄；
+    模型被 GC 后条目变空，由 _prune_dead 回收（不靠模型的析构钩子）。
+    """
+
+    directoryNotice = pyqtSignal(str)
+    _INSTANCE = None
+    _MAX_PATHS = 64      # 上限护栏：正常用不会碰（只监视当前显示目录，每窗格 1 个）
+
+    def __init__(self, app):
+        super().__init__(app)
+        self._app = app
+        self._watcher = QFileSystemWatcher(self)
+        self._watcher.directoryChanged.connect(self.directoryNotice)
+        self._refs = {}   # normpath -> {id(model): weakref(model)}
+
+    @classmethod
+    def instance(cls):
+        app = QCoreApplication.instance()
+        if app is None:
+            return None
+        hub = cls._INSTANCE
+        if hub is None or hub._app is not app:
+            hub = cls(app)
+            cls._INSTANCE = hub
+        return hub
+
+    def add(self, path, owner):
+        if len(self._refs) > self._MAX_PATHS:
+            self._prune_dead()
+        refs = self._refs.setdefault(path, {})
+        for mid, r in list(refs.items()):   # id 会重用，先洗掉本路径的死引用
+            if r() is None:
+                refs.pop(mid, None)
+        first = not refs
+        refs[id(owner)] = _weakref.ref(owner)
+        if not first:
+            return True
+        try:
+            ok = self._watcher.addPath(path)
+        except (RuntimeError, OSError):
+            ok = False
+        if not ok:
+            self._refs.pop(path, None)
+        return ok
+
+    def remove(self, path, owner):
+        refs = self._refs.get(path)
+        if refs is None:
+            return
+        ref = refs.get(id(owner))
+        if ref is not None:
+            refs.pop(id(owner), None)
+        if refs:
+            return
+        self._refs.pop(path, None)
+        try:
+            self._watcher.removePath(path)
+        except (RuntimeError, OSError):
+            pass
+
+    def directories(self):
+        return list(self._watcher.directories())
+
+    def _prune_dead(self):
+        """模型已被 GC：它的监视登记没人再注销，由本方法兼式回收。"""
+        for path in list(self._refs.keys()):
+            refs = self._refs[path]
+            alive = {mid: r for mid, r in refs.items() if r() is not None}
+            if alive:
+                self._refs[path] = alive
+                continue
+            self._refs.pop(path, None)
+            try:
+                self._watcher.removePath(path)
+            except (RuntimeError, OSError):
+                pass
 
 
 # ---------- 目录枚举（纯 Python，不触碰 Qt，供后台线程调用） ----------
@@ -122,6 +221,31 @@ def enumerate_dir(path, show_hidden=True):
     return entries
 
 
+# ---------- 枚举专用线程池（限流）----------
+
+_ENUM_POOL_THREADS = 4        # 一屏最多 4 个窗格，再多并发枚举无益
+_DIR_POOL = None
+
+
+def dir_pool():
+    """目录枚举专用的全进程线程池（**不用** `QThreadPool.globalInstance()`）。
+
+    全局池默认按 CPU 核数起线程（本机 24 核），一次开四个窗格 + 快速导航就能把
+    几十个 `os.scandir` 同时丢出去（实测 faulthandler 转储里 10 个线程全卡在
+    `enumerate_dir`）。代价有两重：SMB 上几十路并发枚举互抢通道、比串行更慢；
+    结果投递与新建的条目对象成倍砸回主线程，直接抬高偶发 access violation 的
+    概率（崩溃率与在飞枚举量单调相关，见 docs/unsolved-issues.md 问题 13）。
+    上限取 4：等于窗格数，足够保证“一个盘卡住不会让其它窗格转不了”。
+    """
+    global _DIR_POOL
+    if _DIR_POOL is None:
+        pool = QThreadPool()
+        pool.setMaxThreadCount(_ENUM_POOL_THREADS)
+        pool.setObjectName("pan4dex.dirpool")
+        _DIR_POOL = pool
+    return _DIR_POOL
+
+
 # ---------- 后台枚举任务 ----------
 
 class _LoadSignals(QObject):
@@ -165,7 +289,15 @@ class DirStoreModel(QAbstractItemModel):
 
     # 类级缓存：{dirkey: (timestamp, show_hidden, [Entry])}，跨窗格共享同一目录枚举结果
     _CACHE = {}
-    _CACHE_TTL = 2.0   # 秒；网络目录 TTL，本地目录主要靠定向失效
+    _CACHE_TTL = 2.0   # 秒；本地/网络通用。监视只跟当前显示目录，切走期间的
+                       # 改动靠「快照过期 + 到达时重扫」兜底，故本地快照也非永久有效
+    # 类级「应用内刚改过该目录」时间戳：用于抑制紧随其后的文件系统通知，
+    # 避免同一次改动被重扫两遍（列表闪一下）。跨窗格共享——一个窗格改动会
+    # 经 refresh_dir 刷所有窗格，各窗格的 watcher 通知届时都该被跳过
+    _self_change = {}
+    _SELF_CHANGE_SUPPRESS = 1.5   # 秒
+    _WATCH_DEBOUNCE_MS = 350      # 通知合并窗口：一次粘贴 N 个文件只重扫一次
+    _MAX_NODES = 96               # 节点上限（只删把条目交还了 GC 的，见 _prune_nodes）
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -174,7 +306,7 @@ class DirStoreModel(QAbstractItemModel):
         self._top_key = ""         # 顶层节点 key
         self._filter = (QDir.Filter.AllDirs | QDir.Filter.Files |
                         QDir.Filter.NoDotAndDotDot | QDir.Filter.Hidden)
-        self._pool = QThreadPool.globalInstance()
+        self._pool = dir_pool()
         # `_loader` 以本模型为父：模型销毁时它一同销毁，在飞任务的 emit 会立刻失败
         # 并被 `_LoadTask.run` 吞掉，不会留下悬空的投递源。
         # 接收者必须是本模型（所以用绑定方法直连）：只有那样 Qt 才会在模型销毁时
@@ -185,6 +317,26 @@ class DirStoreModel(QAbstractItemModel):
         self._loader = _LoadSignals(self)
         self._loader.finished.connect(self._on_entries_loaded)
         self._invalid = QModelIndex()
+        # begin/end 行信号嵌套深度（见 _rows_signal）
+        self._rows_changing = 0
+        # 本地目录监视：全进程共用一个监视器（见 _WatchHub），本模型只登记路径。
+        # 通知的接收者是本模型 → 模型销毁时 Qt 自动断连，不会有悬空投递。
+        self._hub = _WatchHub.instance()
+        self._watched = set()        # 已登记监视的 dirkey（本模型至多 1 个）
+        self._watch_path = ""        # 当前已在 hub 里登记的 normpath
+        self._want_watch = ""        # 下一次 flush 要登记的目标（空＝不监视）
+        self._pending_watch = set()  # 防抖期间攒下的 dirkey
+        if self._hub is not None:
+            self._hub.directoryNotice.connect(self._on_watched_dir_changed)
+        self._watch_timer = QTimer(self)
+        self._watch_timer.setSingleShot(True)
+        self._watch_timer.setInterval(self._WATCH_DEBOUNCE_MS)
+        self._watch_timer.timeout.connect(self._flush_watch_events)
+        # 登记/注销动作推到事件循环顶层（见 _watch_sync）
+        self._watch_op_timer = QTimer(self)
+        self._watch_op_timer.setSingleShot(True)
+        self._watch_op_timer.setInterval(0)
+        self._watch_op_timer.timeout.connect(self._flush_watch_ops)
 
     # ---- pane 依赖的条目/目录查询接口（与 QFileSystemModel 同名，便于替换）----
     def rootPath(self):
@@ -212,11 +364,26 @@ class DirStoreModel(QAbstractItemModel):
         if self._top_key == key and self._top_node is node:
             if not node.loaded and not node.loading:
                 self._start_load(node)
+            self._watch_add(path)      # 目标不变时不会重发登记（_watch_sync 会合并）
             return self.createIndex(0, 0, node)
+        prev = self._top_node
+        # 快照过期（离开期间目录可能被外部改过）：在 reset **之前**作废，视图随
+        # reset 直接看到空列表，随后一次枚举插回。放在 reset 之后要走
+        # removeRows + insertRows 两趟，实测这种「到达即重扫」把后台枚举量翻倍，
+        # access violation 触发率从 1/8 涨到 9/10（见 docs/gotchas.md 第 25 条）
+        if node.loaded and not self._snapshot_fresh(node):
+            self._discard_node(key)
         self.beginResetModel()
         self._top_node = node
         self._top_key = key
         self.endResetModel()
+        # reset 已通知所有视图丢弃索引 → 上一代条目可以归还 GC 了（见 _drop_stale）
+        self._drop_stale()
+        # 监视跟随「屏幕上看得见的那个目录」：只监视顶层，切走即摘。
+        # 登记只记下目标，真正的 addPath/removePath 在事件循环顶层做（见 _watch_sync）
+        if prev is not None and prev.key != key:
+            self._watch_drop(prev.key)
+        self._watch_add(path)
         if not node.loaded and not node.loading:
             self._start_load(node)
         return self.createIndex(0, 0, node)
@@ -306,6 +473,150 @@ class DirStoreModel(QAbstractItemModel):
         """
         cls._cache_invalidate(path)
 
+    @classmethod
+    def _mark_self_change(cls, path):
+        """记下「应用内刚刚改过该目录」，用于抑制随后的文件系统通知。"""
+        cls._self_change[_key(path)] = time.time()
+
+    # ---- 本地目录监视：只监视「当前显示的那个目录」，登记动作延迟执行 ----
+    def _watch_add(self, path):
+        self._watch_sync(path)
+
+    def _watch_drop(self, key):
+        if self._watch_path and _key(self._watch_path) == key:
+            self._watch_sync("")
+
+    def _watch_sync(self, path):
+        """记下「本模型要监视哪个目录」，真正的 addPath/removePath 等事件循环顶层再做。
+
+        网络目录直接归为空目标（不监视）——SMB 上的 watcher 正是要根治的轮询源。
+        同一轮事件里的多次导航只留最后一个目标，所以窗格构造/快速切换不会
+        把 native 调用嵌在 `QWidget::setModel` 这类构造栈中间执行。
+        """
+        want = ""
+        if path and not self._is_network(path):
+            want = os.path.normpath(path)   # 与 DirNode.path 同形，对比时才能对上
+        self._want_watch = want
+        if not self._watch_op_timer.isActive():
+            self._watch_op_timer.start()
+
+    def _flush_watch_ops(self):
+        """执行 `_watch_sync` 定下的目标：摘旧加新（本模型至多监视一个目录）。"""
+        want = self._want_watch
+        cur = self._watch_path
+        if want == cur or self._hub is None:
+            return
+        if cur:
+            try:
+                self._hub.remove(cur, self)
+            except (RuntimeError, OSError):
+                pass
+            self._watched.discard(_key(cur))
+            self._pending_watch.discard(_key(cur))
+            self._watch_path = ""
+        if not want:
+            return
+        try:
+            ok = self._hub.add(want, self)
+        except (RuntimeError, OSError):
+            ok = False      # 监视器正在销毁
+        if ok:
+            self._watch_path = want
+            self._watched.add(_key(want))
+        else:
+            logger.debug("无法监视目录（已删除或无权限）: %s", want)
+
+    def watched_directories(self):
+        """当前登记的监视路径（本模型与其它模型共用监视器）。"""
+        return self._hub.directories() if self._hub is not None else []
+
+    def _prune_nodes(self):
+        """节点数封顶：只删「没把条目对象交给过 Qt」的节点。
+
+        判据：未加载、无旧快照、不在加载中、不是当前显示目录。否则视图/排序代理
+        里的裸指针会悬空（见 _discard_node）。旧快照本身活到下一次
+        reset/removeRows（见 _drop_stale），不会随会话无界堆积。
+        """
+        if len(self._nodes) <= self._MAX_NODES:
+            return
+        for key in list(self._nodes.keys()):
+            if len(self._nodes) <= self._MAX_NODES:
+                break
+            node = self._nodes.get(key)
+            if (node is None or node is self._top_node or node.loading
+                    or node.entries or node._stale):
+                continue      # 条目指针已交给 Qt，现在不能释放
+            self._watch_drop(key)
+            self._nodes.pop(key, None)
+            self._CACHE.pop(key, None)
+
+    def _discard_node(self, key):
+        """让一个不再显示的目录节点失效（下次导航回来重新枚举）。
+
+        **不能把条目对象直接放给 GC**：`createIndex()` 交给 Qt 的是这些 Python
+        对象的裸指针，而 PyQt 不替我们保持引用（实测：模型丢引用 + gc.collect()
+        后 300 个条目当场回收，而视图/排序代理里仍留着指向它们的指针，解引用就
+        是 access violation，见 docs/unsolved-issues.md 问题 13）。所以旧快照挂到
+        节点自身的 `_stale` 上，直到下一个「安全点」（_drop_stale）才释放。
+        """
+        node = self._nodes.get(key)
+        if node is None:
+            return
+        if node.entries:
+            node._stale = node.entries
+        node.entries = None
+        node.loaded = False
+        self._CACHE.pop(key, None)
+
+    def _drop_stale(self, node=None):
+        """安全点：模型刚通过信号告知视图索引不再有效，可释放旧条目快照。
+
+        只能在 `endResetModel()` / `endRemoveRows()` **之后**调用——那之前视图里的
+        指针仍然有效，归还 GC 就是悬空指针。默认清全部节点（reset 让所有索引作废），
+        传 node 表示只有该节点的行被移除过。保留期因此限定在「失效 → 下次切换目录」
+        之间，不会随会话无限增长。
+        """
+        for n in ((node,) if node is not None else self._nodes.values()):
+            n._stale = None
+
+    def _on_watched_dir_changed(self, path):
+        """文件系统通知：先攒进待处理集，防抖窗口结束后统一重扫。
+
+        一次粘贴 N 个文件会连发多条通知，逐条重扫会让列表反复清空重建。
+        """
+        key = _key(path)
+        if key not in self._nodes:
+            return
+        self._pending_watch.add(key)
+        if not self._watch_timer.isActive():
+            self._watch_timer.start()
+
+    def _flush_watch_events(self):
+        """防抖窗口结束：对攒下的目录各重扫一次（本地目录的外部改动）。"""
+        pending = self._pending_watch
+        self._pending_watch = set()
+        now = time.time()
+        rescanned = []
+        for key in pending:
+            # 应用内改动（粘贴/新建/删除/行内改名）已经显式 refresh_dir 过，
+            # 紧随其后的通知会再扫一遍，跳过
+            if now - self._self_change.get(key, 0.0) < self._SELF_CHANGE_SUPPRESS:
+                continue
+            node = self._nodes.get(key)
+            if node is None or node.loading:
+                continue
+            if node is not self._top_node:
+                # 不再显示的目录：标为未加载（条目快照由节点留着，见 _discard_node）
+                self._discard_node(key)
+                continue
+            self._reload_top(node)
+            rescanned.append(node.path)
+        for path in rescanned:
+            try:
+                self.dirChanged.emit(path)  # 让其它显示同一目录的窗格一并跟上
+            except RuntimeError:
+                return  # 模型已在本次处理中销毁
+
     def refresh(self, index=None):
         """重扫当前显示目录（F5 / 定向失效）：清条目后异步重载，
         保留顶层节点映射（不重置模型，为保留选中/滚动留余地）。"""
@@ -317,31 +628,47 @@ class DirStoreModel(QAbstractItemModel):
         """失效并重扫指定目录（应用内改动后调用，本地/网络统一）。
 
         - 正是当前显示目录：清条目 + 异步重载（保留顶层索引映射）
-        - 已加载但未显示：直接丢弃节点，导航回来时重新枚举
-          （DirStoreModel 无文件系统 watcher，不丢弃则陈旧节点会让模型
-          跳过重扫，新建/删除的项迟迟不可见）
+        - 已加载但未显示：标为未加载（条目快照延到安全点释放），导航回来时
+          重新枚举（不失效则陈旧节点会让模型跳过重扫，新建/删除的项迟迟不可见；
+          watcher 只监视当前显示的目录，代劳不了这里）
         """
         self._cache_invalidate(path)
+        self._mark_self_change(path)
         node = self._nodes.get(_key(path))
         if node is None:
             return
         if node is self._top_node:
             self._reload_top(node)
             return
-        node.entries = None
-        node.loaded = False
-        self._nodes.pop(node.key, None)   # 丢弃后其 in-flight 结果会被自动作废
+        # 不再显示的目录：标为未加载，下次导航回来重新枚举
+        self._discard_node(node.key)
 
     def _reload_top(self, node):
         self._cache_invalidate(node.path)
-        if node.loaded and node.entries:
-            parent_idx = self.createIndex(0, 0, node)
-            self.beginRemoveRows(parent_idx, 0, len(node.entries) - 1)
-            node.entries = None
-            node.loaded = False
-            self.endRemoveRows()
-        # 重扫请求总是另起一次枚举（gen+1）， in-flight 的旧结果会被作废
-        self._start_load(node)
+        with self._rows_signal():
+            if node.loaded and node.entries:
+                parent_idx = self.createIndex(0, 0, node)
+                self.beginRemoveRows(parent_idx, 0, len(node.entries) - 1)
+                node.entries = None
+                node.loaded = False
+                self.endRemoveRows()
+                self._drop_stale(node)   # 行已按信号移除，旧快照此刻才可释放
+            # 重扫请求总是另起一次枚举（gen+1）， in-flight 的旧结果会被作废
+            self._start_load(node)
+
+    @contextlib.contextmanager
+    def _rows_signal(self):
+        """包住一对 begin/end 行信号，期间挡住 `rowCount` 的惰性加载。
+
+        `beginInsertRows` / `endRemoveRows` 内部会回调 `rowCount(parent)`（实测），
+        而那一刻节点正处于「未 loaded 且未 loading」的过渡态，惰性触发条件成立
+        → 白发起一次多余的枚举，且新枚举的 gen 会把正要采纳的结果算作过期。
+        """
+        self._rows_changing += 1
+        try:
+            yield
+        finally:
+            self._rows_changing -= 1
 
     # ---- 节点 materialize + 异步加载 ----
     def _ensure_node(self, path):
@@ -351,12 +678,29 @@ class DirStoreModel(QAbstractItemModel):
             return node
         node = DirNode(path)
         self._nodes[key] = node
+        self._prune_nodes()
         show = self._show_hidden()
         cached = self._cache_get(key, show)
-        if cached is not None and self._fresh_or_local(path):
+        if cached is not None and self._cache_fresh(key):
             self._copy_entries(node, cached)
-            node.loaded = True
+            node.ts = self._CACHE[key][0]   # 沿用缓存生成时刻，不把陈旧快照洗白
+            node.loaded = True   # 调用方（set_directory）按 TTL 决定要不要再扫一次
         return node
+
+    @classmethod
+    def _cache_fresh(cls, key):
+        """类级缓存条目是否仍在 TTL 内（本地/网络同一规则）。"""
+        item = cls._CACHE.get(key)
+        return bool(item) and (time.time() - item[0] <= cls._CACHE_TTL)
+
+    @classmethod
+    def _snapshot_fresh(cls, node):
+        """节点已有快照时，它算不算新到可以直接给用户看。
+
+        监视只覆盖「当前显示的目录」，切走期间的外部改动收不到通知，靠的就是
+        这里判过期、到达时重扫一次。本地枚举很便宜，网络枚举受 TTL 约束。
+        """
+        return (time.time() - node.ts) <= cls._CACHE_TTL
 
     @staticmethod
     def _adopt(node, entries):
@@ -364,6 +708,7 @@ class DirStoreModel(QAbstractItemModel):
         for e in entries:
             e.node = node
         node.entries = entries
+        node.ts = time.time()
         return entries
 
     @staticmethod
@@ -380,14 +725,8 @@ class DirStoreModel(QAbstractItemModel):
             ne.node = node
             bound.append(ne)
         node.entries = bound
+        node.ts = time.time()
         return bound
-
-    @classmethod
-    def _fresh_or_local(cls, path):
-        if not cls._is_network(path):
-            return True
-        item = cls._CACHE.get(_key(path))
-        return bool(item) and (time.time() - item[0] <= cls._CACHE_TTL)
 
     def _show_hidden(self):
         return bool(self._filter & QDir.Filter.Hidden)
@@ -411,20 +750,24 @@ class DirStoreModel(QAbstractItemModel):
         # 先取完要用的自身状态：本槽由后台线程的投递触发，销毁时刻不受本槽控制，
         # 实测存在“槽跑到一半 self.__dict__ 已被清空”的现场（见 __init__ 处的说明）
         show_hidden = self._show_hidden()
-        node.loading = False
         if node.key not in self._nodes or self._nodes.get(node.key) is not node:
+            node.loading = False
             return  # 节点已被丢弃
         if node.loaded:
+            node.loading = False
             return  # 幂等：同一节点重复的完成信号不得再次插入（避免重复行）
         parent_idx = self.createIndex(0, 0, node)
         first = 0
-        self.beginInsertRows(parent_idx, first, first + len(entries) - 1) \
-            if entries else None
-        self._adopt(node, entries)
-        node.loaded = True
-        self._cache_put(node.key, show_hidden, entries)
-        if entries:
-            self.endInsertRows()
+        with self._rows_signal():
+            if entries:
+                self.beginInsertRows(parent_idx, first, first + len(entries) - 1)
+            self._adopt(node, entries)
+            node.loaded = True
+            self._cache_put(node.key, show_hidden, entries)
+            if entries:
+                self.endInsertRows()
+        # loading 最后才清：过渡态不能对任何重入查询暴露（同 _rows_signal 的理由）
+        node.loading = False
         try:
             self.directoryLoaded.emit(node.path)
         except RuntimeError:
@@ -491,7 +834,8 @@ class DirStoreModel(QAbstractItemModel):
             return 1 if self._top_node is not None else 0
         p = parent.internalPointer()
         if isinstance(p, DirNode):
-            if p is self._top_node and not p.loaded and not p.loading:
+            if (p is self._top_node and not p.loaded and not p.loading
+                    and not self._rows_changing):
                 self._start_load(p)
             return len(p.entries) if (p.loaded and p.entries) else 0
         return 0
@@ -501,7 +845,7 @@ class DirStoreModel(QAbstractItemModel):
             return False
         p = parent.internalPointer()
         return (p is self._top_node and isinstance(p, DirNode)
-                and not p.loaded and not p.loading)
+                and not p.loaded and not p.loading and not self._rows_changing)
 
     def fetchMore(self, parent):
         if not parent.isValid():
@@ -591,6 +935,7 @@ class DirStoreModel(QAbstractItemModel):
         e.path = os.path.normpath(new_path)
         if node is not None:
             self._cache_invalidate(node.path)
+            self._mark_self_change(node.path)
         self.dataChanged.emit(index, index,
                               [Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.EditRole])
         self.dirChanged.emit(os.path.dirname(old_path))

@@ -36,11 +36,27 @@ def call_later(receiver, msec: int, fn):
     return timer
 
 
+def _pools_to_drain():
+    """需要收拢的线程池：全局池 + 目录枚举专用池。
+
+    `dir_model` 不再用全局池（并发数按 CPU 核数，对 SMB 和稳定性都是负担，见
+    `dir_model.dir_pool`），所以排空要逐个点名，不能只照顾一个。
+    延迟 import：`dir_model` 也属于核心层，不在模块级互相依赖。
+    """
+    pools = [QThreadPool.globalInstance()]
+    try:
+        from core.dir_model import dir_pool
+        pools.append(dir_pool())
+    except Exception:         # 核心模块不可用时（单测/早期崩溃）只要有全局池就行
+        pass
+    return pools
+
+
 def drain_background_pool(wait_ms: int = 5000, spin: int = 5) -> None:
     """退出前收拢后台线程：丢弃/等待在飞任务，并把挂起的跨线程投递派发完。
 
-    不能留给析构阶段去做：`QThreadPool.globalInstance()` 要等 `~QCoreApplication`（甚至
-    更晚的静态析构）才销毁，那时 CPython 可能已开始 finalize；而未派发的 queued
+    不能留给析构阶段去做：线程池（全局池与目录枚举专用池）要等 `~QCoreApplication`
+    （甚至更晚的静态析构）才销毁，那时 CPython 可能已开始 finalize；而未派发的 queued
     投递事件里持有着一批 Python 对象（枚举出的条目、目录节点），Qt 销毁它们时
     会从非主线程触碰已死的解释器状态。Windows 上实测退化为 fast-fail（退出码
     0xC0000409，无可捕异常），用户侧就是“关掉程序时报错”。
@@ -52,16 +68,17 @@ def drain_background_pool(wait_ms: int = 5000, spin: int = 5) -> None:
     只能在退出路径（事件循环已停 / 测试 teardown）调用，不要在运行中调：`waitForDone`
     会阻塞主线程，网络盘上一个枚举可能耗时数秒。
     """
-    pool = QThreadPool.globalInstance()
-    pool.clear()
-    pool.waitForDone(wait_ms)
     app = QCoreApplication.instance()
+    for p in _pools_to_drain():
+        p.clear()
+        p.waitForDone(wait_ms)
     if app is None:
         return
     for _ in range(spin):
         app.processEvents()
-    pool.clear()
-    pool.waitForDone(1000)
+    for p in _pools_to_drain():
+        p.clear()
+        p.waitForDone(1000)
     for _ in range(spin):
         app.processEvents()
 

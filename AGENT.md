@@ -201,8 +201,22 @@ ssh sshuser@192.168.5.55 'cmd /c "taskkill /F /IM pan4dex* /T 2>nul & timeout /t
 
 ### 关键设计决策
 - 文件列表使用自研 `core/dir_model.py:DirStoreModel`（每窗格一个实例）：`os.scandir` 一次只枚举
-  一个目录、在 `QThreadPool` 后台执行，TTL 缓存 + 定向失效，不挂 `QFileSystemWatcher`
-  （SMB 上逐项 `stat` 与 watcher 轮询是卡顿根因）；应用内改动必须显式 `refresh_dir` 重扫
+  一个目录、在**限流专用池** `dir_pool()`（4 线程，不用 `QThreadPool.globalInstance()`）后台执行，
+  TTL 缓存 + 定向失效；**只给当前显示的本地目录**挂
+  `QFileSystemWatcher`（外部程序的改动自动重扫），网络目录完全不挂（SMB 上的逐项 `stat`
+  与 watcher 轮询是卡顿根因，仍靠 TTL 2s + 定向失效）；应用内改动仍显式 `refresh_dir` 重扫
+- 目录监视的六条约束（缺一就会闪列表、漏更新，或直接 access violation，见
+  `docs/gotchas.md` 第 23 条）：只登记本地目录；只登记**屏幕上看得见的那个目录**（切走即摘）；
+  监视器全进程共用一个 `_WatchHub`（以 `QApplication` 为父，弱引用计数），不用 per-model
+  watcher；通知经 350ms 防抖合并；应用内改动用**类级** `_self_change` 时间戳抑制随后的
+  通知（实例级不够——跨窗格 `dirChanged` 会让没“改过”的窗格也收到同一次改动的通知）；
+  native `addPath`/`removePath` 推到**事件循环顶层**一次性 flush（不在 `set_directory` 的栈里做）。
+  监视量、并发枚举数与枚举量都是**稳定性预算**：实测监视全部曾导航目录 → 10/10 轮必崩，
+  只监视当前目录 + 延迟登记 + 枚举限流 → 0/14；「本地目录到达即重扫」把枚举量翻倍 → 9/10
+  必崩，改用快照 TTL 过期
+- **不要把 Qt 对象的生死交给分代 GC**：`removeTab` 之后必须握住 Python 引用（如
+  `MainWindow._closed_tabs`）再 `deleteLater()`，否则信号→绑定方法构成的引用环一被回收就当场
+  `delete` C++ 并级联拆光子树，销毁时机变成“任意 Python 分配点”（见 `docs/gotchas.md` 第 28 条）
 - 两个侧边目录树（`widgets/pane_tree_view.py` / `widgets/tree_sidebar.py`）仍用 `QFileSystemModel`（按需展开，非瓶颈）
 - 每个标签页持有独立的 `QuadPaneWidget`（包含 4 个 Pane）
 - 跨窗格拖拽使用自定义 MIME 类型 `application/x-pan4dex-drag`

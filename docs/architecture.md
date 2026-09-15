@@ -34,7 +34,7 @@
 |---|---|
 | `main_window.py` | 主窗口管理、标签页、布局切换、菜单栏、状态栏 |
 | `pane.py` | 单个窗格的完整功能：路径栏、文件列表、导航、上下文菜单 |
-| `dir_model.py` | `DirStoreModel`：以目录为单位的异步文件模型（后台枚举 + TTL 缓存 + 定向失效），文件列表专用 |
+| `dir_model.py` | `DirStoreModel`：以目录为单位的异步文件模型（后台枚举走限流专用线程池 `dir_pool()` + TTL 缓存 + 定向失效；只给**当前显示的本地目录**挂 `QFileSystemWatcher` 自动重扫，监视器是全进程唯一的 `_WatchHub`，网络目录不挂），文件列表专用 |
 | `lifecycle.py` | `call_later(obj, ms, fn)`：以业务对象为父的延后回调，避免 `QTimer.singleShot` 在对象销毁后回调已删除子对象；`exec_and_drain(app)` / `drain_background_pool()`：退出时排空后台线程，避免未派发的跨线程投递在解释器收尾阶段被释放（退码 0xC0000409） |
 | `file_operations.py` | 文件复制/移动/删除/重命名，支持进度回调和取消 |
 | `drag_drop.py` | 拖拽事件处理、MIME 数据传输、操作类型判断 |
@@ -117,13 +117,20 @@ QTreeView 支持列排序（名称、大小、修改时间），文件列表模�
 并给每个目录挂 `QFileSystemWatcher`；在网络位置上这是几百次往返，列一个目录要十几秒。
 
 **`DirStoreModel` 的做法**：一次只枚举一个目录（`os.scandir` 一次往返拿到
-name/attr/size/mtime），在 `QThreadPool` 后台线程完成，主线程零阻塞；
+name/attr/size/mtime），在专用线程池 `dir_pool()`（限 4 线程，不用按核数并发的
+`QThreadPool.globalInstance()`，见 `docs/gotchas.md` 第 26 条）后台完成，主线程零阻塞；
 当前显示目录作为模型唯一顶层行，保证排序代理 `mapFromSource` 可映射。
 
 **为何每窗格独立实例**：每个窗格需要独立的当前路径、排序规则、过滤规则与选中状态；
 共享模型除了状态冲突，还会让任一窗格的导航/重扫把卡顿带到其它窗格。
-跨窗格一致性改由显式信号保证（`dirChanged` / `Pane._refresh_dir_everywhere`），
-而不靠文件系统 watcher。
+跨窗格一致性由显式信号保证（`dirChanged` / `Pane._refresh_dir_everywhere`）；
+文件系统 watcher 只能作为**补充**（它只覆盖当前显示的本地目录，且有防抖延迟）。
+
+**为什么只监视一个目录**（而不是监视所有导航过的目录）：实测崩溃率跟监视目录数/通知
+流量单调相关（全部监视 → 10/10 轮必崩；只监视当前显示目录、且枚举限流后 → 0/14）；
+看不见的目录靠「快照 TTL 过期 + 导航回来重扫一次」保证新鲜。native 登记也不在
+`set_directory` 的调用栈里做，而是推到事件循环顶层合并（避开同一轮反复 add/remove）。
+详见 `docs/gotchas.md` 第 23、25、26 条。
 
 > 两个侧边目录树（`pane_tree_view.py` / `tree_sidebar.py`）本就按需展开、非瓶颈，
 > 继续使用 `QFileSystemModel`。

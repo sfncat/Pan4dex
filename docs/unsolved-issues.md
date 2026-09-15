@@ -104,6 +104,120 @@ finalize，Qt 从非主线程释放这些对象 → 直接 fast-fail。
 —— 改善是真的；但样本不足以证明根除，继续在全量跑中观察，一旦再现先取 faulthandler
 全线程转储（本轮的 `_deliver` 帧就是这么来的）。
 
+**v1.9.005 追更：崩溃率与「后台枚举量」单调相关，不是与监视器数量相关**
+
+接本地 watcher 时做了成批 A/B（每轮 = 全量 `pytest tests -q`，约 25s）：
+
+| 配置 | 崩溃轮数 |
+|---|---|
+| 不挂任何监视（v1.9.004） | 0/10 |
+| per-model 监视“曾导航过的所有目录” | 2/8 |
+| 进程级 hub，监视“曾导航过的所有目录” | **10/10** |
+| hub 注册但不把 `directoryNotice` 连到模型 | 4/4 |
+| hub 存在但 `add()` 直接 return（不 addPath） | 0/4 |
+| hub 注册但从不 `removePath` | 4/4 |
+| hub + **只监视当前显示目录**（去掉重复枚举、TTL 判鲜） | 0/6 → 2/12 |
+| 再加“本地目录到达即重扫” | **9/10** |
+| HEAD（v1.9.004，无 watcher）同期对照 | 0/10 |
+| 上表基础上：native 登记延迟到事件循环顶层 | 1/12 |
+| 再叠加：枚举改**限流专用池**（4 线程） | **0/14** |
+| 加上两个生命周期新用例后（未处理销毁时机） | 4/10 → 4/12（并多一个固定失败） |
+| 再叠加：测试边界主动回收 + 关标签页握住引用 | **0/12**（5 failed 均为无关的主题幻影） |
+
+上表已否证了三个新假设（都有探针/实验支撑，后人不必重走）：
+1. “Windows 监视句柄 > 64 超 `MAXIMUM_WAIT_OBJECTS` 越界” → 单 watcher 登记 40/100/200
+   个目录 + churn 通知，三组全部 rc=0。
+2. “`addPath` 内部跑 `QWindowsSystemEventDispatcher` 嵌套事件循环导致重入” → 忙监视线程
+   + 200 目录下 `addPath` 期间 0ms 定时器是否插入：6 次全 `during: []`。
+3. “崩在通知派发到模型槽” → 只注册 native、不连模型的 `directoryNotice`，4/4 仍崩；
+   而不 `addPath` 时 0/4 不崩。触发条件是 `addPath` 带来的**监视目录数量与通知流量**，
+   不是一段 Python 回调代码。
+
+真正的机制在前几组对比里：崩溃率跟着**枚举量（以及行信号量）**走。查下去发现
+`beginInsertRows` 内部会回调 `rowCount(parent)`，而 `rowCount` 的惰性加载条件在
+「已清 loading、未置 loaded」的过渡态下成立 → 以前**每个目录加载都白起两次枚举**
+（见 `docs/gotchas.md` 第 24 条）。去掉重复枚举 + 只监视当前目录后降到 2/12，现场变成
+`core/pane.py:431 setModel(sort_proxy)` ← 250ms `call_later` 的延迟建窗格。
+
+把剩下的两个现场拆开看，又各指向一个**放大因子**：
+1. **同一轮事件里多次 `addPath`/`removePath`**。native 登记原先在 `set_directory` 的调用栈
+   里同步执行，导航测试里一个用例能连做十几次 `set_directory` → 登记来回抖动。改成“记目标 +
+   0ms 定时器，事件循环顶层一次性 flush”后，同一轮的多次导航自动合并成一次登记：2/12 → 1/12。
+2. **并发枚举线程数**。faulthandler 转储里同时有 **10 个线程**卡在 `enumerate_dir` —— 全局
+   `QThreadPool.globalInstance()` 的并发数等于核数（本机 24 核）。目录枚举换成本地常量 4 线程
+   的专用池 `dir_pool()`（一屏最多 4 个窗格，再多并发对 SMB 反而互抢通道）后 0/14。
+
+9/10 那轮的 9 份 dump 完全一致（与其他轮的现场不同）：
+
+```
+Current thread (主线程):
+  core/dir_model.py:689  _on_entries_loaded -> self.endInsertRows()
+  pytestqt/plugin.py:220 _process_events     <- pytest_runtest_teardown
+其它线程:
+  core/dir_model.py  enumerate_dir / _entry_hidden / _LoadTask.run
+```
+
+即“行插入进行中目标对象失效”。试过两种 `sip.isdeleted` 守卫：入口判活 4/6 仍崩
+（销毁发生在槽执行期间，不在入口）；在 `endInsertRows` 前判活早退则退化为
+`0xC0000409` 并卡死（留下未闭合的 begin/end）。两条都已删，现在靠“不把枚举量
+放大”避开，而不是靠守卫。**结论：“槽执行中途对象失效”仍未被根治**，只能保证
+不再主动把它放大到必现；再现时先取 faulthandler 转储，并先查当下的枚举量。
+
+**当时的 WER 记录**：故障模块 `Qt6Core.dll 6.11.2.0`，偏移 `0x3c0330`（与加 watcher
+之前同一偏移）与 `0x324026`，异常码 `0xc0000005`。`pytest -v`（改变输出/时序）下不崩。
+
+**可迁移的结论**：崩溃率 ≈ f(后台枚举量, 并发枚举线程数, 行信号量, native 登记抖动,
+**对象销毁时机是否落在 GC 手里**)，而不是某个具体调用写错了。所以调优方向是**少扫、
+串行一点、少发信号、别把生死交给 GC**；在“哪个调用写错了”这一层找，或加 `sip.isdeleted`
+守卫，只会把 AV 换成 `0xC0000409` 或卡死。
+
+**现场 B（延迟建窗格）的根因：已定 —— 销毁时机由循环 GC 决定**（v1.9.005 后续取证）。
+
+取证链：该现场在另一种时序下不崩，而是抛可读的 `RuntimeError: wrapped C/C++ object of
+type QVBoxLayout has been deleted`（`Pane.init_ui` 里 `self.layout.addWidget`），于是能拿到
+完整 Python 栈：`pytestqt _process_events` → 250ms 定时器 → `_create_remaining_panes` →
+`Pane.__init__` → `init_ui` 第 N 行。用逐行探针夹 `sip.isdeleted` 检查点，得到三个硬结果：
+
+1. 进入回调时宿主 `QuadPaneWidget` **未死**，pane2/pane3 也都建成了，到 pane3/pane4 的
+   `init_ui` **中途**窗格自己的 C++ 部分才消失 —— 不是“拿着死宿主开干”这么简单。
+2. 死的确切时刻在一行**纯 Python 语句**上（`Entry(...)` 构造，即普通对象分配），而不是
+   任何 Qt 调用 —— 排除嵌套事件循环，指向**分代 GC**。
+3. 决定性实验：同一组合（`tests/test_lifecycle.py + tests/test_m1_core.py`）在 `gc.disable()`
+   下 **22/22 通过**，平时则随机报 `... has been deleted`。机制至此确定。
+
+**为什么 GC 能删掉正在用的东西**：`signal.connect(self.method)` 这类用法天然构成引用环
+（self → button → button.receivers → 绑定方法 → self），包装器只能等分代 GC 回收，而 GC
+可以在**任意** Python 分配点执行。当一个 Qt 对象同时满足“sip 当作 Python 拥有”与
+“此刻 C++ 父指针为空”（典型来源：`QTabWidget.removeTab` 正是后者），它的包装器一被回收
+就当场 `delete` C++ 对象，级联拆掉整棵子树 —— 若那一刻另一个窗格正在构造，拆掉的就是它
+正在用的东西（Windows 下 `~QWidget` 还要 `DestroyWindow` → 重入消息派发，于是从“报错”
+升级为“AV”）。`close_tab` 就在这个坑上：旧写法 `removeTab` + `deleteLater` 看似确定，实际
+销毁时机完全在 GC 手里。
+
+**修复（三处，已否证一种看似合理的写法）**：
+- `MainWindow.close_tab`：**握住 Python 引用**（`self._closed_tabs`）+ `hide()` + `deleteLater()`，
+  把销毁时机交给事件循环。注意：**只 `setParent(self)` 归还所有权拦不住**（实测包装器被
+  回收时 C++ 照旧被删）。
+- `_create_remaining_panes`：入口 `sip.isdeleted(self)` 直接放弃，并在构造失败且确认宿主已死
+  时吞掉 RuntimeError（其余 RuntimeError 继续上抛，不掩盖真错误）。
+- `tests/conftest.py`：每个用例结束时（`sip.delete` 顶层窗口 + 排空后台池之后）**主动
+  `gc.collect()`**，把“由 GC 决定的销毁”集中到没有构造在飞的安全点。
+
+**已经试过并回退的做法**（重要，后人别再试）：在生产路径的批量构造入口（`new_tab()`、
+`_create_remaining_panes()` 开头）先 `gc.collect()` 再构造。理论上“把不确定时机换成确定
+时机”，实测**反而制造新故障**：主动回收会把“已该死但拖着没死”的对象集中删掉，其中就有
+即将被使用的宿主，同一个组合从 5 passed 变成 2 failed（`Pane(parent=self)` 报
+`QuadPaneWidget has been deleted`）。**回收本身不是修复，消除“随时会被回收”这个状态才是。**
+
+另：半途死的窗格已在 `Pane._instances` 里、后续每个 `MainWindow()` 都因它报 RuntimeError
+（实测一轮 22 个级联失败）—— 这条已修（入册改到 `__init__` 末尾 + `Pane._live_instances()`
+过滤），详见 `docs/gotchas.md` 第 27 条；本条的销毁时机问题写在第 28 条。
+
+**取证时必知的一个细节**（实测，能省很多时间）：sip 删除对象的 C++ 部分时**不清空**
+`__dict__`。所以在死 QObject 上读一个已赋值的属性不会报错，只有读**不存在**的属性才会
+落到 Qt 元对象并报 `RuntimeError: ... has been deleted`。推论：用“读属性试死活”写守卫
+不可靠，必须用 `sip.isdeleted()`。
+
 ---
 
 ## ✅ 已解决（近期）
