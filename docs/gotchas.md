@@ -591,6 +591,41 @@ assert QApplication.keyboardModifiers() == Qt.KeyboardModifier.NoModifier
 `keyClick` 不带修饰键时无此问题。排查这类“隔文件挂”的线索：先打
 `QApplication.keyboardModifiers()`，再怀疑业务逻辑。
 
+### 33. ProgID 在 `HKCR\<progid>` 的默认值是**文档类型描述**，不是程序名
+
+**现象**：给「打开方式」列候选时，若拿 `HKCR\.txt` → ProgID → `HKCR\<progid>` 的默认值
+当显示名，本机装了三个能开 `.txt` 的 IDE 就会显示三个同名项（实测都叫
+“Text Source File”）—— 用户看到三个一模一样的选项，等于没有选项。AppX 安装
+（UWP）的 ProgID 更糟：显示名是一串哈希。
+
+**写法**（`core/open_with.py::_win_name_for`）：只认 `<progid>\Application\ApplicationName`，
+并且该值本身还可能是路径或 MUI 引用（`@C:\...,-1234`），这两种都**不能**直接显示，
+回退到 exe 文件名（`_exe_stem`）。MRU 那一路没有 ProgID，用 `App Paths\<exe>` 的
+`ApplicationName`，否则用 exe 名去扩展名 —— 特意不用解析出的完整路径里的文件名：
+NTFS 不区分大小写，同一个程序会从不同入口分别报成 `code` 与 `Code`。
+
+同类坑（一并记在此）：**兜底候选必须分文件类型**。无脑补“记事本/画图/Word/VLC”
+会让 `.txt` 挂上画图与 Word，比资源管理器多一堆不相干项；现在按大类查
+`_WINDOWS_FALLBACK`，且**只在注册表那条链给的候选少于 5 项时**才补。
+
+另三条硬约束（右键菜单的实现前提，改动时别退回去）：候选**只在子菜单 `aboutToShow`
+时枚举**（构造菜单就扫注册表是纯浪费）；结果按扩展名做 TTL 缓存（300s）；枚举
+任何一步失败只准“少一项候选”，绝不向外抛 —— 右键菜单不能弹不出来。
+分别由 `tests/test_open_with.py` 的 `test_submenu_defers_enumeration_until_about_to_show`、
+`test_list_apps_caches_per_extension_until_ttl_expires`、
+`test_enumeration_failure_keeps_the_menu_usable` 盯住。
+
+### 34. 测试里手工造的父 `QMenu` / 父 widget 一返回就被 GC，子对象先没
+
+**现象**：写“建一个菜单 → 取它的子菜单 → 断言子菜单里的项”的测试，如果辅助函数只
+`return submenu`，会在下一行读到 `RuntimeError: wrapped C/C++ object of type QMenu has
+been deleted`。子菜单没被删过，是它的**父菜单**（一个函数局部变量）在辅助函数返回时
+被回收，Qt 的父子关系连带删掉了整个子树。
+
+**写法**：辅助函数把父对象一并返回，让调用方的栈帧握住它（`menu, submenu, _ = _fill(...)`）；
+或让夹具持有。这与第 28 条是同族问题（Qt 对象的销毁时机由 Python 引用决定），区别在
+这里是“**父**没了连带删子”，不是“子的 deleteLater 落进 GC”。
+
 ---
 
 ## 八、回归防护机制
@@ -637,6 +672,10 @@ python scripts/deploy.py 0.9.618
       `QTimer.singleShot`（后者在对象销毁后仍会触发）
 - [ ] 新增后台线程/线程池任务：进程退出是否走 `exec_and_drain(app)`（而非裸 `app.exec()`），
       保证事件循环一返回就排空未派发的投递
+- [ ] 新增 UI 入口（菜单项 / 对话框 / 工具栏）：枚举本机信息（注册表、`.desktop`、
+      扫盘）是否**延迟到真要显示时** + 带 TTL 缓存 + 失败只少一项不外抛（见第 33 条）？
+- [ ] 测试里手工造的父 `QMenu` / 父 widget：是否被调用方握住（只返回子对象会被 GC
+      连带删掉整棵子树，见第 34 条）？
 - [ ] 切换可见性后是否 `update()` + `repaint()`
 - [ ] 导航是否用 `setRootIndex` 而不是 `setRootPath`
 - [ ] QDockWidget 是否保存了显式 parent 引用

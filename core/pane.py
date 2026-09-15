@@ -1099,6 +1099,105 @@ class Pane(QWidget):
             except Exception as e:
                 logger.warning("打开文件失败 %s: %s", file_path, e)
 
+    # ---------- 打开方式（右键子菜单） ----------
+
+    def _add_open_with_submenu(self, menu, file_path: str):
+        """挂「打开方式」子菜单：候选枚举**延迟到子菜单真要显示时**
+
+        候选来自本机注册表 / `.desktop` / `Info.plist`，读一次不贵（实测本地
+        注册表 2ms），但多数右键根本不展开这一层；在构造菜单时就读是纯浪费。
+        另外 `list_apps` 自带按扩展名的 TTL 缓存，连续右键同类型文件只读一次。
+        """
+        submenu = menu.addMenu("打开方式(&H)")
+        submenu.aboutToShow.connect(
+            lambda p=file_path, m=submenu: self._fill_open_with_menu(m, p))
+        return submenu
+
+    def _fill_open_with_menu(self, submenu, file_path: str):
+        """填入候选应用（每次展开重填：上一版的列表可能已被 TTL 缓存刷新）"""
+        from core import open_with
+
+        submenu.clear()
+        try:
+            apps = open_with.list_apps(file_path)
+        except Exception as e:                      # 枚举失败不能弄坏整个菜单
+            logger.warning("枚举打开方式候选失败 %s: %s", file_path, e)
+            apps = []
+        default_exe = self._default_association_exe(file_path)
+        for app in apps:
+            label = app.name
+            if app.source == "default" or (default_exe and
+                                           os.path.normcase(app.exe) ==
+                                           os.path.normcase(default_exe)):
+                label += "（默认）"
+            act = QAction(label, self)
+            act.setStatusTip(app.exe)
+            act.triggered.connect(lambda _c=False, a=app, p=file_path:
+                                  self._open_with_app(a, p))
+            submenu.addAction(act)
+        if not apps and not open_with.has_system_dialog():
+            empty = QAction("没有可用的应用程序", self)
+            empty.setEnabled(False)
+            submenu.addAction(empty)
+        if apps or open_with.has_system_dialog():
+            submenu.addSeparator()
+        if open_with.has_system_dialog():
+            # Windows：系统自带「打开方式」对话框（里面有“始终”按钮，等价完整入口）
+            act = QAction("选择其它应用…", self)
+            act.triggered.connect(lambda _c=False, p=file_path:
+                                  open_with.open_system_dialog(p))
+            submenu.addAction(act)
+        else:
+            # Linux/macOS 没有可调用的一键系统对话框，自己挑程序并记进关联表
+            act = QAction("选择其它应用并设为默认…", self)
+            act.triggered.connect(lambda _c=False, p=file_path: self._pick_app_for(p))
+            submenu.addAction(act)
+
+    def _open_with_app(self, app, file_path: str) -> bool:
+        """用指定程序打开一次（不改默认关联）"""
+        from core import open_with
+
+        ok, err = open_with.launch(app, file_path)
+        if not ok:
+            self.status_label.setText(f"无法用 {app.name} 打开: {err}")
+        return ok
+
+    def _default_association_exe(self, file_path: str) -> str:
+        """本仓关联表里为该扩展名记的程序（没记过返回空串）"""
+        assoc = getattr(self.window(), "file_associations", None)
+        if assoc is None:
+            return ""
+        try:
+            return (assoc.get_association(file_path) or {}).get("app") or ""
+        except Exception:
+            return ""
+
+    def _pick_app_for(self, file_path: str):
+        """挑一个可执行程序：用它打开一次，并记为该扩展名的默认
+
+        菜单文字里写明了“并设为默认”，不做静默修改；状态栏再告一次。没有系统
+        对话框的平台（Linux/macOS）只能走这条路，Windows 不走这里（用系统对话框）。
+        """
+        from PyQt6.QtWidgets import QFileDialog
+        from core import open_with
+
+        exe, _ = QFileDialog.getOpenFileName(
+            self, "选择打开该文件的程序", "/usr/bin", "可执行程序 (*)")
+        if not exe or not os.path.exists(exe):
+            return
+        app = open_with.OpenWithApp(
+            name=os.path.splitext(os.path.basename(exe))[0] or exe, exe=exe)
+        ok = self._open_with_app(app, file_path)
+        ext = os.path.splitext(file_path)[1].lower()
+        assoc = getattr(self.window(), "file_associations", None)
+        if ok and ext and assoc is not None:
+            try:
+                assoc.set_association(ext, exe)
+                open_with.clear_cache()          # 默认变了，“（默认）”标记要跟上
+                self.status_label.setText(f"已将 {app.name} 设为 {ext} 的默认程序")
+            except Exception as e:
+                logger.warning("写入文件关联失败 %s: %s", ext, e)
+
     @staticmethod
     def _is_appimage(path: str) -> bool:
         """判断是否为 AppImage：扩展名，或 magic bytes（类型1: AI\\x02 / 类型2: AI\\x01）"""
@@ -1314,6 +1413,10 @@ class Pane(QWidget):
             open_action = QAction("打开(&O)", self)
             open_action.triggered.connect(self.open_selected)
             menu.addAction(open_action)
+
+            # 打开方式：只给单选文件（多选时资源管理器会逐个应开，本仓暂不提供）
+            if single_path is not None and os.path.isfile(single_path):
+                self._add_open_with_submenu(menu, single_path)
             
             # 压缩包操作（仅单选压缩包时）
             if is_arc:
