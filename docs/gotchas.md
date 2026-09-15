@@ -663,6 +663,68 @@ been deleted`。子菜单没被删过，是它的**父菜单**（一个函数局
 另：`FileAssociations` 与 `SavedSearchStore` 的配置目录规则收拢到 `config/paths.py`，
 再加一类 JSON 存储不再多算一份路径。
 
+### 37. 树形用户数据：改动一律按 id，结构规则放在 Qt 之外
+
+**背景**：收藏夹旧版是“一个平铺 list + `list_widget.currentRow()` 当下标”。在中间插一个
+分组之后行号就整体错位，于是“改这条”变成“改那条”、“删这条”带走别的项 —— 而它只在
+树上长到两层、并且能被拖拽重排时才暴露，日常难发现。
+
+**写法**（`config/bookmarks.py` + `widgets/bookmark_sidebar.py`）：
+1. **节点只用 id 引用**（树项在 `UserRole` 里存 id，行号不参与任何计算）；
+2. **规则全在模型层**（成环、层数、条数上限、老格式迁移、坏记录逐条降级），UI 只把动作
+   翻给 store —— Qt 无关，因而可不用事件循环直接测；
+3. `can_place(node, parent) -> 空串|理由` 与 `move()` 共用一个函数：拖拽时 Qt 只能回 bool
+   （不能抛），而菜单与错误文案要同一套理由，不能两边各写一遍；
+4. **子树高度参与层数判定**：`depth_of(parent) + height_of(node) > MAX_DEPTH`。只按被挪
+   节点自身算层，就能把一棵三层子树挂到第六层下面；
+5. 迁移只在读时做，**改过才写盘**（`store.migrated`）：转换有 bug 时用户原文件还在；
+6. 文件里读来的 id 一律不信任（可能重复 / 手改过），载入时从 1 重编；不校验 path 是否
+   存在（存下来之后目录才消失是正常事），但**双击不可达必须说话**（旧版静默无响应，
+   用户只当侧边栏坏了）。
+
+**一个当场踩到的写法错**：导入去重时递归地“往正在遍历的 `node["children"]` 里 append”
+→ 分组子项翻倍，而且被判重复的那条仍留在列表里且没有 id → 存盘 `KeyError: 'id'`。
+必须**返回新列表**再由调用方赋值回去（`_merge` 返 `(kept, added, skipped)`）。
+
+### 38. PyQt6 树控件拖放：六个实测事实（不核实就会写出不存在的 API）
+
+1. `canDropMimeData(data, action, position, index, parent)` 的 **`parent` 是 `QModelIndex`**
+   不是 `QTreeWidgetItem`。直接拿它 `data(0, role)` 会 TypeError（`QModelIndex.data` 只接
+   一个参数）—— 要 `itemFromIndex()` 过一道。
+2. `QTreeWidget` 上**没有** `setDropActions` / `setSupportedDropActions`（写了就是
+   AttributeError）。默认 `supportedDropActions()` 就是 `Copy|Move`；“能接哪些拖放”只能在
+   `canDropMimeData` 里判（那里才能拿到 mime 内容）。
+3. `DragDropMode.InternalMove` **不接外部拖放**。要“从文件列表拖一个目录进来收藏”就得用
+   `DragDrop`，并在 `dropEvent` 里自己分内部/外部两条路（内部才 `super().dropEvent()`）。
+4. **同树内部移动到底发哪些信号不该赌**：实测 `takeTopLevelItem` + `insertTopLevelItem`
+   不发 `rowsMoved`；`model().moveRow()` 会被我们自己的 `canDropMimeData` 拒（因为
+   `_dragging_internally` 为假）；直接调 `dropMimeData` 会把移动做成**复制**。所以落地钩子
+   接两处（`rowsMoved` + `dropEvent` 结尾）并对“顺序没变”早退；对不上账（项数不等 / 未知
+   id / 重复 id）就**按模型重画且不写盘**，宁可弹回也不把残缺顺序写进文件。
+5. `QTreeWidgetItem` **没有 `setParent`**（Qt 6）：改挂只能 `removeChild` + `addChild`。
+6. `QUrl.toLocalFile()` 在 Windows 上返回**正斜杠**路径（`C:/x/y`），与窗格/地址栏拿到的
+   形状不一致；入库前 `os.path.normpath` 一下（否则同一个目录两种写法，去重也判不出来）。
+
+**另一个现场错**：在 `itemCollapsed` 槽里 `save + refresh_tree()`（=`tree.clear()`）→ Qt 此刻
+正在遍历行做展开，拆自己的模型是未定义行为，实测会把调用方刚拿到的 item 包装器删掉
+（`wrapped C/C++ object of type QTreeWidgetItem has been deleted`）。展开/折叠这种“树已经
+是对的”的改动**只存盘不重画**（`_save_only` 与 `_commit` 分开）。
+
+### 39. 时间相关用例别从 `time.time()` 起算；测持久化组件必须注入临时目录
+
+**现象**：`date:昨天` 的筛选用例在凌晨必红（实测 01:2x）：“1.2 天前”从当前时刻减，
+凌晨跑会**跨两个午夜** → 落在前天而不是昨天（那本来就是一个合法输入，不该测得随机）。
+同一类：“0.5 天前”算本周，在周一上午属于上周。
+
+**写法**：把参考时刻定在**本地中午**（`datetime.now().replace(hour=12, ...)`）再往前减天，
+并用 `timedelta` 做日历天算术（而不是减 `N * 86400` 秒）。实现侧同理：一个日历天在跨夏令
+时的那天不等于 24 小时，区间的右界要取“今天零点”而不是 `lo + 86400`。
+
+**同时修掉的卫生问题**：旧的 `TestBookmarkSidebar` 直接 `BookmarkSidebar()`（不注入 store），
+每个用例都会读写开发机 **真实用户配置**里的 bookmarks.json（测“默认四条”时还把它们存
+进了用户盘）。新增任何写盘的组件（收藏 / 已保存搜索 / 文件关联）都必须能注入配置目录，
+并在用例里注临时目录 + 钉一句“没碰真实目录”。
+
 ---
 
 ## 八、回归防护机制
@@ -715,6 +777,13 @@ python scripts/deploy.py 0.9.618
       连带删掉整棵子树，见第 34 条）？
 - [ ] 写盘的用户条件/偏好：存的是“界面上的数字”还是“真正参与执行的那份值”？能否
       `apply → collect` 原样回到同一个值（单位换算、共用下拉，见第 36 条）？
+- [ ] 新增树形/可排序的用户数据：改动是否按 **id** 而不是行号？结构规则（成环/层数/上限/
+      老格式迁移）是否住在 Qt 无关的那一层（见第 37 条）？写盘组件是否可注入配置目录，
+      测试里是否注的就是临时目录（见第 39 条）？
+- [ ] 碰拖放的：`canDropMimeData` 的 `parent` 是否当 `QModelIndex` 用？内部移动是否接了
+      `rowsMoved` **与** `dropEvent` 两处，并对“对不上账”退回不写盘（见第 38 条）？
+- [ ] 用例里的“N 天前/N 小时前”是否从本地中午起算（不从 `time.time()`），是否依赖“今天
+      是周几/几号”（见第 39 条）？
 - [ ] 同一类文本匹配（glob / 正则 / 包含）是否只有一份实现？新写的匹配器是否在遍历
       循环外编译、正则写错时是否当场报错而不是返回 0 结果（见第 35 条）？
 - [ ] 切换可见性后是否 `update()` + `repaint()`

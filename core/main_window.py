@@ -53,6 +53,7 @@ from widgets.bookmark_sidebar import BookmarkSidebar
 from widgets.tree_sidebar import TreeSidebar
 from config.file_associations import FileAssociations
 from config.saved_searches import SavedSearchStore
+from config.bookmarks import BookmarkStore
 from config.theme_manager import ThemeManager
 from config.app_config import (
     APP_NAME,
@@ -109,6 +110,9 @@ class MainWindow(QMainWindow):
         
         # 已保存的搜索条件（高级搜索对话框用；与关联表同一配置目录）
         self.saved_searches = SavedSearchStore()
+        
+        # 收藏夹（侧边栏与目录树右键「添加到收藏夹」共用一份）
+        self.bookmark_store = BookmarkStore()
         
         # 主题管理器
         self.theme_manager = ThemeManager()
@@ -289,7 +293,10 @@ class MainWindow(QMainWindow):
     
     def create_bookmark_sidebar(self):
         """创建收藏夹侧边栏"""
-        self.bookmark_sidebar = BookmarkSidebar(self)
+        self.bookmark_sidebar = BookmarkSidebar(
+            self, store=self.bookmark_store,
+            current_dir_provider=lambda: (self._active_pane
+                                         and self._active_pane.current_path))
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.bookmark_sidebar)
         self.bookmark_sidebar.setVisible(False)
         

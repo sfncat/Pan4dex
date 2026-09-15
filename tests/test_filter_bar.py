@@ -6,6 +6,7 @@
 """
 import os
 import time
+from datetime import datetime, timedelta
 
 import pytest
 
@@ -67,16 +68,36 @@ def test_size_field(query, size, want):
     assert f.matches("dir", True, -1) is False    # 目录不匹配任何 size 条件
 
 
-@pytest.mark.parametrize("query,age_days,want", [
-    ("date:今天", 0, True),
-    ("date:今天", 1.5, False),
-    ("date:昨天", 1.2, True),
-    ("date:昨天", 0.1, False),
-    ("date:本周", 0.5, True),
-    ("date:本月", 0.5, True),
+def _local_noon(days_ago=0.0):
+    """N 天前的本地中午（日期预设按**日历天**算，不能从 `time.time()` 起算）
+
+    从当前时刻起算时，“1.2 天前”在凌晨跑就是一笔跨了两个午夜 → 落在前天而不是
+    昨天，用例在每天 00:00–04:48 这个窗口里必红（实测 01:2x 跑挂）。写文件的
+    时间也常在夜里，那本就是要测得到的输入。
+    """
+    base = datetime.now().replace(hour=12, minute=0, second=0, microsecond=0)
+    return (base - timedelta(days=days_ago)).timestamp()
+
+
+def _this_monday():
+    """本周一中午（“0.5 天前”在周一上午跑属于上周，同一个形状）"""
+    return _local_noon(datetime.now().weekday())
+
+
+def _first_of_month():
+    base = datetime.now().replace(hour=12, minute=0, second=0, microsecond=0)
+    return base.replace(day=1).timestamp()
+
+
+@pytest.mark.parametrize("query,mtime,want", [
+    ("date:今天", _local_noon(0), True),
+    ("date:今天", _local_noon(1.5), False),
+    ("date:昨天", _local_noon(1.2), True),
+    ("date:昨天", _local_noon(0.1), False),      # 今天上午 → 是今天，不是昨天
+    ("date:本周", _this_monday(), True),
+    ("date:本月", _first_of_month(), True),
 ])
-def test_date_presets(query, age_days, want):
-    mtime = time.time() - age_days * 86400
+def test_date_presets(query, mtime, want):
     assert compile_filter(query).matches("f", False, 10, mtime) is want
 
 

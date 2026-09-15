@@ -47,7 +47,7 @@
 |---|---|
 | `path_bar.py` | 可编辑路径栏，支持自动补全、历史下拉、书签按钮 |
 | `preview_panel.py` | 快速预览面板：文本显示、语法高亮、图片缩略图 |
-| `bookmark_sidebar.py` | 收藏夹侧边栏，支持拖拽添加、分组管理 |
+| `bookmark_sidebar.py` | 收藏夹侧边栏（`QTreeWidget` 画 `BookmarkStore` 的树，项在 `UserRole` 存 **id**）：增删/重命名/改目录/新建分组、右键“移动到分组”（候选目标回 store 的 `can_place` 判，不在 UI 重算）、展开与顺序都落盘。两种拖放：本树内部重排/挪组，以及**从文件列表拖一个目录进来收藏**（`DragDrop` 而非 `InternalMove`，`dropEvent` 里分内/外两条路）；`canDropMimeData` 的 `parent` 是 `QModelIndex`（见 gotchas 第 38 条） |
 | `filter_bar.py` | 筛选栏 UI（字段下拉 + 250ms 防抖 + Esc/行内 ✕ 清除）与**查询编译器** `compile_filter()` → `EntryFilter`：名称包含、`*.log` 通配符、`ext:`/`date:`/`size:`/`type:`/`is:`/`re:`（中英字段别名），条件编译一次、逐行只做内存比较；筛选在 `PaneSortProxyModel.filterAcceptsRow` 生效（不叠第二层代理、不发行信号），解析不了的条件降级为名称包含并在状态栏提示。`glob_to_regex()` 是全仓**唯一**一份通配符→正则实现（高级搜索也用它） |
 | `advanced_search.py` | 高级搜索对话框：`collect_params()`（界面 → worker 条件，含大小换算与扩展名归一化）与 `apply_params()`（反向填回）共用一套语义；`build_name_matcher()` 定“正则 → `search` / 含 `*?` → 整名通配 / 否则 → 包含”；「已保存的搜索」下拉（存/载入/删，清单 20.4）读写 `config/saved_searches.py`，存储由 `MainWindow` 注入 |
 
@@ -56,9 +56,10 @@
 | 模块 | 职责 |
 |---|---|
 | `settings.py` | QSettings 封装，提供类型安全的 get/set |
-| `paths.py` | `default_config_dir()`：用户级 JSON 存储的唯一落点（win `%APPDATA%/pan4dex`，其余 `~/.config/pan4dex`），文件关联与已保存搜索共用 |
+| `paths.py` | `default_config_dir()`：用户级 JSON 存储的唯一落点（win `%APPDATA%/pan4dex`，其余 `~/.config/pan4dex`），文件关联、已保存搜索与收藏夹共用 |
 | `file_associations.py` | 文件类型 → 应用映射的增删改查（配置目录向 `paths.py` 委托） |
 | `saved_searches.py` | `SavedSearchStore`：已保存的搜索条件（清单 20.4）单文件 JSON，存的是真正喂给 worker 的 params；读坏当空表、逐条校验、上限 50 条、写失败返回 (False, 文本) 而不抛 |
+| `bookmarks.py` | `BookmarkStore`：收藏夹树的模型层 + 单文件 JSON（`bookmarks.json`，format v2），**不依赖 Qt**。节点 `{id, type: link|group, name, path|children+expanded}`，根是隐式分组；结构规则全在这层：`can_place`（拖拽与 `move` 共用的一套理由：成环/超 8 层/目标是链接）、500 条上限、v1 平铺列表只读转换（改过才写盘）、坏记录逐条降级、文件里的 id 不信任。侧边栏与窗格右键共用 `MainWindow` 注入的那一份 |
 | `theme_manager.py` | 主题注册、切换、自定义主题加载 |
 
 ## 3. 数据流设计

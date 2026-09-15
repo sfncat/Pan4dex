@@ -88,7 +88,12 @@ class TestThemeManager:
 
 
 class TestBookmarkSidebar:
-    """测试 BookmarkSidebar 类"""
+    """测试 BookmarkSidebar 类（M4 冒烟：建得出、默认几条、能增删、能导出）
+
+    分组树的结构规则与拖拽落地覆盖在 tests/test_bookmarks.py，这里不重贴。值得单独
+    钉住的是**所有侧边栏都注入临时目录的 store**：旧版用例直接 BookmarkSidebar()，
+    跑一轮就把用户真实配置目录里的 bookmarks.json 改了。
+    """
     
     def setup_method(self):
         """每个测试前创建临时配置目录"""
@@ -98,61 +103,82 @@ class TestBookmarkSidebar:
         """每个测试后清理"""
         shutil.rmtree(self.temp_dir, ignore_errors=True)
     
+    def make_sidebar(self, qtbot):
+        from config.bookmarks import BookmarkStore
+        from widgets.bookmark_sidebar import BookmarkSidebar
+
+        sidebar = BookmarkSidebar(store=BookmarkStore(config_dir=self.temp_dir))
+        qtbot.addWidget(sidebar)
+        return sidebar
+    
     def test_bookmark_sidebar_creation(self, qtbot):
         """测试收藏夹侧边栏创建"""
-        from widgets.bookmark_sidebar import BookmarkSidebar
-        
-        sidebar = BookmarkSidebar()
-        qtbot.addWidget(sidebar)
+        sidebar = self.make_sidebar(qtbot)
         
         assert sidebar is not None
         assert sidebar.windowTitle() == "收藏夹"
+        assert sidebar.store.config_file == os.path.join(self.temp_dir, "bookmarks.json")
     
     def test_default_bookmarks(self, qtbot):
-        """测试默认收藏"""
-        from widgets.bookmark_sidebar import BookmarkSidebar
+        """首次启动的四条默认收藏（旧的 sidebar.bookmarks 平铺 list 已被 store 取代）"""
+        sidebar = self.make_sidebar(qtbot)
         
-        sidebar = BookmarkSidebar()
-        qtbot.addWidget(sidebar)
-        
-        # 应该有默认收藏
-        assert len(sidebar.bookmarks) > 0
+        assert [lk["name"] for lk in sidebar.store.links()] == [
+            "主目录", "桌面", "下载", "文档"]
     
-    def test_add_bookmark(self, qtbot):
-        """测试添加收藏"""
-        from widgets.bookmark_sidebar import BookmarkSidebar
+    def test_add_bookmark(self, qtbot, tmp_path, monkeypatch):
+        """测试添加收藏：走侧边栏入口，不是直接改 store"""
+        from PyQt6.QtWidgets import QInputDialog
         
-        sidebar = BookmarkSidebar()
-        qtbot.addWidget(sidebar)
+        sidebar = self.make_sidebar(qtbot)
+        monkeypatch.setattr(QInputDialog, "getText",
+                            staticmethod(lambda *a, **k: ("测试", True)))
+        before = sidebar.store.count()
         
-        initial_count = len(sidebar.bookmarks)
-        sidebar.bookmarks.append({"name": "测试", "path": "/tmp"})
-        sidebar.save_bookmarks()
+        sidebar.add_bookmark_with_path(str(tmp_path))
         
-        assert len(sidebar.bookmarks) == initial_count + 1
+        assert sidebar.store.count() == before + 1
+        assert sidebar.get_bookmarks()[-1]["name"] == "测试"
     
-    def test_remove_bookmark(self, qtbot):
-        """测试移除收藏"""
-        from widgets.bookmark_sidebar import BookmarkSidebar
+    def test_remove_bookmark(self, qtbot, tmp_path, monkeypatch):
+        """测试移除收藏（只删收藏夹里这一项）"""
+        from PyQt6.QtWidgets import QMessageBox
         
-        sidebar = BookmarkSidebar()
-        qtbot.addWidget(sidebar)
+        sidebar = self.make_sidebar(qtbot)
+        node_id = sidebar.store.add_link("要删的", str(tmp_path))
+        sidebar.store.save()
+        sidebar.refresh_tree(select_id=node_id)
+        monkeypatch.setattr(QMessageBox, "question", staticmethod(
+            lambda *a, **k: QMessageBox.StandardButton.Yes))
+        before = sidebar.store.count()
         
-        initial_count = len(sidebar.bookmarks)
-        if initial_count > 0:
-            sidebar.bookmarks.pop(0)
-            sidebar.save_bookmarks()
-            assert len(sidebar.bookmarks) == initial_count - 1
+        sidebar.remove_selected()
+        
+        assert sidebar.store.count() == before - 1
+        assert not any(b["name"] == "要删的" for b in sidebar.get_bookmarks())
+    
+    def test_writes_stay_inside_the_injected_config_dir(self, qtbot, tmp_path, monkeypatch):
+        """注入 store 后，改收藏夹不得碰真实用户配置"""
+        from config import bookmarks as bm
+        from PyQt6.QtWidgets import QInputDialog
+        
+        real_file = os.path.join(bm.default_config_dir(), "bookmarks.json")
+        existed_before = os.path.exists(real_file)
+        sidebar = self.make_sidebar(qtbot)
+        monkeypatch.setattr(QInputDialog, "getText",
+                            staticmethod(lambda *a, **k: ("只进临时目录", True)))
+        
+        sidebar.add_bookmark_with_path(str(tmp_path))
+        
+        assert os.path.exists(os.path.join(self.temp_dir, "bookmarks.json"))
+        assert os.path.exists(real_file) == existed_before
     
     def test_import_export_bookmarks(self, qtbot, tmp_path):
         """测试导入导出收藏"""
-        from widgets.bookmark_sidebar import BookmarkSidebar
-        
-        sidebar = BookmarkSidebar()
-        qtbot.addWidget(sidebar)
+        sidebar = self.make_sidebar(qtbot)
         
         # 导出
-        export_file = str(tmp_path / "bookmarks.json")
+        export_file = str(tmp_path / "export.json")
         sidebar.export_bookmarks(export_file)
         
         assert os.path.exists(export_file)

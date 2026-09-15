@@ -83,10 +83,10 @@
 
 | # | 功能 | 优先级 | 状态 | 验证方式 | 说明 | 实现情况 |
 |---|---|---|---|---|---|---|
-| 8.1 | 收藏夹侧边栏 | P2 | 🟢 | 侧边栏显示收藏路径列表 | QListWidget + QDockWidget | bookmark_sidebar.py |
-| 8.2 | 添加收藏 | P2 | 🟢 | 拖拽目录到侧边栏或右键添加 | 拖拽 + 右键菜单 | bookmark_sidebar.py add_bookmark() |
-| 8.3 | 移除收藏 | P2 | 🟢 | 右键移除收藏项 | 右键菜单 | bookmark_sidebar.py remove_bookmark() |
-| 8.4 | 收藏分组 | P3 | 🔴 | 支持分组管理收藏 | 树形结构 | - |
+| 8.1 | 收藏夹侧边栏 | P2 | 🟢 | 侧边栏以**树**显示收藏（分组 + 条目），项在 `UserRole` 存 id 而不是靠行号 | QTreeWidget + QDockWidget，模型层 `config/bookmarks.py`（不依赖 Qt） | bookmark_sidebar.py |
+| 8.2 | 添加收藏 | P2 | 🟢 | 拖拽目录到侧边栏（落在光标下的分组，拖文件不收）、工具栏「+」（默认活动窗格的当前目录）、右键「添加到收藏夹」三条路 | 外部拖入走 `dropEvent`（不是 `InternalMove`）+ 同路径去重 | bookmark_sidebar.py `add_bookmark()` / `add_paths_as_bookmarks()` |
+| 8.3 | 移除收藏 | P2 | 🟢 | 右键或 Del 键；删分组时说清会带走几条，**磁盘上的目录不受影响** | 确认框 + 按 id 删（不是按行号） | bookmark_sidebar.py `remove_selected()` |
+| 8.4 | 收藏分组 | P3 | 🟢 | 新建/重命名/删除分组，嵌套≤ 8 层（超出拒绝）；拖拽重排与挪组（成环不给放）、右键「移动到分组…」列合法目标；展开状态与顺序都落盘；老的平铺 bookmarks 自动迁移（改过才写盘） | `BookmarkStore.can_place` 与 `move` 共用一套规则；上限 500 条 | config/bookmarks.py + bookmark_sidebar.py；tests/test_bookmarks.py 85 项 |
 
 ## 9. 筛选过滤
 
@@ -261,6 +261,7 @@
 | 2026-09-15 | 上一行查实为未实现的三项做完并转 🟢：3.4 / 12.4（Ctrl+L）、4.3 / 12.3（Ctrl+Tab 与 Ctrl+Shift+Tab）、12.5（Ctrl+D，连带主题持久化）；顺手修正表格 21 行多余前导竖线 | - |
 | 2026-09-15 | 6.3（右键「打开方式」）实现并转 🟢：新增 `core/open_with.py`（三平台候选枚举 + 启动 + Windows 系统对话框）与窗格子菜单接线；6.1 的验证方式改写为实际可行路径（原写「设置界面配置」，但本仓从来没有那个界面） | - |
 | 2026-09-16 | 20.4（保存搜索）实现并转 🟢：新增 `config/saved_searches.py` 与 `config/paths.py`（文件关联的配置目录规则改为向它委托）；同时修一个读代码时发现的真 bug（高级搜索非正则模式下 `*.txt` 被 `re.escape` 当字面量，按 placeholder 写必然 0 结果）；20.3 回退为 🟡（原标 🟢 与代码不符：结果列表没有批量操作） | - |
+| 2026-09-16 | 8.4（收藏分组）实现并转 🟢：新增 `config/bookmarks.py`（Qt 无关的树模型 + JSON，规则全在这层）与重写的 `widgets/bookmark_sidebar.py`（分组树、拖拽重排/挪组、展开持久化、id 引用）；8.1–8.3 的“实现情况”同步改为真实形状（旧版是平铺 `QListWidget` + `currentRow()` 当下标，且 8.2 写的“拖目录进来收藏”根本没接外部拖放） | - |
 
 ---
 

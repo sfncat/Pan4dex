@@ -130,7 +130,9 @@ def _date_token_to_range(value: str):
         return today.timestamp(), (today + timedelta(days=1)).timestamp()
     if key in ("昨天", "yesterday"):
         lo = (today - timedelta(days=1)).timestamp()
-        return lo, lo + 86400
+        # 右界取「今天零点」而不是 `lo + 86400`：跨夏令时的那天，24 小时会比一个
+        # 日历天多/少一小时，「昨天」就会漏掉或多吃一个小时
+        return lo, today.timestamp()
     if key in ("本周", "thisweek", "this week", "这周"):
         lo = today - timedelta(days=today.weekday())
         return lo.timestamp(), (lo + timedelta(days=7)).timestamp()
