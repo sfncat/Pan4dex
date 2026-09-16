@@ -33,13 +33,12 @@
 | 模块 | 职责 |
 |---|---|
 | `main_window.py` | 主窗口管理、标签页、布局切换、菜单栏、状态栏 |
-| `pane.py` | 单个窗格的完整功能：路径栏、文件列表、导航、上下文菜单（单选文件时挂「打开方式」子菜单，候选延迟到 `aboutToShow` 才枚举）；持有 `PaneSortProxyModel`（排序 + 筛选同一个代理）与 `FilterBar`（Ctrl+F 唤出，状态栏显示「筛选后 M / N 项」） |
+| `pane.py` | 单个窗格的完整功能：路径栏、文件列表、导航、上下文菜单（单选文件时挂「打开方式」子菜单，候选延迟到 `aboutToShow` 才枚举）；持有 `PaneSortProxyModel`（排序 + 筛选同一个代理）与 `FilterBar`（Ctrl+F 唤出，状态栏显示「筛选后 M / N 项」）。**拖拽没有独立模块**：`dragEnterEvent` / `dropEvent` 与拖拽高亮（`_apply_drag_highlight`，进前快照样式、离开精确还原）都住在 `FileListTreeView`/`Pane` 里，自定义 MIME `application/x-pan4dex-drag` 携带源窗格与默认动作 |
 | `dir_model.py` | `DirStoreModel`：以目录为单位的异步文件模型（后台枚举走限流专用线程池 `dir_pool()` + TTL 缓存 + 定向失效；只给**当前显示的本地目录**挂 `QFileSystemWatcher` 自动重扫，监视器是全进程唯一的 `_WatchHub`，网络目录不挂），文件列表专用 |
 | `lifecycle.py` | `call_later(obj, ms, fn)`：以业务对象为父的延后回调，避免 `QTimer.singleShot` 在对象销毁后回调已删除子对象；`exec_and_drain(app)` / `drain_background_pool()`：退出时排空后台线程，避免未派发的跨线程投递在解释器收尾阶段被释放（退码 0xC0000409） |
 | `file_operations.py` | 文件复制/移动/删除/重命名，支持进度回调和取消（**纯执行层**：不知道有线程、也没有 UI）；另住两个 Qt 无关的共用函数：`describe_removal()`（删除确认文案，按“网络位置没有回收站”说实际后果）与 `move_target_inside_sources()`（“不能把目录移到它自己的子目录里”的唯一判据）—— 窗格与搜索结果列表两个入口不能各写一份 |
 | `file_op_runner.py` | `FileOpRunner`：把 `FileOperations` 丢到后台线程，并配齐一整套主线程配合 —— 进度对话框（速度/剩余时间/取消）、同名冲突询问（含「对后续同样处理」只问一次）、跨线程回投、宿主已销毁时丢帧不崩。宿主只给四个可选钩子（`on_status` / `on_bar` / `on_bar_hide` / `on_done`）：窗格与高级搜索共用这一份（见第 4.5 条）。“同一时刻只跑一个”由 `busy` 说出口，入口在宿主（菜单置灰 / 直接拒） |
-| `drag_drop.py` | 拖拽事件处理、MIME 数据传输、操作类型判断 |
-| `terminal.py` | 终端应用检测、命令构造、启动外部终端 |
+| （没有 `drag_drop.py` / `terminal.py`） | 旧表里这两行是假的，本仓从来没有这两个文件：拖拽与 MIME 住在 `pane.py`（`dragEnterEvent` / `dropEvent` / `_apply_drag_highlight`）与 `widgets/bookmark_sidebar.py`；终端候选与启动命令住在 `widgets/terminal_panel.py`，窗格只经 `main_window.open_terminal_at()` 转给它 |
 | `open_with.py` | 「打开方式」候选枚举 + 启动：Windows 读注册表（默认 ProgID / `FileExts\*\OpenWithList` MRU / 两处 `OpenWithProgids` / `App Paths` 兜底）、Linux 扫 `.desktop`（XDG 目录 + `MimeType` 匹配）、macOS 扫顶层 `.app` 的 `Info.plist`；按扩展名 TTL 缓存 + exe 去重 + 上限 15 项，任何一步失败只少候选、绝不外抛；Windows 另可 `OpenAs_RunDLL` 调系统对话框 |
 
 ### 2.2 widgets/ — UI 组件
@@ -56,7 +55,7 @@
 
 | 模块 | 职责 |
 |---|---|
-| `settings.py` | QSettings 封装，提供类型安全的 get/set |
+| `app_config.py` | 应用级常量与发布元数据（`APP_NAME` / `VERSION` / `BUILD_TIME` / 默认主题 / 窗口最小尺寸）；`BUILD_TIME` 由构建脚本写盘。**没有 QSettings 封装层**（旧表里的 `settings.py` 不存在）：主窗口、窗格、设置对话框各自直接 `QSettings(ORG_NAME, APP_NAME)` 读写自己的键 |
 | `paths.py` | `default_config_dir()`：用户级 JSON 存储的唯一落点（win `%APPDATA%/pan4dex`，其余 `~/.config/pan4dex`），文件关联、已保存搜索与收藏夹共用 |
 | `file_associations.py` | 文件类型 → 应用映射的增删改查（配置目录向 `paths.py` 委托） |
 | `saved_searches.py` | `SavedSearchStore`：已保存的搜索条件（清单 20.4）单文件 JSON，存的是真正喂给 worker 的 params；读坏当空表、逐条校验、上限 50 条、写失败返回 (False, 文本) 而不抛 |

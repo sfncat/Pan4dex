@@ -839,6 +839,9 @@ python scripts/deploy.py 0.9.618
       处好了“已在主线程时直调”（Blocking 会自锁）与决策白名单降级（见第 40 条）？
 - [ ] 新增测对话框/菜单的用例文件：是否替掉了全部模态入口（真弹一下就是整个会话挂死，
       见第 41 条）？用了 `sip.delete` 的对象是否没交给 `qtbot.addWidget`？
+- [ ] 改 `docs/architecture.md` 的模块表：表里的文件名是否逐个与盘上对过账？本仓曾长期
+      挂着三行讲不存在模块的条目（`core/drag_drop.py`、`core/terminal.py`、
+      `config/settings.py`）—— 拿 `git ls-files` 过一遍比眼睛可靠
 - [ ] 切换可见性后是否 `update()` + `repaint()`
 - [ ] 导航是否用 `setRootIndex` 而不是 `setRootPath`
 - [ ] QDockWidget 是否保存了显式 parent 引用
