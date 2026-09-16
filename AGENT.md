@@ -72,6 +72,7 @@ pan4dex/
 │   ├── testing.md            # 测试策略
 │   ├── implementation.md     # 实现设计
 │   ├── feature-checklist.md  # 功能清单与规划
+│   ├── linux-gap.md          # Linux 能力对照与差距（哪些没做、哪些只是没验证）
 │   └── changelog.md          # 更新日志
 ├── tests/                    # 测试目录
 │   ├── conftest.py           # pytest 配置和 fixtures
