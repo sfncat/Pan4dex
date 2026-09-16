@@ -36,7 +36,8 @@
 | `pane.py` | 单个窗格的完整功能：路径栏、文件列表、导航、上下文菜单（单选文件时挂「打开方式」子菜单，候选延迟到 `aboutToShow` 才枚举）；持有 `PaneSortProxyModel`（排序 + 筛选同一个代理）与 `FilterBar`（Ctrl+F 唤出，状态栏显示「筛选后 M / N 项」） |
 | `dir_model.py` | `DirStoreModel`：以目录为单位的异步文件模型（后台枚举走限流专用线程池 `dir_pool()` + TTL 缓存 + 定向失效；只给**当前显示的本地目录**挂 `QFileSystemWatcher` 自动重扫，监视器是全进程唯一的 `_WatchHub`，网络目录不挂），文件列表专用 |
 | `lifecycle.py` | `call_later(obj, ms, fn)`：以业务对象为父的延后回调，避免 `QTimer.singleShot` 在对象销毁后回调已删除子对象；`exec_and_drain(app)` / `drain_background_pool()`：退出时排空后台线程，避免未派发的跨线程投递在解释器收尾阶段被释放（退码 0xC0000409） |
-| `file_operations.py` | 文件复制/移动/删除/重命名，支持进度回调和取消 |
+| `file_operations.py` | 文件复制/移动/删除/重命名，支持进度回调和取消（**纯执行层**：不知道有线程、也没有 UI）；另住两个 Qt 无关的共用函数：`describe_removal()`（删除确认文案，按“网络位置没有回收站”说实际后果）与 `move_target_inside_sources()`（“不能把目录移到它自己的子目录里”的唯一判据）—— 窗格与搜索结果列表两个入口不能各写一份 |
+| `file_op_runner.py` | `FileOpRunner`：把 `FileOperations` 丢到后台线程，并配齐一整套主线程配合 —— 进度对话框（速度/剩余时间/取消）、同名冲突询问（含「对后续同样处理」只问一次）、跨线程回投、宿主已销毁时丢帧不崩。宿主只给四个可选钩子（`on_status` / `on_bar` / `on_bar_hide` / `on_done`）：窗格与高级搜索共用这一份（见第 4.5 条）。“同一时刻只跑一个”由 `busy` 说出口，入口在宿主（菜单置灰 / 直接拒） |
 | `drag_drop.py` | 拖拽事件处理、MIME 数据传输、操作类型判断 |
 | `terminal.py` | 终端应用检测、命令构造、启动外部终端 |
 | `open_with.py` | 「打开方式」候选枚举 + 启动：Windows 读注册表（默认 ProgID / `FileExts\*\OpenWithList` MRU / 两处 `OpenWithProgids` / `App Paths` 兜底）、Linux 扫 `.desktop`（XDG 目录 + `MimeType` 匹配）、macOS 扫顶层 `.app` 的 `Info.plist`；按扩展名 TTL 缓存 + exe 去重 + 上限 15 项，任何一步失败只少候选、绝不外抛；Windows 另可 `OpenAs_RunDLL` 调系统对话框 |
@@ -49,7 +50,7 @@
 | `preview_panel.py` | 快速预览面板：文本显示、语法高亮、图片缩略图 |
 | `bookmark_sidebar.py` | 收藏夹侧边栏（`QTreeWidget` 画 `BookmarkStore` 的树，项在 `UserRole` 存 **id**）：增删/重命名/改目录/新建分组、右键“移动到分组”（候选目标回 store 的 `can_place` 判，不在 UI 重算）、展开与顺序都落盘。两种拖放：本树内部重排/挪组，以及**从文件列表拖一个目录进来收藏**（`DragDrop` 而非 `InternalMove`，`dropEvent` 里分内/外两条路）；`canDropMimeData` 的 `parent` 是 `QModelIndex`（见 gotchas 第 38 条） |
 | `filter_bar.py` | 筛选栏 UI（字段下拉 + 250ms 防抖 + Esc/行内 ✕ 清除）与**查询编译器** `compile_filter()` → `EntryFilter`：名称包含、`*.log` 通配符、`ext:`/`date:`/`size:`/`type:`/`is:`/`re:`（中英字段别名），条件编译一次、逐行只做内存比较；筛选在 `PaneSortProxyModel.filterAcceptsRow` 生效（不叠第二层代理、不发行信号），解析不了的条件降级为名称包含并在状态栏提示。`glob_to_regex()` 是全仓**唯一**一份通配符→正则实现（高级搜索也用它） |
-| `advanced_search.py` | 高级搜索对话框：`collect_params()`（界面 → worker 条件，含大小换算与扩展名归一化）与 `apply_params()`（反向填回）共用一套语义；`build_name_matcher()` 定“正则 → `search` / 含 `*?` → 整名通配 / 否则 → 包含”；「已保存的搜索」下拉（存/载入/删，清单 20.4）读写 `config/saved_searches.py`，存储由 `MainWindow` 注入 |
+| `advanced_search.py` | 高级搜索对话框：`collect_params()`（界面 → worker 条件，含大小换算与扩展名归一化）与 `apply_params()`（反向填回）共用一套语义；`build_name_matcher()` 定“正则 → `search` / 含 `*?` → 整名通配 / 否则 → 包含”；「已保存的搜索」下拉（存/载入/删，清单 20.4）读写 `config/saved_searches.py`，存储由 `MainWindow` 注入。**结果列表可多选并批量操作**（清单 20.3）：`SearchResultTree` 只接键位（Enter / Ctrl+Shift+Enter / Del / Shift+Del / Ctrl+C）并发信号，动作长在对话框里（打开类借 `MainWindow.current_pane()` 的窗格语义，搬运与删除走 `FileOpRunner`）；双击从“系统文件管理器定位”改为“打开”，定位进右键菜单 |
 
 ### 2.3 config/ — 配置管理
 
@@ -67,19 +68,19 @@
 ### 3.1 文件操作流程
 
 ```
-用户操作（拖拽/右键菜单/快捷键）
+用户操作（拖拽 / 右键菜单 / 快捷键 / 搜索结果列表的批量动作）
     ↓
-Pane.eventFilter() 捕获事件
+宿主（Pane 或 AdvancedSearchDialog）组好路径与目标，交给 FileOpRunner.run(note, fn, done)
     ↓
-Pane 构造 FileOperationRequest（源路径列表 + 目标路径 + 操作类型）
+后台 threading.Thread 跑 FileOperations.copy/move/delete（主线程不阻塞）
     ↓
-FileOperations.execute(request) → 在 QThread 中执行
+进度回调 → `_progress_ui` 信号 → 主线程刷新状态栏与 FileProgressDialog（含取消）
+同名冲突 → `_on_conflict` →（共享对象 `_ConflictAsk`）→ 主线程弹 ConflictDialog → 决策写回
     ↓
-progress_signal.emit(percent, current_file) → 进度对话框
+`_op_done` 信号 → 主线程收尾：拆回调、洗 busy、关进度框、`done(result)`
     ↓
-result_signal.emit(FileOperationResult) → Pane 处理结果
-    ↓
-Pane 使涉及的目录失效并重扫（`DirStoreModel.refresh_dir`）+ 更新状态栏
+宿主使涉及的目录失效并重扫（`DirStoreModel.refresh_dir` / `Pane._refresh_dir_everywhere`）
+      + 更新状态栏（搜索列表额外把已搬走/已删的行从快照里移除）
 ```
 
 ### 3.2 拖拽数据协议
@@ -140,12 +141,14 @@ name/attr/size/mtime），在专用线程池 `dir_pool()`（限 4 线程，不�
 > 两个侧边目录树（`pane_tree_view.py` / `tree_sidebar.py`）本就按需展开、非瓶颈，
 > 继续使用 `QFileSystemModel`。
 
-### 4.3 文件操作为什么用 QThread？
+### 4.3 文件操作为什么用后台线程？
 
-大文件复制/移动会阻塞主线程，导致 UI 卡顿。使用 QThread + 信号槽：
-- 工作线程执行文件操作
-- 主线程接收进度信号更新 UI
-- 支持取消操作
+大文件复制/移动会阻塞主线程，导致 UI 卡顿。现在统一由 `FileOpRunner` 安排：
+- 工作线程执行文件操作（`daemon=True` 的 `threading.Thread`，不在 Qt 线程对象上赌生命周期）
+- 主线程接收进度信号更新 UI（进度对话框 0.2s 节流，不被事件风暴刷爆）
+- 支持取消（进度框的取消按钮是全仓唯一入口，它接的是 `FileOperations.cancel`）
+
+旧版这段机制只长在 `Pane._run_file_op_async` 里；现在窗格也只是一个宿主（见第 4.5 条）。
 
 ### 4.4 拖拽操作为什么用自定义 MIME 类型？
 
@@ -154,6 +157,22 @@ name/attr/size/mtime），在专用线程池 `dir_pool()`（限 4 线程，不�
 - 用户意图是复制还是移动
 
 自定义 MIME 类型可以携带完整的上下文信息。
+
+### 4.5 为什么把“后台执行 + 进度 + 取消 + 冲突询问”抽成 `FileOpRunner`？
+
+**诱因**：搜索结果列表要做批量复制/移动/删除（清单 20.3）。只有两条路：
+1. 在主线程同步跑 —— 大文件与 SMB 上就是把界面冻住，正是本轮花力气消掉的东西；
+2. 把窗格那 ~120 行抄第二份 —— 两份一定会漂（取消语义、冲突记忆策略、进度文案各留一份）。
+
+**所以**：机制（线程、进度框、冲突询问、跨线程回投、丢帧防护）只留一份在
+`core/file_op_runner.py`，宿主只保留“状态栏写什么、进度条怎么跳、完了刷新谁”四个钩子。
+`Pane` 净减 ~100 行，`file_ops` 属性与完成后的刷新语义不变（`self.file_ops is self.op_runner.ops`）。
+**文案与判据也一起去重**：删除确认措辞与“目标在源内部”进了 Qt 无关的
+`core/file_operations.py`（`describe_removal` / `move_target_inside_sources`），
+“网络位置删除即永久删除”这种话不会再说错一处漏一处。
+
+抽取过程中修掉两个长期潜伏的真 bug（进度框从未弹起、首次冲突决策被丢），经
+`tests/test_file_op_runner.py` 钉住，详见 `docs/gotchas.md` 第 40 条。
 
 ## 5. 扩展点
 
@@ -186,7 +205,7 @@ JSON 格式定义颜色变量，放置于 `~/.config/pan4dex/themes/`。
 | 场景 | 策略 |
 |---|---|
 | 大目录（10k+ 文件） | `DirStoreModel` 一次只枚举一个目录且在后台线程完成，主线程不阻塞 |
-| 大文件复制 | QThread 后台执行，进度信号节流（每 50ms 更新一次） |
+| 大文件复制 | 后台线程执行（`FileOpRunner`），进度对话框 0.2s 节流、字节统计缺失时降级按百分比 |
 | 频繁导航 | 路径栏自动补全使用缓存，避免重复文件系统查询 |
 | 主题切换 | 预编译样式表，避免运行时解析 |
 

@@ -143,6 +143,7 @@
 | 12.16 | Ctrl+H 显示隐藏文件 | P2 | 🟢 | 全局同步切换所有窗格的隐藏文件显示 | 视图菜单可勾选项 | main_window.py `toggle_hidden_files()` |
 | 12.17 | Alt+Left / Alt+Right / Alt+Up | P1 | 🟢 | 后退 / 前进 / 返回上级 | 编辑菜单 QAction | main_window.py `on_nav_back/forward/up()` |
 | 12.18 | F7/F8、F4、Ctrl+B、Ctrl+Shift+T、Ctrl+Q | P2 | 🟢 | 新建文件夹/新建文件、终端面板、收藏夹、目录树、退出 | 菜单 QAction | main_window.py |
+| 12.19 | 搜索结果列表键位 | P2 | 🟢 | Enter 打开、Ctrl+Shift+Enter 打开所在文件夹、Del 回收站、Shift+Del 永久删除、Ctrl+C 复制**路径文本** | 在 `QTreeWidget.keyPressEvent` 里接（不接 Enter 会被对话框的“自动默认按钮”抢走 → 变成关闭对话框） | widgets/advanced_search.py `SearchResultTree`；tests/test_search_results.py |
 
 ## 13. 右键菜单
 
@@ -219,8 +220,9 @@
 |---|---|---|---|---|---|---|
 | 20.1 | 文件名搜索 | P2 | 🟢 | 按文件名模式搜索：`*.txt` 按整名通配匹配、`report` 按包含匹配、正则勾选后走 `search` | 通配符与筛选栏共用 `filter_bar.glob_to_regex`（旧版把 `*.txt` 当字面量，按提示写必然 0 结果，v1.9.009 修） | advanced_search.py `build_name_matcher` / SearchWorker |
 | 20.2 | 内容搜索 | P2 | 🟢 | 在文件内容中搜索字符串/正则 | 文件遍历 + 搜索（只读前 1MB） | advanced_search.py |
-| 20.3 | 搜索结果操作 | P2 | 🟡 | 现只有双击结果行→在系统文件管理器中定位并选中；**结果内的批量复制/移动/删除未实现**（此前误标 🟢） | 结果列表 + 操作菜单 | advanced_search.py `on_item_double_clicked` |
+| 20.3 | 搜索结果操作 | P2 | 🟢 | 结果列表可多选；右键/按键批量**打开**、**打开所在文件夹**、**在系统文件管理器中选中**、**复制路径文本**、**复制到…／移动到…**（选目标目录 + 进度框 + 同名冲突询问 + 可取消）、**删除／永久删除**（确认框按实际后果说话）；搬走/删掉的行从结果中移除并让相关窗格重扫 | 多选 `QTreeWidget` + 右键菜单；后台执行走与窗格同一份 `core/file_op_runner.FileOpRunner`（旧版只有“双击→系统文件管理器定位”，且那个机制长在窗格私有代码里） | widgets/advanced_search.py `SearchResultTree` / `show_results_menu` / `_transfer_selected`；tests/test_search_results.py 36 项 + tests/test_file_op_runner.py 10 项 |
 | 20.4 | 保存搜索 | P3 | 🟢 | 高级搜索里点「保存当前条件…」起名存下 → 下次在「已保存」下拉选中即按原值填回所有输入框（不自动开搜）；「删除」移除一条 | JSON 单文件 `saved_searches.json`（与 `associations.json` 同目录，路径规则统一到 `config/paths.py`）；存的是**真正喂给 worker 的那份 params**，`collect_params ↔ apply_params` 双向可逆 | config/saved_searches.py + widgets/advanced_search.py；tests/test_saved_search.py 30 项 |
+| 20.5 | 搜索窗口非模态 | P2 | 🟡 | 搜索对话框开着时还能用窗格（切目录、用应用内剪贴板 Ctrl+C/V）并一边搜一边看结果 | `QDialog` 改非模态（`show()` + 保留任务栏入口）；现仍为 `exec()` 模态，所以结果列表只能“选目标目录搬运”，不能先复制到应用内剪贴板再到窗格粘贴 | main_window.py `open_advanced_search()` |
 
 ## 21. 用户操作菜单
 
@@ -262,6 +264,7 @@
 | 2026-09-15 | 6.3（右键「打开方式」）实现并转 🟢：新增 `core/open_with.py`（三平台候选枚举 + 启动 + Windows 系统对话框）与窗格子菜单接线；6.1 的验证方式改写为实际可行路径（原写「设置界面配置」，但本仓从来没有那个界面） | - |
 | 2026-09-16 | 20.4（保存搜索）实现并转 🟢：新增 `config/saved_searches.py` 与 `config/paths.py`（文件关联的配置目录规则改为向它委托）；同时修一个读代码时发现的真 bug（高级搜索非正则模式下 `*.txt` 被 `re.escape` 当字面量，按 placeholder 写必然 0 结果）；20.3 回退为 🟡（原标 🟢 与代码不符：结果列表没有批量操作） | - |
 | 2026-09-16 | 8.4（收藏分组）实现并转 🟢：新增 `config/bookmarks.py`（Qt 无关的树模型 + JSON，规则全在这层）与重写的 `widgets/bookmark_sidebar.py`（分组树、拖拽重排/挪组、展开持久化、id 引用）；8.1–8.3 的“实现情况”同步改为真实形状（旧版是平铺 `QListWidget` + `currentRow()` 当下标，且 8.2 写的“拖目录进来收藏”根本没接外部拖放） | - |
+| 2026-09-16 | 20.3（搜索结果批量操作）实现并转 🟢：抽出 `core/file_op_runner.py`（后台线程 + 进度框 + 冲突询问 + 取消，窗格与搜索共用一份），结果列表加多选/右键菜单/键位与复制到、移动到、删除；新增 12.19（结果列表键位）与 20.5 🟡（搜索窗口仍为模态）。顺带修两个读代码发现的真 bug：进度对话框从未弹起（`Qt.TextInteractionFlags` 不存在的 AttributeError 被 `except` + `debug` 静默咽掉）、首次同名冲突的用户决策被静默丢弃（`invokeMethod` 拿不到槽返回值） | - |
 
 ---
 

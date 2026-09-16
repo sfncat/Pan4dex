@@ -276,4 +276,4 @@ def test_pane_emit_ui_survives_deleted_widget(qtbot, tmp_path):
     with pytest.raises(RuntimeError):
         getattr(p, "shot_dates_ready")             # 前提：C++ 对象确实已没
     p._emit_ui("shot_dates_ready")                 # 防护：不得抛出异常
-    p._emit_ui("_file_progress", 50, "f.txt", 1, 2)
+    p._emit_ui("_archive_done", True, "", "")      # 带参数的信号同样不得抛出

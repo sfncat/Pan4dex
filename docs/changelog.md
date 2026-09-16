@@ -19,6 +19,81 @@
 
 ## 更新记录
 
+### v1.9.011 — 2026-09-16（开发分支 dev/shell-behavior-smb-perf）
+
+#### 🚀 功能增强：搜索结果列表的批量操作（清单 20.3）
+- 结果列表从“只能双击→在系统文件管理器里定位”做成真的可用：**多选** + 右键菜单 +
+  键位，动作有**打开**、**打开所在文件夹**、**在系统文件管理器中选中**（上限 5 个，
+  一人开十个窗口是灾难）、**复制路径文本**、**复制到…／移动到…**（选目标目录）、
+  **删除／永久删除**（确认框按实际后果说话）
+- **`SearchResultTree`** 只接键位并发信号（Enter 打开、Ctrl+Shift+Enter 打开所在目录、
+  Del 回收站、Shift+Del 永久删除、Ctrl+C 复制路径）；不接 Enter 会被 QDialog 的
+  “自动默认按钮”抢走 → 按 Enter 变成关闭对话框
+- **双击语义改为“打开”**（资源管理器习惯），原来的“定位”进右键菜单保留
+- 对齐 Explorer 的取舍：右键压在未选中行 → 选区收到那一行；压在选区内 → 保留整组；
+  多选超 5 个要确认才开；菜单项带条数；选区**按显示顺序**算（`selectedItems()` 给的
+  是点选顺序，不然确认框列的“前 5 个名字”与屏幕上不一致）
+- **结果列表是快照**的收尾：搬走/删掉的行从列表里移除并退回 5000 行显示额度（不退
+  回来，搬完一次就再也显示不出新结果），并让相关窗格重扫（网络目录不挂 watcher）；
+  重扫入口用窗格那一个 `Pane._refresh_dir_everywhere`
+- 打开与导航仍只有一份语义：对话框取 `MainWindow.current_pane()`（**不能**用
+  `_active_pane`，它只在窗格真的获得过焦点时才被赋值），再调 `Pane.open_file` /
+  `navigate_to`；无宿主时菜单与状态栏直说“没有可用窗格”
+
+#### 🔧 工程：后台文件操作抽成 `core/file_op_runner.py`
+- 窗格私有那套（后台线程 + 进度对话框 + 同名冲突询问 + 取消 + 丢帧防护）抽为
+  `FileOpRunner`，宿主只给四个钩子（`on_status` / `on_bar` / `on_bar_hide` / `on_done`）；
+  窗格与搜索共用，**不抄第二份**（`Pane` 净减 ~100 行，`file_ops` 属性与完成后刷新语义不变）
+- **文案与判据也一起去重**到 Qt 无关的 `core/file_operations.py`：`describe_removal()`
+  （网络位置无回收站 → 说“永久删除不可恢复”，本地说“移到回收站”，正文只列前 5 个名字）
+  与 `move_target_inside_sources()`（不能把目录移到它自己或子目录里）
+- 进度文案前缀改用**本次操作的 note**（旧版删除/移动进行时状态栏也写“正在复制”）
+
+#### 🐛 缺陷修复（两个读代码发现、自 v0.x 就在的长期问题）
+- **进度对话框从来没出现过**：`widgets/progress_dialog.py` 写成 `Qt.TextInteractionFlags`
+  （复数，Qt 6 里不存在）→ 构造当场 `AttributeError`，而窗格把建框整段
+  `try/except Exception` + `logger.debug` 包着 → **包含唯一取消入口的那个框从诞生起就没了**，
+  日志里连痕迹都没有。修 typo + 建框失败提为 `warning` 级 + 用例断言“框真的建起来了”
+- **同名冲突里用户点的“替换”被静默丢掉**：旧代码信
+  `QMetaObject.invokeMethod(..., BlockingQueuedConnection, ...)` 的返回值当槽结果，而
+  PyQt6 在这里永远回 `None` → `_resolve_conflict` 认不得 None → 回退 `keep_both` →
+  **文件被改名而不是替换**（窗格走的是同一段代码，同一个毛病）。改为共享对象
+  `_ConflictAsk` 回写决策 + 已在主线程时直调（Blocking 会自锁）+ 决策过白名单
+
+#### 🧪 测试
+- 新增 `tests/test_file_op_runner.py` 10 项：真线程与 `done` 时机、异常变失败结果、
+  进度前缀用本次 note、进度框取消真能传到 `ops.cancel`、结束后拆回调与洗 busy、
+  `apply_all` 只问一次且下次操作重问、主线程问冲突不走 Blocking、坏决策降级、
+  宿主销毁后丢帧不崩、窗格确实走 runner
+- 新增 `tests/test_search_results.py` 36 项：选区取法与右键落点、菜单项与置灰、
+  打开/定位/剪贴板实参、拒自嵌与“本来就在目标里”、完成后删行与退额度、失败不删行、
+  删除的安全位与确认文案、键位接线、收尾时窗格重扫
+- 新增 `TestRemovalWording`（`tests/test_m2_file_operations.py`）5 项：直接钉
+  `describe_removal` 的网络/本地/永久三分支与“只列前 5 个”，以及
+  `move_target_inside_sources` 的“名字前缀相同的兄弟目录不算子目录”
+- 两个新测试文件都带 autouse 护栏：本文件碰到的模态入口没被替掉就当场报错（offscreen
+  下真弹一个框就是整个会话挂死）
+- **变异验证**： 21 处逐处改坏（选区不排序、删行不退额度、`safe` 位反了、右键不判
+  选区、不拦 busy、打开不确认、定位不限量、不叫窗格重扫、菜单不写条数、取消不接线、
+  进度前缀写死、不拆回调、不洗 busy、不理策略、白名单形同虚设、主线程走 Blocking、
+  枚举名写回复数、文案不判网络、列满 7 个名字、子目录用裸前缀、窗格不走 runner），
+  21/21 均有对应用例变红（“主线程走 Blocking”那条以挂死形式被抓住）
+- 全量基线 451 passed / 1 skipped（+54），连跑两轮 rc=0；顺手把 `core/pane.py` 的
+  行尾改回与全仓一致的 CRLF（拼接脚本留下的纯 LF 会让 git 持续提示转换警告）
+
+#### 📝 文档
+- `docs/gotchas.md` 新增第 40 条（PyQt6 的两个静默失败面：枚举复数名、`invokeMethod`
+  拿不到槽返回值）与第 41 条（offscreen 测 Qt 的四个坑：真模态框挂死会话、
+  `qtbot.addWidget` 与 `sip.delete` 不兼容、`waitUntil` 返回值、`selectedItems()` 顺序）；
+  审查清单加四条（“一个行为要做两遍”、`except` 包建 UI、跨线程要答案、测对话框的护栏）
+- `docs/architecture.md` 新增 `core/file_op_runner.py` 条目与第 4.5 条（为何抽成 runner）；
+  重写第 3.1 节（旧图写的 `FileOperations.execute(request)` 与本仓代码根本不符）与
+  第 4.3 条；改写 `file_operations.py` / `advanced_search.py` 两行
+- `docs/feature-checklist.md`：20.3 转 🟢，新增 12.19（结果列表键位）与
+  20.5 🟡（搜索窗口仍为模态：开着它就用不了窗格与应用内剪贴板）
+
+---
+
 ### v1.9.010 — 2026-09-16（开发分支 dev/shell-behavior-smb-perf）
 
 #### 🚀 功能增强：收藏夹分组管理（清单 8.4）

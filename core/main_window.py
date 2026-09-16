@@ -1070,6 +1070,22 @@ class MainWindow(QMainWindow):
     def on_pane_activated(self, pane):
         """窗格被激活（获得焦点）"""
         self._active_pane = pane
+
+    def current_pane(self):
+        """当前标签页里应该接收操作的窗格（搜索对话框等外部宿主借它开文件/进目录）
+
+        不能直接用 `_active_pane`：它只在窗格真的获得过焦点时才被赋值，构造完
+        还没点过窗格、或焦点一直在工具栏/预览面板上时它是 None，那时“打开”
+        会静默什么也不做。窗格页自身的 `get_active_pane()` 按焦点算、算不出来
+        退回 pane1，正好合适。
+        """
+        page = self.tab_widget.currentWidget()
+        getter = getattr(page, "get_active_pane", None)
+        if callable(getter):
+            pane = getter()
+            if pane is not None:
+                return pane
+        return self._active_pane
     
     def toggle_preview(self):
         """切换预览面板"""
@@ -1200,7 +1216,7 @@ class MainWindow(QMainWindow):
     def open_advanced_search(self):
         """打开高级搜索"""
         from widgets.advanced_search import AdvancedSearchDialog
-        dialog = AdvancedSearchDialog(parent=self, store=self.saved_searches)
+        dialog = AdvancedSearchDialog(parent=self, store=self.saved_searches, host=self)
         dialog.exec()
     
     def switch_to_quad(self):

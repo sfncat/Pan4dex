@@ -67,7 +67,10 @@ class FileProgressDialog(QDialog):
         self.file_label = QLabel("准备中…")
         self.file_label.setWordWrap(True)
         # 长文件名截断显示（保留尾部，扩展名可见）
-        self.file_label.setTextInteractionFlags(Qt.TextInteractionFlags.NoTextInteraction)
+        # 枚举名是 `TextInteractionFlag`（单数）：写成 `TextInteractionFlags` 会当场
+        # AttributeError，而调用方（窗格）把建框失败整段 try 掉了，于是这个进度框
+        # 从建立起就从来没出现过，谁也没看见报错。修于 v1.9.011
+        self.file_label.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
         layout.addWidget(self.file_label)
 
         self.bar = QProgressBar()

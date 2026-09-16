@@ -52,6 +52,56 @@ def _normalize_unc(p: str) -> str:
     return p
 
 
+def describe_removal(paths, permanent: bool = False) -> tuple:
+    """删除确认文案 → `(标题, 正文)`（不依赖 Qt：窗格与搜索结果列表共用一份）
+
+    措辞按**实际后果**区分：网络位置（UNC/映射网络盘）没有回收站，删除即
+    永久删除不可恢复，不能仍写“到回收站”误导用户；`permanent=True`
+    （Shift+Delete）时本地也直接永久删除。正文列出前 5 个名字，多了只报条数。
+    """
+    paths = list(paths)
+    count = len(paths)
+    if permanent:
+        title = "确认永久删除"
+        verb = f"确定要永久删除 {count} 个项目吗？此操作不可恢复！"
+    elif os.name == 'nt':
+        net_count = sum(1 for p in paths if _is_network_path(p))
+        local_count = count - net_count
+        parts = []
+        if net_count:
+            parts.append(f"网络位置的 {net_count} 个项目将被永久删除、无法恢复（网络位置没有回收站）")
+        if local_count:
+            parts.append(f"本地的 {local_count} 个项目将移到回收站")
+        title = "确认删除"
+        verb = '，；'.join(parts) + "。"
+    else:
+        title = "确认删除"
+        verb = f"确定要删除 {count} 个项目吗？"
+    names = '\n'.join(os.path.basename(p) or p for p in paths[:5])
+    if count > 5:
+        names += f"\n… 等共 {count} 项"
+    return title, f"{verb}\n\n{names}"
+
+
+def move_target_inside_sources(sources, target_dir: str) -> bool:
+    """移动目标是否位于任一源目录内部（或就是源本身）
+
+    把目录移到它自己的子目录里会让 shutil 递归复制下去卡死，所以调用方
+    （窗格拖放、搜索结果列表的「移动到…」）都先问这一句。抽到这里是因为
+    两个入口必须给同一个答案。
+    """
+    t = os.path.normpath(target_dir)
+    for f in sources:
+        if not os.path.isdir(f):
+            continue
+        s = os.path.normpath(f)
+        if t == s:
+            return True
+        if t.startswith(s + os.sep) or t.startswith(s + "/"):
+            return True
+    return False
+
+
 class FileOperationType(Enum):
     """文件操作类型"""
     COPY = "copy"

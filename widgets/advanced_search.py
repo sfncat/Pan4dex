@@ -4,6 +4,9 @@ Pan4dex 万格 — 高级搜索工具
 匹配语义与列表筛选栏保持一套（见 `widgets/filter_bar.py`）：通配符整名匹配、
 普通字符串是名称包含、正则走 `search`。搜索条件可存为「已保存的搜索」
 （`config/saved_searches.py`，清单 20.4），存的是**真正喂给 worker 的那份 params**。
+
+结果列表（清单 20.3）可多选后右键/按键批量打开、复制、移动、删除；搬文件的
+后台执行不在这儿写第二份，用 `core/file_op_runner.FileOpRunner`（窗格同一个）。
 """
 import logging
 import os
@@ -12,11 +15,13 @@ from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, 
     QPushButton, QLineEdit, QTreeWidget, QTreeWidgetItem,
     QComboBox, QCheckBox, QSpinBox, QGroupBox,
-    QFileDialog, QMessageBox, QInputDialog
+    QFileDialog, QMessageBox, QInputDialog, QMenu, QApplication
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
 
 from widgets.filter_bar import glob_to_regex
+from core.file_op_runner import FileOpRunner
+from core.file_operations import describe_removal, move_target_inside_sources
 
 logger = logging.getLogger("pan4dex.advanced_search")
 
@@ -141,13 +146,46 @@ class SearchWorker(QThread):
         return f"{size:.1f} TB"
 
 
+class SearchResultTree(QTreeWidget):
+    """结果列表：把用户在结果列表里预期的几个键接上（Enter / Del / Shift+Del / Ctrl+C）
+
+    为什么要拦住 Enter：QDialog 里 Enter 会落到「自动默认按钮」上，这个对话框
+    第一个按钮是「保存当前条件…」——不接就等于按 Enter 关掉对话框而不是打开文件。
+    按钮动作都发信号给对话框，不在这里长逻辑。
+    """
+
+    open_requested = pyqtSignal()
+    reveal_folder_requested = pyqtSignal()
+    copy_paths_requested = pyqtSignal()
+    remove_requested = pyqtSignal(bool)      # 参数：是否永久删除
+
+    def keyPressEvent(self, event):
+        mods = event.modifiers()
+        ctrl = mods & Qt.KeyboardModifier.ControlModifier
+        shift = mods & Qt.KeyboardModifier.ShiftModifier
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            if ctrl and shift:
+                # Ctrl+Shift+Enter：资源管理器里的「打开文件位置」
+                self.reveal_folder_requested.emit()
+            else:
+                self.open_requested.emit()
+            return
+        if event.key() == Qt.Key.Key_Delete:
+            self.remove_requested.emit(bool(shift))
+            return
+        if event.key() == Qt.Key.Key_C and ctrl:
+            self.copy_paths_requested.emit()
+            return
+        super().keyPressEvent(event)
+
+
 class AdvancedSearchDialog(QDialog):
     """高级搜索对话框"""
 
     # 大小单位（与 `size_unit` 下拉的项一一对应）
     _SIZE_MULT = (1024, 1024 * 1024, 1024 * 1024 * 1024)
 
-    def __init__(self, parent=None, store=None):
+    def __init__(self, parent=None, store=None, host=None):
         super().__init__(parent)
         
         self.setWindowTitle("高级搜索")
@@ -157,6 +195,11 @@ class AdvancedSearchDialog(QDialog):
         # 已保存搜索的存储：由主窗口注入（全仓一份，与 file_associations 同做法）；
         # 没注入时惰性建一个（单用这个对话框 / 测试时）
         self._store = store
+        # 「打开 / 进入目录」要借主窗口的窗格：打开语义（文件关联、Linux 可执行
+        # 文件、xdg-open 回退）只有一份，长在 `Pane.open_file` 里。没注入时取 parent。
+        self._host = host
+        # 结果列表里的复制/移动/删除走后台线程 + 进度对话框（与窗格同一套）
+        self.runner = FileOpRunner(self, on_status=self._set_op_status)
         
         self.init_ui()
         self.reload_saved_names()
@@ -283,10 +326,24 @@ class AdvancedSearchDialog(QDialog):
         result_group = QGroupBox("搜索结果")
         result_layout = QVBoxLayout(result_group)
         
-        self.result_tree = QTreeWidget()
+        self.result_tree = SearchResultTree()
         self.result_tree.setHeaderLabels(["文件路径", "大小", "修改时间"])
+        # 多选 + 右键菜单（清单 20.3：结果里的批量复制/移动/删除）
+        self.result_tree.setSelectionMode(
+            QTreeWidget.SelectionMode.ExtendedSelection)
+        self.result_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.result_tree.customContextMenuRequested.connect(self.show_results_menu)
         self.result_tree.itemDoubleClicked.connect(self.on_item_double_clicked)
+        self.result_tree.open_requested.connect(self.open_selected)
+        self.result_tree.reveal_folder_requested.connect(self.open_containing_folders)
+        self.result_tree.copy_paths_requested.connect(self.copy_paths_to_clipboard)
+        self.result_tree.remove_requested.connect(self.delete_selected)
         result_layout.addWidget(self.result_tree)
+
+        hint = QLabel("可多选（Ctrl/Shift）后右键或用 Enter 打开、Del 删除、"
+                      "Shift+Del 永久删除、Ctrl+C 复制路径；操作只对已显示且选中的行生效")
+        hint.setStyleSheet("color: #9AA7B8;")
+        result_layout.addWidget(hint)
 
         # 结果批量缓冲：worker 每个命中都 emit 会触发一次 addTopLevelItem
         # → 布局/重绘风暴（尤其 SMB 遍历命中多时）。改为主线程侧缓冲，
@@ -590,15 +647,292 @@ class AdvancedSearchDialog(QDialog):
         self.result_tree.clear()
         self.status_label.setText("就绪")
     
+    # ------------------------------------------------ 结果的批量操作（清单 20.3）
+
+    @property
+    def host(self):
+        """提供窗格的宿主（一般是主窗口）；没注入时退回 parent"""
+        return self._host if self._host is not None else self.parent()
+
+    def pane_for_ops(self):
+        """当前用来「打开文件 / 进入目录」的窗格（没有则 None，菜单会说明）"""
+        getter = getattr(self.host, "current_pane", None)
+        if not callable(getter):
+            return None
+        try:
+            return getter()
+        except Exception:
+            logger.exception("取当前窗格失败")
+            return None
+
+    def selected_paths(self) -> list:
+        """选中行的路径，按列表里的显示顺序
+
+        `selectedItems()` 不保证顺序（Qt 给的是它内部的选择集合顺序），不排序
+        时多选后的「删除前 5 个名字」会跟屏幕上的先后不一致。
+        """
+        tree = self.result_tree
+        items = [it for it in tree.selectedItems() if it.text(0)]
+        items.sort(key=tree.indexOfTopLevelItem)
+        return [it.text(0) for it in items]
+
+    def _refuse_if_busy(self) -> bool:
+        """同一个运行器上不能叠第二个操作（一个 `FileOperations` 共享取消标志）"""
+        if not self.runner.busy:
+            return False
+        QMessageBox.information(self, "正在操作",
+                                "上一个文件操作还没结束，请等它完成或在进度框里取消。")
+        return True
+
+    def _set_op_status(self, text: str):
+        """runner 的状态栏钩子（这个对话框没有底部进度条，只写一行字）"""
+        try:
+            self.status_label.setText(text)
+        except RuntimeError:
+            pass                        # 对话框已销毁，操作还在后台跑
+
+    # ------------------------------------------------------------------ 打开类
+
+    def open_selected(self):
+        """用关联程序打开选中项（双击、Enter）"""
+        paths = self.selected_paths()
+        if not paths:
+            return
+        pane = self.pane_for_ops()
+        if pane is None:
+            QMessageBox.information(self, "打开", "没有可用来打开文件的窗格（未连接主窗口）")
+            return
+        if len(paths) > 5 and QMessageBox.question(
+                self, "打开多个文件",
+                f"要一次打开 {len(paths)} 个文件？外部程序会被一个个启动。") \
+                != QMessageBox.StandardButton.Yes:
+            return
+        opened = gone = failed = 0
+        for p in paths:
+            try:
+                if not os.path.exists(p):
+                    gone += 1
+                    continue
+                if os.path.isdir(p):
+                    pane.navigate_to(p)
+                else:
+                    pane.open_file(p)
+                opened += 1
+            except Exception as e:
+                logger.warning("打开 %s 失败: %s", p, e)
+                failed += 1
+        self.status_label.setText(self._tally(f"已打开 {opened} 项", gone, failed))
+
+    @staticmethod
+    def _tally(head: str, gone: int, failed: int) -> str:
+        """把「结果列表是快照」造成的无效项与失败项说出来，不只报成功数"""
+        if gone:
+            head += f"，{gone} 项已不存在"
+        if failed:
+            head += f"，{failed} 项打开失败"
+        return head
+
+    def open_containing_folders(self):
+        """在当前窗格打开选中项所在目录（Ctrl+Shift+Enter）"""
+        dirs = []
+        for p in self.selected_paths():
+            d = os.path.dirname(p)
+            if d and d not in dirs:
+                dirs.append(d)
+        if not dirs:
+            return
+        pane = self.pane_for_ops()
+        if pane is None:
+            QMessageBox.information(self, "打开所在文件夹", "没有可导航的窗格（未连接主窗口）")
+            return
+        pane.navigate_to(dirs[0])
+        extra = "" if len(dirs) == 1 else f"（共 {len(dirs)} 个目录，只进了第一个）"
+        self.status_label.setText(f"已打开所在目录：{dirs[0]}{extra}")
+
+    def reveal_in_system_manager(self, paths=None):
+        """在系统文件管理器里定位选中项（这是旧版双击的行为，现在进右键菜单）"""
+        if paths is None:
+            paths = self.selected_paths()
+        if not paths:
+            return
+        import subprocess
+        import sys
+        for p in paths[:5]:
+            try:
+                if sys.platform == "win32":
+                    subprocess.Popen(f'explorer /select,"{p}"')
+                elif sys.platform == "darwin":
+                    subprocess.Popen(["open", "-R", p])
+                else:
+                    subprocess.Popen(["xdg-open", os.path.dirname(p)])
+            except OSError as e:
+                logger.warning("定位 %s 失败: %s", p, e)
+        if len(paths) > 5:
+            self.status_label.setText(f"共 {len(paths)} 项，只在系统文件管理器里定位前 5 个")
+
+    def copy_paths_to_clipboard(self):
+        """把选中项的路径作为文本复制进系统剪贴板（Ctrl+C）
+
+        不是把文件放进应用内剪贴板：高级搜索是对话框，开着它切不到窗格去
+        Ctrl+V，那条路走不通；要搬文件用菜单里的「复制到…」直接选目标目录。
+        """
+        paths = self.selected_paths()
+        if not paths:
+            return
+        QApplication.clipboard().setText("\n".join(paths))
+        self.status_label.setText(f"已复制 {len(paths)} 条路径文本")
+
+    # ------------------------------------------------------------------ 搬运类
+
+    def copy_selected_to(self):
+        self._transfer_selected("复制")
+
+    def move_selected_to(self):
+        self._transfer_selected("移动")
+
+    def _transfer_selected(self, verb: str):
+        paths = self.selected_paths()
+        if not paths or self._refuse_if_busy():
+            return
+        pane = self.pane_for_ops()
+        start = getattr(pane, "current_path", "") or self.dir_edit.text().strip()
+        target = QFileDialog.getExistingDirectory(self, f"选择{verb}目标文件夹", start)
+        if not target:
+            self.status_label.setText(f"已取消{verb}")
+            return
+        if verb == "移动" and move_target_inside_sources(paths, target):
+            QMessageBox.warning(self, "移动", "不能把目录移到它自己或它的子目录里")
+            return
+        norm = os.path.normpath(target)
+        same = [p for p in paths if os.path.normpath(os.path.dirname(p)) == norm]
+        if same:
+            # 与资源管理器一致：源就在目标文件夹里，复制是同一文件报错、移动是无意义
+            QMessageBox.warning(
+                self, verb,
+                f"有 {len(same)} 个项目本来就在目标文件夹里，已取消整个操作。")
+            return
+        ops = self.runner.ops
+        if verb == "复制":
+            fn = lambda: ops.copy(paths, target)
+        else:
+            fn = lambda: ops.move(paths, target)
+        self.runner.run(f"正在{verb}", fn,
+                        done=lambda r: self._on_transfer_done(r, verb, paths, target))
+
+    def _on_transfer_done(self, result, verb: str, paths, target: str):
+        if not result.success:
+            self.status_label.setText(f"{verb}失败")
+            QMessageBox.warning(self, verb, result.error or "操作失败")
+            return
+        self._refresh_dirs_everywhere([os.path.join(target, "x")] +
+                                      (paths if verb == "移动" else []))
+        text = f"已{verb} {len(paths)} 项 → {target}"
+        if verb == "移动":
+            # 移动后原路径已经不指向列表里的行了，留着只会让人再点一次失败；
+            # 结果列表是搜出来那一刻的快照，不重新搜不会出现新位置那份
+            removed = self._drop_rows(paths)
+            text += f"（已从结果移除 {removed} 行，不会自动重新搜索）"
+        self.status_label.setText(text)
+        if result.error:
+            QMessageBox.information(self, verb, result.error)
+
+    def delete_selected(self, permanent: bool = False):
+        """删除选中项：Del 走回收站，Shift+Del 直接永久删除（与窗格同一套）"""
+        paths = self.selected_paths()
+        if not paths or self._refuse_if_busy():
+            return
+        title, body = describe_removal(paths, permanent)
+        if QMessageBox.question(self, title, body,
+                                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                                QMessageBox.StandardButton.No) \
+                != QMessageBox.StandardButton.Yes:
+            self.status_label.setText("已取消删除")
+            return
+        ops = self.runner.ops
+        self.runner.run("正在删除", lambda: ops.delete(paths, safe=not permanent),
+                        done=lambda r: self._on_delete_done(r, paths))
+
+    def _on_delete_done(self, result, paths):
+        if not result.success:
+            self.status_label.setText("删除失败")
+            QMessageBox.warning(self, "删除失败", result.error or "操作失败")
+            return
+        removed = self._drop_rows(paths)
+        self._refresh_dirs_everywhere(paths)
+        text = (f"已删除 {result.files_affected or len(paths)} 个项目，"
+                f"从结果移除 {removed} 行（不会自动重新搜索）")
+        self.status_label.setText(text)
+        if result.error:
+            # 网络位置回退永久删除等附带结果必须告知（窗格同样这么处理）
+            QMessageBox.information(self, "删除完成", result.error)
+
+    # ---------------------------------------------------------------- 收尾处理
+
+    def _drop_rows(self, paths) -> int:
+        """把不再指向存在文件的那些行从结果列表拿掉，并同步显示上限计数"""
+        tree = self.result_tree
+        wanted = set(paths)
+        removed = 0
+        for i in reversed(range(tree.topLevelItemCount())):
+            it = tree.topLevelItem(i)
+            if it is not None and it.text(0) in wanted:
+                tree.takeTopLevelItem(i)        # 离开树后交给 Python，出作用域即回收
+                removed += 1
+        if removed:
+            # 不退回 `_shown_count` 的话，那个 5000 行上限会被已删掉的行占着，
+            # 剩下的结果永远进不来
+            self._shown_count = max(0, self._shown_count - removed)
+        return removed
+
+    def _refresh_dirs_everywhere(self, paths):
+        """让正在显示这些目录的窗格重扫（结果列表不是文件系统的眼睛）
+
+        本地目录的 watcher 通知有系统延迟、网络目录完全不挂 watcher，所以
+        应用内改动必须显式失效 —— 这里用窗格那边同一个入口。
+        """
+        try:
+            from core.pane import Pane
+            dirs = {os.path.normpath(os.path.dirname(p)) for p in paths if p}
+            for d in dirs:
+                Pane._refresh_dir_everywhere(d)
+        except Exception:
+            logger.debug("刷新受影响目录失败", exc_info=True)
+
+    def show_results_menu(self, pos):
+        """结果列表右键菜单"""
+        tree = self.result_tree
+        hit = tree.itemAt(pos)
+        if hit is not None and not hit.isSelected():
+            # 右键压在未选中的行上：选区收到只剩那一行（资源管理器习惯）；
+            # 压在已有选区里则保留整个选区，不然多选删除一点菜单就只剩一项
+            tree.clearSelection()
+            hit.setSelected(True)
+        paths = self.selected_paths()
+        menu = QMenu(self)
+        if not paths:
+            menu.addAction("（没有选中任何结果）").setEnabled(False)
+        else:
+            n = len(paths)
+            suffix = f"（{n} 项）" if n > 1 else ""
+            menu.addAction(f"打开{suffix}", self.open_selected)
+            menu.addAction("打开所在文件夹", self.open_containing_folders)
+            menu.addAction("在系统文件管理器中选中", self.reveal_in_system_manager)
+            menu.addAction("复制路径文本", self.copy_paths_to_clipboard)
+            menu.addSeparator()
+            busy = self.runner.busy
+            actions = [(f"复制到…{suffix}", self.copy_selected_to),
+                       (f"移动到…{suffix}", self.move_selected_to),
+                       (f"删除{suffix}", lambda: self.delete_selected(False)),
+                       (f"永久删除{suffix}", lambda: self.delete_selected(True))]
+            for text, slot in actions:
+                act = menu.addAction(text, slot)
+                act.setEnabled(not busy)
+                if busy:
+                    act.setToolTip("上一个文件操作还没结束")
+        menu.exec(tree.mapToGlobal(pos))
+
     def on_item_double_clicked(self, item: QTreeWidgetItem, column: int):
-        """双击打开文件所在目录"""
-        path = item.text(0)
-        if os.path.exists(path):
-            import subprocess
-            import sys
-            if sys.platform == "win32":
-                subprocess.Popen(f'explorer /select,"{path}"')
-            elif sys.platform == "darwin":
-                subprocess.Popen(["open", "-R", path])
-            else:
-                subprocess.Popen(["xdg-open", os.path.dirname(path)])
+        """双击打开文件（资源管理器习惯）；定位到系统文件管理器进右键菜单"""
+        if not self.result_tree.selectedItems():
+            item.setSelected(True)
+        self.open_selected()

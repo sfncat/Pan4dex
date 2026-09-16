@@ -407,7 +407,11 @@ def test_missing_record_does_not_crash(dlg, store):
 
 
 def test_main_window_injects_its_store(qtbot, tmp_path, monkeypatch):
-    """主窗口必须把自己的存储注进对话框（否则对话框会往用户真实配置目录里写）"""
+    """主窗口必须把自己的存储与宿主注进对话框
+
+    存储不注就会往用户真实配置目录里写；宿主不注，结果列表的「打开 / 进目录」
+    就没窗格可用。两个都是注入式依赖，不靠“凑巧 parent 就是主窗口”。
+    """
     import widgets.advanced_search as adv
     from core.main_window import MainWindow
     from PyQt6.QtCore import QSettings
@@ -419,8 +423,9 @@ def test_main_window_injects_its_store(qtbot, tmp_path, monkeypatch):
     seen = {}
 
     class Recorder:
-        def __init__(self, parent=None, store=None):
+        def __init__(self, parent=None, store=None, host=None):
             seen['store'] = store
+            seen['host'] = host
 
         def exec(self):
             return 0
@@ -428,3 +433,21 @@ def test_main_window_injects_its_store(qtbot, tmp_path, monkeypatch):
     monkeypatch.setattr(adv, "AdvancedSearchDialog", Recorder)
     win.open_advanced_search()
     assert seen['store'] is win.saved_searches
+    assert seen['host'] is win
+
+
+def test_current_pane_does_not_depend_on_focus_history(qtbot, tmp_path, monkeypatch):
+    """`current_pane()` 不能在窗格没获得过焦点时返回 None
+
+    `_active_pane` 只由焦点事件赋值，拿它直接做「打开所在文件夹」会静默什么
+    也不做（建完窗口还没点过窗格时就是这种状态）。
+    """
+    from core.main_window import MainWindow
+    from PyQt6.QtCore import QSettings
+
+    win = MainWindow()
+    qtbot.addWidget(win)
+    win.settings = QSettings(str(tmp_path / "prefs.ini"), QSettings.Format.IniFormat)
+    assert win._active_pane is None          # 前提：没记到任何活动窗格
+    assert win.current_pane() is not None
+    assert win.current_pane() is win.tab_widget.currentWidget().pane1

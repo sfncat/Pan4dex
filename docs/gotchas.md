@@ -725,6 +725,49 @@ been deleted`。子菜单没被删过，是它的**父菜单**（一个函数局
 进了用户盘）。新增任何写盘的组件（收藏 / 已保存搜索 / 文件关联）都必须能注入配置目录，
 并在用例里注临时目录 + 钉一句“没碰真实目录”。
 
+### 40. PyQt6 的两个静默失败面：不存在的枚举复数名、拿不到的槽返回值
+
+两个都是实测，共同点是**不报错、只是默默不做**，所以可以潜伏很多个版本：
+
+1. **`Qt.TextInteractionFlags`（复数）不存在**，正确名是 `Qt.TextInteractionFlag`（单数）。
+   写错不是“样式不对”，是 `FileProgressDialog()` 构造当场 `AttributeError`。真正让事情
+   变糟的是调用方：窗格把建框整段 `try/except Exception` + `logger.debug` 包着 → 进度
+   对话框（含全仓唯一的取消入口）**从诞生起到 v1.9.010 从来没出现过**，日志里连一条
+   痕迹都没有。规矩：为“建 UI 控件”写 `except` 时，失败至少 `warning` 级；并且要有用例
+   断言控件**真的建起来了**（`assert runner._dlg is not None`），而不是只测“调了不抛”。
+   同理适用于本仓其它枚举：Qt 6 的枚举带命名空间且**只有单数名**（`Qt.AlignmentFlag`、
+   `QPalette.ColorRole`），凭 Qt 5 印象写的复数形（`Qt.AlignmentFlags`）都是 AttributeError。
+
+2. **`QMetaObject.invokeMethod(..., BlockingQueuedConnection, Q_ARG(...))` 拿不到槽的
+   返回值**（PyQt6 实测永远回 `None`）。旧代码拿它的返回值当“用户在冲突框里选了什么”，
+   而 `FileOperations._resolve_conflict` 把“不在已知选项里”的值当异常处理 → 回退
+   `keep_both` → **用户点的「替换」被静默丢掉，文件被改名了**。跨线程要答案的正确形状：
+   一个共享对象（`_ConflictAsk(info)`）+ Blocking 的同步保证，槽把答案**写回对象**；
+   并且必须带两个防护：① **主线程调用时直调**（`self.thread() is QThread.currentThread()`），
+   否则 Blocking 就是主线程等主线程 → 整个应用冻死；② 答案过**白名单**，空串/脏值
+   一律降级为最安全的选项（这里是 `keep_both`，不是 `replace`）。
+
+### 41. offscreen 测 Qt：四个会反复坑人的地方
+
+本节新写了两个测试文件（runner + 搜索结果），四条都是当场踩到的：
+
+1. **真模态框会把整个会话卡死**：offscreen 下 `QMessageBox.question` / `QMenu.exec` 真的
+   弹一个没人看得见的框 → pytest 直接没输出直到超时。每个测对话框的模块加一个 autouse
+   夹具，把本文件会碰到的模态入口全替成 `raise AssertionError("用例没有替掉这个对话框")` ——
+   宁可当场红也不能等，用例需要哪个再自己覆盖那一个。
+2. **`qtbot.addWidget()` 与 `sip.delete()` 不能用在同一个对象上**：qtbot 收尾要 `close()`，
+   对已销毁对象报错还会污染下一句（“previous item was not torn down properly”）。测“宿主
+   先没、后台还在投递”的用例不注册 qtbot，自己造裸 `QWidget`。
+3. **`qtbot.waitUntil` 的回调只能返 None/True/False**：写 `lambda: runner.done_results`
+   直接 `ValueError`（返了个 `[]`），要 `lambda: bool(...)`。
+4. **`QTreeWidget.selectedItems()` 返的是点选顺序，不是显示顺序**。两个后果：要按显示
+   顺序处理（删除确认框列前 5 个名字）必须自己 `sort(key=tree.indexOfTopLevelItem)`；
+   而测排序的夹具得**故意按乱序点选**，再钉一句“Qt 给的就是乱序”，否则用例在断言一
+   个自己已经排好的东西，什么也没盯住。
+
+另：控件没 `show()` 时 `visualItemRect(item)` 算不出几何 → 测右键菜单不要造真实坐标，
+直接把 `itemAt` 换掉，只测“压在选区内 / 选区外 / 空行”三种落点。
+
 ---
 
 ## 八、回归防护机制
@@ -786,6 +829,16 @@ python scripts/deploy.py 0.9.618
       是周几/几号”（见第 39 条）？
 - [ ] 同一类文本匹配（glob / 正则 / 包含）是否只有一份实现？新写的匹配器是否在遍历
       循环外编译、正则写错时是否当场报错而不是返回 0 结果（见第 35 条）？
+- [ ] “一个行为要做两遍”时：抽出来的是**机制**还是只是复制粘贴？后台执行 + 进度 +
+      取消 + 冲突询问这类配合是否只有一个 `FileOpRunner`（宿主只给钩子，见
+      `docs/architecture.md` 第 4.5 条），确认文案与“目标在源内部”这类判据是否也住在
+      Qt 无关层（`describe_removal` / `move_target_inside_sources`）而不是两个入口各写一份？
+- [ ] 写了 `except Exception` 包住“建 UI 控件”的：失败是否至少 `warning` 级日志？有没有
+      用例断言控件**真的建起来了**（而不是只测“调了不抛”，见第 40 条）？
+- [ ] 跨线程要“答案”：是否用了共享对象回写而不是信 `invokeMethod` 的返回值？是否
+      处好了“已在主线程时直调”（Blocking 会自锁）与决策白名单降级（见第 40 条）？
+- [ ] 新增测对话框/菜单的用例文件：是否替掉了全部模态入口（真弹一下就是整个会话挂死，
+      见第 41 条）？用了 `sip.delete` 的对象是否没交给 `qtbot.addWidget`？
 - [ ] 切换可见性后是否 `update()` + `repaint()`
 - [ ] 导航是否用 `setRootIndex` 而不是 `setRootPath`
 - [ ] QDockWidget 是否保存了显式 parent 引用

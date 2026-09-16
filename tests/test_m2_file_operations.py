@@ -230,3 +230,63 @@ class TestPaneFileOperations:
         assert hasattr(pane, 'clipboard')
         assert pane.clipboard == []
         assert pane.clipboard_action is None
+
+
+class TestRemovalWording:
+    """删除确认文案与「目标在源内部」判据（两个入口共用，故直接测函数本身）
+
+    这两段话原先长在 `Pane` 里，搜索结果列表做删除时只有两条路：抄第二份（文案
+    一定会漂）或者说错话（网络位置没有回收站，却写「移到回收站」）。抽到
+    `core/file_operations.py` 后，措辞的对错就归这几个用例管。
+    """
+
+    @pytest.mark.skipif(os.name != "nt", reason="回收站/网络盘说法是 Windows 特有")
+    def test_local_wording_says_recycle_bin(self, tmp_path):
+        from core.file_operations import describe_removal
+        paths = [os.path.join(str(tmp_path), f"f{i}.txt") for i in range(3)]
+        title, body = describe_removal(paths)
+        assert title == "确认删除"
+        assert "移到回收站" in body and "永久删除" not in body
+        assert "f0.txt" in body and "3" in body
+
+    @pytest.mark.skipif(os.name != "nt", reason="回收站/网络盘说法是 Windows 特有")
+    def test_network_paths_are_reported_as_permanent(self, monkeypatch):
+        """网络位置没有回收站：必须说明是永久删除，不能承诺可恢复"""
+        from core import file_operations as fo
+        monkeypatch.setattr(fo, "_is_network_path", lambda p: p.startswith("\\\\srv"))
+        title, body = fo.describe_removal([r"\\srv\share\a.txt",
+                                           r"\\srv\share\b.txt",
+                                           r"C:\local\c.txt"])
+        assert title == "确认删除"
+        assert "网络位置的 2 个项目将被永久删除" in body
+        assert "本地的 1 个项目将移到回收站" in body
+
+    def test_permanent_wording_applies_to_local_paths(self, tmp_path):
+        from core.file_operations import describe_removal
+        title, body = describe_removal([os.path.join(str(tmp_path), "a.txt")],
+                                        permanent=True)
+        assert title == "确认永久删除"
+        assert "不可恢复" in body and "回收站" not in body
+
+    def test_only_the_first_five_names_are_listed(self, tmp_path):
+        from core.file_operations import describe_removal
+        paths = [os.path.join(str(tmp_path), f"n{i}.txt") for i in range(7)]
+        _title, body = describe_removal(paths)
+        assert "n4.txt" in body and "n5.txt" not in body
+        assert "等共 7 项" in body
+
+    def test_move_into_own_subtree_is_detected(self, tmp_path):
+        from core.file_operations import move_target_inside_sources
+        outer = os.path.join(str(tmp_path), "outer")
+        inner = os.path.join(outer, "inner")
+        os.makedirs(inner)
+        a_file = os.path.join(str(tmp_path), "a.txt")
+        open(a_file, "w").close()
+        assert move_target_inside_sources([outer], inner) is True
+        assert move_target_inside_sources([outer], outer) is True
+        # 文件不是目录：它没有「内部」可言，不该被当成源目录
+        assert move_target_inside_sources([a_file], inner) is False
+        # 名字以源为前缀的兄弟目录不是子目录（用 `startswith(源)` 判就会误拦）
+        sibling = os.path.join(str(tmp_path), "outer_backup")
+        os.makedirs(sibling)
+        assert move_target_inside_sources([outer], sibling) is False

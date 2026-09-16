@@ -19,7 +19,10 @@ import sys
 from widgets.path_bar import PathBar
 from widgets.pane_tree_view import PaneTreeView
 from core.dir_model import Entry, COL_DATE, COL_SIZE
-from core.file_operations import FileOperations, FileOperationType, FileOperationResult, _is_network_path
+from core.file_operations import (
+    FileOperations, FileOperationType, FileOperationResult, _is_network_path,
+    describe_removal, move_target_inside_sources)
+from core.file_op_runner import FileOpRunner
 from core import archive_ops
 from core.lifecycle import call_later
 
@@ -221,8 +224,6 @@ class Pane(QWidget):
     activated = pyqtSignal(object)  # 窗格被激活信号
     shot_dates_ready = pyqtSignal()  # 后台 prefetch 拍摄日期完成（跨线程安全，自动投递主线程）
     _archive_done = pyqtSignal(bool, str, str)  # 压缩/解压完成(ok, message, note)；跨线程 emit 自动投递主线程
-    _file_progress = pyqtSignal(int, str, int, int)  # 文件操作进度(percent, filename, copied_bytes, total_bytes)；worker 线程 emit 自动投递主线程
-    _file_op_done = pyqtSignal(object, str, object)  # 文件操作完成(result, note, done_handler)；worker 线程 emit 自动投递主线程
     
     def __init__(self, pane_id: str, parent=None, start_path: str = None):
         super().__init__(parent)
@@ -233,11 +234,13 @@ class Pane(QWidget):
             self.current_path = start_path
         else:
             self.current_path = QDir.homePath()
-        self.file_ops = FileOperations()
-        # 同名冲突记忆策略（“对后续冲突执行相同操作”，仅本次操作内有效）
-        self._conflict_policy = None
-        self._file_progress.connect(self._on_file_progress_ui)
-        self._file_op_done.connect(self._on_file_op_done)
+        # 复制/移动/删除的「后台线程 + 进度对话框 + 同名冲突询问 + 取消」统一
+        # 由 runner 负责（搜索结果列表用同一套，见 core/file_op_runner.py）；
+        # `file_ops` 仍是它持有的那个 FileOperations（老调用方按属性用它）
+        self.op_runner = FileOpRunner(
+            self, on_status=self._set_op_status, on_bar=self.show_progress,
+            on_bar_hide=self.hide_progress, on_done=self._on_file_op_done)
+        self.file_ops = self.op_runner.ops
         # 剪贴板指向模块级共享对象（跨窗格复制/剪切/粘贴）
         self.clipboard = SHARED_CLIPBOARD
         self.clipboard_action = SHARED_CLIPBOARD_ACTION
@@ -2092,125 +2095,27 @@ class Pane(QWidget):
             self.status_label.setText("粘贴失败")
             QMessageBox.warning(self, "粘贴", result.error or "操作失败")
     
-    def _run_file_op_async(self, note, fn, done_handler=None):
-        """后台线程执行文件操作（复制/移动/删除）。
+    def _set_op_status(self, text: str):
+        """runner 写状态栏的钩子
 
-        大文件复制不再阻塞主线程；进度经 _file_progress 信号回主线程更新
-        状态栏进度条，完成经 _file_op_done 信号回主线程刷新视图。
-        同名冲突经 _ask_conflict_slot 回主线程弹框询问（“对后续同样
-        处理”记入 _conflict_policy，本次操作剩余冲突不再询问）。
+        构造窗格时 `status_label` 还没建出来，所以这里按方法晚绑定，不能在
+        `__init__` 里直接传 `self.status_label.setText`。
         """
-        self.status_label.setText(f"{note}...")
-        self.show_progress(0)
-        self.file_ops.set_progress_callback(self._on_copy_progress)
-        self._conflict_policy = None
-        self.file_ops.set_conflict_callback(self._handle_file_conflict)
-        # 独立进度对话框（速度/剩余时间/取消）；上一任务遗留的对话框先销毁
-        old_dlg = getattr(self, '_op_dlg', None)
-        if old_dlg is not None:
-            try:
-                old_dlg.close()
-                old_dlg.deleteLater()
-            except Exception:
-                pass
         try:
-            from widgets.progress_dialog import FileProgressDialog
-            self._op_dlg = FileProgressDialog(self, note)
-            self._op_dlg.cancel_requested.connect(self.file_ops.cancel)
-            self._op_dlg.show()
-        except Exception:
-            self._op_dlg = None
-        def worker():
-            try:
-                result = fn()
-            except Exception as e:
-                result = FileOperationResult(
-                    success=False, operation=FileOperationType.COPY,
-                    source="", error=str(e))
-            self._emit_ui("_file_op_done", result, note, done_handler)
-        import threading
-        threading.Thread(target=worker, daemon=True).start()
+            self.status_label.setText(text)
+        except (RuntimeError, AttributeError):
+            pass            # 任务还在跑就关了标签页 / 窗格已销毁
 
-    def _handle_file_conflict(self, info: dict) -> str:
-        """冲突回调（后台操作线程调用）：有记忆策略直接用，否则回主线程询问"""
-        if self._conflict_policy:
-            return self._conflict_policy
-        try:
-            return QMetaObject.invokeMethod(
-                self, "_ask_conflict_slot", Qt.ConnectionType.BlockingQueuedConnection,
-                Q_ARG(str, info.get('src', '')), Q_ARG(str, info.get('dst', '')),
-                Q_ARG(bool, bool(info.get('is_dir', False))))
-        except Exception:
-            return 'keep_both'
+    def _run_file_op_async(self, note, fn, done_handler=None):
+        """后台线程执行文件操作（复制/移动/删除）→ 交给 `FileOpRunner`
 
-    @pyqtSlot(str, str, bool, result=str)
-    def _ask_conflict_slot(self, src, dst, is_dir):
-        """主线程弹冲突对话框，返回决策；勾选“对后续同样处理”则记入策略"""
-        try:
-            from widgets.conflict_dialog import ConflictDialog
-            info = dict(src=src, dst=dst, is_dir=is_dir)
-            try:
-                info['src_size'] = 0 if is_dir else os.path.getsize(src)
-            except OSError:
-                info['src_size'] = 0
-            try:
-                info['src_mtime'] = os.path.getmtime(src)
-            except OSError:
-                info['src_mtime'] = 0
-            try:
-                info['dst_size'] = 0 if os.path.isdir(dst) else os.path.getsize(dst)
-            except OSError:
-                info['dst_size'] = 0
-            try:
-                info['dst_mtime'] = os.path.getmtime(dst)
-            except OSError:
-                info['dst_mtime'] = 0
-            dlg = ConflictDialog(self, info)
-            dlg.exec()
-            decision = dlg.chosen
-            try:
-                if dlg.apply_all.isChecked():
-                    self._conflict_policy = decision
-            except Exception:
-                pass
-            return decision
-        except Exception:
-            return 'keep_both'
-
-    def _on_copy_progress(self, percent: int, filename: str, copied_bytes: int = 0, total_bytes: int = 0):
-        """文件操作进度回调（worker 线程调用）：经信号转发主线程更新 UI"""
-        self._emit_ui("_file_progress", percent, filename, copied_bytes, total_bytes)
-
-    def _on_file_progress_ui(self, percent: int, filename: str, copied_bytes: int, total_bytes: int):
-        """进度 UI 更新（主线程）：状态栏 + 进度对话框"""
-        self.show_progress(percent)
-        if total_bytes > 0:
-            self.status_label.setText(
-                f"正在复制: {filename} ({self._fmt_size(copied_bytes)}/{self._fmt_size(total_bytes)})")
-        else:
-            self.status_label.setText(f"正在复制: {filename}")
-        dlg = getattr(self, '_op_dlg', None)
-        if dlg is not None:
-            try:
-                dlg.update_progress(percent, filename, copied_bytes, total_bytes)
-            except RuntimeError:
-                pass  # 对话框已被关闭/销毁
+        线程、进度对话框、同名冲突询问（含「对后续同样处理」记忆）、取消都在
+        runner 里，与搜索结果列表共用一份；窗格只接「完成后刷新哪个目录」。
+        """
+        self.op_runner.run(note, fn, done=done_handler)
 
     def _on_file_op_done(self, result, note, handler):
-        """文件操作完成（主线程）：清理回调 + 刷新视图"""
-        self.file_ops.set_progress_callback(None)
-        self.file_ops.set_conflict_callback(None)
-        self._conflict_policy = None
-        self.hide_progress()
-        dlg = getattr(self, '_op_dlg', None)
-        self._op_dlg = None
-        if dlg is not None:
-            try:
-                dlg.mark_finished()
-                dlg.close()
-                dlg.deleteLater()
-            except RuntimeError:
-                pass
+        """文件操作完成（主线程）：进度对话框已由 runner 收好，这里刷新视图"""
         if handler is not None:
             handler(result)
         elif result.success:
@@ -2240,35 +2145,16 @@ class Pane(QWidget):
     def _delete_paths(self, paths, permanent: bool = False):
         """删除指定路径列表（带确认）。
 
-        文案按实际后果区分：网络位置（UNC/映射网络盘）没有回收站，
-        删除即永久删除不可恢复，不能仍写“到回收站”误导用户；
-        permanent=True（Shift+Delete）时本地也直接永久删除。
+        文案走 `core.file_operations.describe_removal`：网络位置没有回收站，
+        不能写“到回收站”误导用户；permanent=True（Shift+Delete）时本地也直接
+        永久删除。搜索结果列表的删除用同一份文案。
         """
         if not paths:
             return
-        
-        names = '\n'.join(os.path.basename(p) or p for p in paths[:5])
-        if len(paths) > 5:
-            names += f"\n… 等共 {len(paths)} 项"
-        
-        if permanent:
-            title, verb = "确认永久删除", f"确定要永久删除 {len(paths)} 个项目吗？此操作不可恢复！"
-        elif os.name == 'nt':
-            net_count = sum(1 for p in paths if _is_network_path(p))
-            local_count = len(paths) - net_count
-            parts = []
-            if net_count:
-                parts.append(f"网络位置的 {net_count} 个项目将被永久删除、无法恢复（网络位置没有回收站）")
-            if local_count:
-                parts.append(f"本地的 {local_count} 个项目将移到回收站")
-            verb = '，；'.join(parts) + "。"
-            title = "确认删除"
-        else:
-            verb = f"确定要删除 {len(paths)} 个项目吗？"
-            title = "确认删除"
-        
+
+        title, body = describe_removal(paths, permanent)
         reply = QMessageBox.question(
-            self, title, f"{verb}\n\n{names}",
+            self, title, body,
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No
         )
@@ -2817,17 +2703,12 @@ class Pane(QWidget):
     
     @staticmethod
     def _move_target_inside_sources(files, target_dir):
-        """移动目标是否位于任一源目录内部或等于源（防止目录移到自身子目录导致递归复制）"""
-        t = os.path.normpath(target_dir)
-        for f in files:
-            if not os.path.isdir(f):
-                continue
-            s = os.path.normpath(f)
-            if t == s:
-                return True
-            if t.startswith(s + os.sep) or t.startswith(s + "/"):
-                return True
-        return False
+        """移动目标是否位于任一源目录内部或等于源（防目录移到自身子目录里递归卡死）
+
+        判据住在 `core/file_operations.move_target_inside_sources`，与搜索结果
+        列表的「移动到…」共用一份。
+        """
+        return move_target_inside_sources(files, target_dir)
     
     def mousePressEvent(self, event):
         """鼠标按下"""
