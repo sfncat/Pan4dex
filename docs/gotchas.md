@@ -768,6 +768,28 @@ been deleted`。子菜单没被删过，是它的**父菜单**（一个函数局
 另：控件没 `show()` 时 `visualItemRect(item)` 算不出几何 → 测右键菜单不要造真实坐标，
 直接把 `itemAt` 换掉，只测“压在选区内 / 选区外 / 空行”三种落点。
 
+### 42. 手工构造 `QDropEvent` 的三个坑（拖拽默认动作那一节当场踩到）
+
+1. **`setDropAction()` 是空操作**：写进去再 `dropAction()` 读回来永远是构造时
+   那个值（三种初始动作都试过，全部不生效）。所以“把我们选的动作回写给源端”
+   这种写法在 PyQt6 下会静默无效 —— 动作只能靠函数返回值传给调用方，别指望
+   事件对象能携带它。已钉成用例 `test_set_drop_action_does_not_stick_in_pyqt6`。
+2. **构造参数是单个 `Qt.DropAction`，不是集合**：传 `CopyAction | MoveAction`（=3）
+   会被削成 `CopyAction`，于是“源端允许两种动作”这种情形根本造不出来，用例
+   会以为自己测过了、其实测的是“只允许复制”。`possibleActions()` 在 C++ 里由
+   `QDragManager` 填、构造不出来 → 用实例属性遮蔽这个方法注入（Python 属性查找
+   优先于类型上的方法）。顺带记住两个枚举的分工：`possibleActions()` 是源端
+   **允许**哪些（硬约束，不许 move 就不能 move），`proposedAction()` 是源端
+   **建议**哪一个。
+3. **`QDropEvent` 不接管 `QMimeData` 的生命周期**：把函数返回的临时 mime 直接传
+   进构造函数，下一句 `event.mimeData()` 就是 `Windows fatal exception: access
+   violation`（真拖拽里 mime 由 `QDrag` 持有，手工造事件时没人持有）。必须
+   `evt._mime = mime` 留个引用，否则整个 pytest 会话当场没了、连 traceback 都没有。
+
+另：拿“不存在的 UNC 路径”测 UNC 判据是**假故事** —— 它会因为 `os.stat` 抛
+`OSError` 而通过，把判据删掉用例也不会红。要么让假路径的 `os.stat` 也能成功，
+要么这判据就没被盯住（变异验证时这条就是存活的，改完才杀掉）。
+
 ---
 
 ## 八、回归防护机制
@@ -842,6 +864,9 @@ python scripts/deploy.py 0.9.618
 - [ ] 改 `docs/architecture.md` 的模块表：表里的文件名是否逐个与盘上对过账？本仓曾长期
       挂着三行讲不存在模块的条目（`core/drag_drop.py`、`core/terminal.py`、
       `config/settings.py`）—— 拿 `git ls-files` 过一遍比眼睛可靠
+- [ ] 碰拖放的：动作判据是否走 `decide_drop_action`（窗格内部拖拽 / 外部拖入 / 搜
+      索结果将来都共用一份）？`possibleActions` 不含 Move 时是否绝不 move（否则会
+      删掉外部的源）？手工造 `QDropEvent` 的用例是否自己持住了 `QMimeData`（见第 42 条）？
 - [ ] 切换可见性后是否 `update()` + `repaint()`
 - [ ] 导航是否用 `setRootIndex` 而不是 `setRootPath`
 - [ ] QDockWidget 是否保存了显式 parent 引用

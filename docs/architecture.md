@@ -33,10 +33,10 @@
 | 模块 | 职责 |
 |---|---|
 | `main_window.py` | 主窗口管理、标签页、布局切换、菜单栏、状态栏 |
-| `pane.py` | 单个窗格的完整功能：路径栏、文件列表、导航、上下文菜单（单选文件时挂「打开方式」子菜单，候选延迟到 `aboutToShow` 才枚举）；持有 `PaneSortProxyModel`（排序 + 筛选同一个代理）与 `FilterBar`（Ctrl+F 唤出，状态栏显示「筛选后 M / N 项」）。**拖拽没有独立模块**：`dragEnterEvent` / `dropEvent` 与拖拽高亮（`_apply_drag_highlight`，进前快照样式、离开精确还原）都住在 `FileListTreeView`/`Pane` 里，自定义 MIME `application/x-pan4dex-drag` 携带源窗格与默认动作 |
+| `pane.py` | 单个窗格的完整功能：路径栏、文件列表、导航、上下文菜单（单选文件时挂「打开方式」子菜单，候选延迟到 `aboutToShow` 才枚举）；持有 `PaneSortProxyModel`（排序 + 筛选同一个代理）与 `FilterBar`（Ctrl+F 唤出，状态栏显示「筛选后 M / N 项」）。**拖拽没有独立模块**：`dragEnterEvent` / `dropEvent` 与拖拽高亮（`_apply_drag_highlight`，进前快照样式、离开精确还原）都住在 `FileListTreeView`/`Pane` 里，自定义 MIME `application/x-pan4dex-drag` 只携带源窗格与文件列表（动作由接收端算，见 §3.2） |
 | `dir_model.py` | `DirStoreModel`：以目录为单位的异步文件模型（后台枚举走限流专用线程池 `dir_pool()` + TTL 缓存 + 定向失效；只给**当前显示的本地目录**挂 `QFileSystemWatcher` 自动重扫，监视器是全进程唯一的 `_WatchHub`，网络目录不挂），文件列表专用 |
 | `lifecycle.py` | `call_later(obj, ms, fn)`：以业务对象为父的延后回调，避免 `QTimer.singleShot` 在对象销毁后回调已删除子对象；`exec_and_drain(app)` / `drain_background_pool()`：退出时排空后台线程，避免未派发的跨线程投递在解释器收尾阶段被释放（退码 0xC0000409） |
-| `file_operations.py` | 文件复制/移动/删除/重命名，支持进度回调和取消（**纯执行层**：不知道有线程、也没有 UI）；另住两个 Qt 无关的共用函数：`describe_removal()`（删除确认文案，按“网络位置没有回收站”说实际后果）与 `move_target_inside_sources()`（“不能把目录移到它自己的子目录里”的唯一判据）—— 窗格与搜索结果列表两个入口不能各写一份 |
+| `file_operations.py` | 文件复制/移动/删除/重命名，支持进度回调和取消（**纯执行层**：不知道有线程、也没有 UI）；另住几个 Qt 无关的共用判据：`describe_removal()`（删除确认文案，按“网络位置没有回收站”说实际后果）、`move_target_inside_sources()`（“不能把目录移到它自己的子目录里”的唯一判据）、`same_volume()` + `decide_drop_action()`（拖放该复制还是移动：同卷移动、跨卷复制，见 §3.2；`move()` 的跨卷分支也共用 `same_volume`，不留第二份 `st_dev` 比较）—— 窗格与搜索结果列表两个入口不能各写一份 |
 | `file_op_runner.py` | `FileOpRunner`：把 `FileOperations` 丢到后台线程，并配齐一整套主线程配合 —— 进度对话框（速度/剩余时间/取消）、同名冲突询问（含「对后续同样处理」只问一次）、跨线程回投、宿主已销毁时丢帧不崩。宿主只给四个可选钩子（`on_status` / `on_bar` / `on_bar_hide` / `on_done`）：窗格与高级搜索共用这一份（见第 4.5 条）。“同一时刻只跑一个”由 `busy` 说出口，入口在宿主（菜单置灰 / 直接拒） |
 | （没有 `drag_drop.py` / `terminal.py`） | 旧表里这两行是假的，本仓从来没有这两个文件：拖拽与 MIME 住在 `pane.py`（`dragEnterEvent` / `dropEvent` / `_apply_drag_highlight`）与 `widgets/bookmark_sidebar.py`；终端候选与启动命令住在 `widgets/terminal_panel.py`，窗格只经 `main_window.open_terminal_at()` 转给它 |
 | `open_with.py` | 「打开方式」候选枚举 + 启动：Windows 读注册表（默认 ProgID / `FileExts\*\OpenWithList` MRU / 两处 `OpenWithProgids` / `App Paths` 兜底）、Linux 扫 `.desktop`（XDG 目录 + `MimeType` 匹配）、macOS 扫顶层 `.app` 的 `Info.plist`；按扩展名 TTL 缓存 + exe 去重 + 上限 15 项，任何一步失败只少候选、绝不外抛；Windows 另可 `OpenAs_RunDLL` 调系统对话框 |
@@ -85,16 +85,28 @@
 ### 3.2 拖拽数据协议
 
 ```python
-# 自定义 MIME 类型
+# 自定义 MIME 类型（只给窗格自己看）
 MIME_TYPE = "application/x-pan4dex-drag"
 
 # 数据格式（JSON）
 {
     "source_pane_id": "pane_1",
     "files": ["/home/user/file1.txt", "/home/user/file2.txt"],
-    "default_action": "copy"  # or "move"
 }
 ```
+
+负载里**没有动作字段**：做什么由接收端按落点算（`Pane._drop_action` →
+`core.file_operations.decide_drop_action`），与资源管理器一致：
+
+| 情形 | 动作 |
+|---|---|
+| 按住 Ctrl / Shift | 强制复制 / 强制移动（覆盖一切） |
+| 同窗格内拖动（目标是别的目录行） | 移动 |
+| 源端 `proposedAction` 只允许一种 | 就按那一种（只允许 COPY 时不得移动，否则会删掉人家的源） |
+| 其余（外部拖入 / 跨窗格） | **同卷移动、跨卷复制**（`same_volume` 比 `st_dev`） |
+
+`same_volume` 拿不准（stat 失败、UNC 共享）时一律回答“不同卷”→ 复制；`FileOperations.move`
+的跨卷分支也用同一个判据，不保留第二份 `st_dev` 比较。
 
 ### 3.3 主题系统数据流
 

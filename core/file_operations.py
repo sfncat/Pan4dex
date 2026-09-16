@@ -102,6 +102,62 @@ def move_target_inside_sources(sources, target_dir: str) -> bool:
     return False
 
 
+def same_volume(sources, target_dir: str) -> bool:
+    """全部源与目标目录是否**确定**在同一卷上（不依赖 Qt）
+
+    这是资源管理器的拖放默认动作判据：同卷拖动 = 移动，跨卷拖动 = 复制
+    （`st_dev` 在 Windows 上是盘号，Linux 上是设备号，挂载点边界一致）。
+
+    **不确定就返回 False**：调用方拿这个答案决定要不要删源文件，宁可多复制
+    一份也不能把别人的东西搬走。UNC 共享一律算不确定 —— Windows 上不同共享
+    的 `st_dev` 可能同为 0，会把两个共享误判成同卷。
+
+    源比的是它的**父目录**而不是它自己：拖拽决策时文件可能已被别处移走，
+    而卷属于目录；目标侧同理（目录本身）。
+    """
+    sources = list(sources)
+    if not sources or not target_dir:
+        return False
+    if _is_unc_path(target_dir) or any(_is_unc_path(s) for s in sources):
+        return False
+    try:
+        dst_dev = os.stat(os.path.abspath(target_dir)).st_dev
+        for src in sources:
+            if os.stat(os.path.dirname(os.path.abspath(src))).st_dev != dst_dev:
+                return False
+    except OSError:
+        return False
+    return True
+
+
+def decide_drop_action(force_copy: bool = False, force_move: bool = False,
+                       same_dir_drag: bool = False,
+                       allows_move: bool = True, allows_copy: bool = True,
+                       same_vol: bool = False) -> str:
+    """拖放的默认动作 → `"move"` / `"copy"`（对齐资源管理器）
+
+    优先级：Ctrl/Shift 强制 > 同目录树内拖动（总是移动）> 源端只允许一种
+    动作（`proposedAction` 只有 COPY 时不得移动，否则拖完会把人家的源删掉）>
+    同卷移动 / 跨卷复制。抠 `Qt.KeyboardModifier` / `Qt.DropAction` 是调用方
+    （窗格）的事，这里只收 bool，以便脱离 GUI 把矩阵测满。
+    """
+    if force_copy:
+        return "copy"
+    if force_move:
+        return "move"
+    if same_dir_drag:
+        return "move"
+    if not (allows_move or allows_copy):
+        # 源端什么都没允许（如 `proposedAction` 为 IgnoreAction）：按最保守的
+        # 复制处理，绝不删源
+        return "copy"
+    if allows_move and not allows_copy:
+        return "move"
+    if allows_copy and not allows_move:
+        return "copy"
+    return "move" if same_vol else "copy"
+
+
 class FileOperationType(Enum):
     """文件操作类型"""
     COPY = "copy"
@@ -615,12 +671,10 @@ class FileOperations:
                             os.remove(dest_path)
                 # 跨卷移动（如本地→SMB 映射盘）：shutil.move 内部复制不落
                 # 元数据、无字节进度；改为组合 copy（复用冲突处理/copystat/
-                # 字节进度/取消）+ 删源，与 Explorer 跨盘移动行为一致
-                try:
-                    cross_volume = os.stat(os.path.dirname(os.path.abspath(source))).st_dev != \
-                        os.stat(destination).st_dev
-                except OSError:
-                    cross_volume = False
+                # 字节进度/取消）+ 删源，与 Explorer 跨盘移动行为一致。
+                # 判据与窗格拖放的默认动作共用一份 `same_volume`：stat 不
+                # 成功或 UNC 都按跨卷处理（走可控的那条路，不让 shutil 静默处理）
+                cross_volume = not same_volume([source], destination)
                 if cross_volume:
                     tmp_ops = FileOperations()
                     tmp_ops._cancelled = False

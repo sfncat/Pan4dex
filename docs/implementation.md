@@ -287,14 +287,14 @@ def rename(self, old_path, new_name):
 ### 2.5 拖拽机制
 
 **业务逻辑**：
-- 拖拽开始：记录源窗格 ID 和选中文件路径列表
-- 拖拽进入目标窗格：高亮目标窗格
-- 拖拽释放：根据操作类型执行复制或移动
-- 操作类型判断：
-  - 同窗格 → 移动
-  - 跨窗格 → 复制
-  - 按住 Shift → 强制移动
-  - 按住 Ctrl → 强制复制
+- 拖拽开始：记录源窗格 ID 和选中文件路径列表（不写动作，动作由接收端定）
+- 拖拽进入目标窗格：高亮目标窗格（进入前快照样式，离开时精确还原，不累加 stylesheet）
+- 拖拽释放：按落点算出复制还是移动，再执行
+- 操作类型判断（与资源管理器一致，完整表见 `architecture.md` §3.2）：
+  - 按住 Shift → 强制移动；按住 Ctrl → 强制复制（两个盖过其余一切）
+  - 同窗格内拖动 → 移动
+  - 源端 `proposedAction` 只允许一种动作 → 就按那一种
+  - 其余（外部拖入 / 跨窗格）→ **同卷移动、跨卷复制**（比 `st_dev`）
 
 **实现要点**：
 ```python
@@ -302,9 +302,10 @@ def rename(self, old_path, new_name):
 {
     "source_pane_id": "pane_1",
     "files": ["/path/to/file1", "/path/to/file2"],
-    "default_action": "copy"
 }
+```
 
+```python
 # 拖拽事件处理
 def mousePressEvent(self, event):
     if event.button() == Qt.LeftButton:
@@ -317,12 +318,14 @@ def mouseMoveEvent(self, event):
         mime_data.setData("application/x-pan4dex-drag", 
                          json.dumps(drag_data).encode())
         drag.setMimeData(mime_data)
-        drag.exec(Qt.CopyAction | Qt.MoveAction)
+        drag.exec(Qt.DropAction.CopyAction | Qt.DropAction.MoveAction)
 ```
 
 **说明**：
-- 使用自定义 MIME 类型 `application/x-pan4dex-drag`
-- 拖拽结果通过 `drag.result()` 判断用户选择的操作
+- 使用自定义 MIME 类型 `application/x-pan4dex-drag`（只给窗格自己看，同时附带
+  `urls` 以兼容外部应用）
+- 动作不用 `drag.result()` 判断：我们是接收端在 `dropEvent` 里自己算该复制还是
+  移动，算完直接去做（窗格自己的 `QDrag` 不回读结果）
 
 ---
 

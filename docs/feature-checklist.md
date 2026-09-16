@@ -23,16 +23,17 @@
 
 | # | 功能 | 优先级 | 状态 | 验证方式 | 说明 | 实现情况 |
 |---|---|---|---|---|---|---|
-| 2.1 | 复制文件 | P0 | 🟢 | 跨窗格拖拽复制，进度条显示，完成后目标窗格刷新 | shutil.copy2 + QThread | file_operations.py copy() |
-| 2.2 | 移动文件 | P0 | 🟢 | 窗格内拖拽移动，或 Shift+跨窗格拖拽 | shutil.move + QThread | file_operations.py move() |
+| 2.1 | 复制文件 | P0 | 🟢 | 右键/快捷键复制与外部拖入（跨卷）→ 进度对话框显示，完成后目标窗格刷新 | shutil.copy2 + 后台线程 | file_operations.py copy() |
+| 2.2 | 移动文件 | P0 | 🟢 | 窗格内拖拽移动，或剪切后粘贴；同卷跨窗格拖拽也是移动 | shutil.move + 后台线程；跨卷走「复制+删源」（保 mtime、有字节进度、可取消） | file_operations.py move() |
 | 2.3 | 安全删除 | P0 | 🟢 | 右键删除 → 文件进入回收站，可恢复 | send2trash | file_operations.py delete() |
 | 2.4 | 永久删除 | P1 | 🟢 | Shift+Delete 直接删除（确认框明写「不可恢复」） | 走 `delete(safe=False)`；网络位置本就无回收站，文案同样区分 | pane.py `FileListTreeView.keyPressEvent` → `_delete_paths(permanent=True)` |
 | 2.5 | 重命名 | P0 | 🟢 | F2 / 右键重命名 → 行内编辑，提交走模型 setData | 新模型条目带 ItemIsEditable，内建触发器关掉以免误编辑 | pane.py `rename_selected()` |
 | 2.6 | 新建文件夹 | P1 | 🟢 | 右键菜单 → 新建文件夹，自动进入重命名 | os.makedirs | file_operations.py create_folder() |
 | 2.7 | 新建文件 | P1 | 🟢 | 右键菜单 → 新建空文件 | open(path, 'w') | file_operations.py create_file() |
 | 2.8 | 复制/移动取消 | P1 | 🟢 | 独立进度对话框带取消；统计阶段也检查取消标志（SMB 大目录不会卡到跑完） | `cancel_requested` → `file_ops.cancel()` | widgets/progress_dialog.py / file_operations.py |
-| 2.9 | 跨窗格拖拽复制 | P0 | 🟢 | 从 pane A 拖拽文件到 pane B，B 中高亮边框，松手复制 | 自定义 MIME 类型 | pane.py mouseMoveEvent/dropEvent |
-| 2.10 | 跨窗格拖拽移动 | P0 | 🟢 | Shift+拖拽从 A 到 B，源文件消失，目标出现 | 自定义 MIME 类型 | pane.py mouseMoveEvent/dropEvent |
+| 2.9 | 跨窗格拖拽复制 | P0 | 🟢 | 从 pane A 拖拽文件到 pane B，B 中高亮边框，松手按 2.11 的规则定动作 | 自定义 MIME 类型（只带源窗格与文件，不带动作） | pane.py mouseMoveEvent/dropEvent |
+| 2.10 | 跨窗格拖拽移动 | P0 | 🟢 | 同窗格内拖动、同卷跨窗格拖拽松手即移动（不必按 Shift）；Shift 强制移动、Ctrl 强制复制 | 同上 | pane.py `_drop_action` → file_operations.decide_drop_action |
+| 2.11 | 拖放默认动作对齐资源管理器 | P0 | 🟢 | 从同一个盘的 Explorer 往窗格拖文件 → 源文件消失（移动）；从U盘/另一张盘拖入 → 复制；只允许复制的外部源不会被我们“移动”掉 | Ctrl/Shift 强制 > 同目录树内拖动 > `possibleActions` 硬约束（不许 move 就绝不 move）> 同卷移动/跨卷复制（`st_dev`，UNC 一律算不确定→复制） | file_operations.py `same_volume()` / `decide_drop_action()`；tests/test_drop_action.py |
 
 ## 3. 导航
 

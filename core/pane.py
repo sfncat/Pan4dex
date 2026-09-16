@@ -21,7 +21,7 @@ from widgets.pane_tree_view import PaneTreeView
 from core.dir_model import Entry, COL_DATE, COL_SIZE
 from core.file_operations import (
     FileOperations, FileOperationType, FileOperationResult, _is_network_path,
-    describe_removal, move_target_inside_sources)
+    describe_removal, move_target_inside_sources, same_volume, decide_drop_action)
 from core.file_op_runner import FileOpRunner
 from core import archive_ops
 from core.lifecycle import call_later
@@ -2608,10 +2608,12 @@ class Pane(QWidget):
     def dropEvent(self, event):
         """拖拽释放。
 
-        - 跨窗格（pan4dex-drag）：按默认动作复制/移动到目标目录
+        动作怎么选见 `_drop_action`（与资源管理器一致：同卷移动、跨卷复制，
+        Ctrl/Shift 强制）。
+
+        - 跨窗格（pan4dex-drag）：同窗格内拖动总是移动，跨窗格按卷边界
         - 文件拖拽（urls）：拖到目录行则目标为该目录；源在当前目录
-          （同窗格拖动）→ 移动，外部拖入 → 复制；
-          Ctrl=强制复制，Shift=强制移动
+          （同窗格拖动）→ 移动；外部拖入按同卷/跨卷定默认动作
         """
         self._apply_drag_highlight(False)
         target_dir = self.current_path
@@ -2627,11 +2629,14 @@ class Pane(QWidget):
             import json
             data = json.loads(event.mimeData().data("application/x-pan4dex-drag").data().decode())
             files = data.get("files", [])
-            action = data.get("default_action", "copy")
-            # 同窗格拖动 → 移动（与文件拖动语义一致；dragStart 固定写 copy，
-            # 跨窗格才按 default_action 复制）
-            if data.get("source_pane_id") == self.pane_id:
-                action = "move"
+            same_pane = data.get("source_pane_id") == self.pane_id
+            if same_pane and target_dir == self.current_path:
+                # 同窗格拖到空白处（落回自己所在目录）：无操作，
+                # 不能走到同名冲突询问里去
+                event.ignore()
+                return
+            # 源端写的 default_action 只是建议：Ctrl/Shift、卷边界才定实际动作
+            action = self._drop_action(files, target_dir, event, same_dir_drag=same_pane)
             if files:
                 if action == "move" and self._move_target_inside_sources(files, target_dir):
                     # 不能把目录移到它自己或它的子目录里（shutil 会递归复制卡死）
@@ -2657,19 +2662,14 @@ class Pane(QWidget):
             os.path.normpath(os.path.dirname(f)) == os.path.normpath(self.current_path)
             for f in files
         )
-        mods = event.modifiers()
-        if mods & Qt.KeyboardModifier.ControlModifier:
-            do_move = False
-        elif mods & Qt.KeyboardModifier.ShiftModifier:
-            do_move = True
-        else:
-            # 同窗格拖动（源在当前目录、目标为其他目录）→ 移动；外部拖入 → 复制
-            do_move = src_in_current and target_dir != self.current_path
-
         if src_in_current and target_dir == self.current_path:
             # 拖到自身所在目录：无操作
             event.ignore()
             return
+
+        do_move = self._drop_action(
+            files, target_dir, event,
+            same_dir_drag=src_in_current and target_dir != self.current_path) == "move"
 
         if do_move and self._move_target_inside_sources(files, target_dir):
             # 不能把目录移到它自己或它的子目录里（shutil 会递归复制卡死）
@@ -2701,6 +2701,42 @@ class Pane(QWidget):
             self.status_label.setText("拖放失败")
             QMessageBox.warning(self, "移动/复制", result.error or "操作失败")
     
+    def _drop_action(self, files, target_dir, event, same_dir_drag: bool) -> str:
+        """从 Qt 事件里抠出布尔，拿拖放默认动作（"move" / "copy"）
+
+        判据矩阵住在 `core/file_operations.decide_drop_action`（与窗格、
+        搜索结果、将来可能的外接拖放入口共用一份），这里只负责把 Qt 的枚举
+        翻译成 bool。
+
+        两套易混淆的枚举：`possibleActions()` 是源端**允许**的动作集合（硬约束，
+        不许动就绝对不能 move，否则拖完删了人家的源），`proposedAction()` 是
+        源端建议的**单个**默认动作。外部源常常不填 possibleActions（只给
+        proposed），此时退一步拿 proposed 当约束；两个都读不出可用动作时按
+        复制兜底。集合里两种都允许时走卷规则 —— 那正是资源管理器自己算
+        suggested action 用的同一套算法。
+
+        不回写 `event.setDropAction()`：PyQt6 里它对 `QDropEvent` 是**空操作**
+        （实测 `dropAction()` 永远读回构造时那个值，见用例），而动作本来就是
+        我们自己在做（源端也不读 `drag.result()`），写了也不会生效。
+        """
+        mods = event.modifiers()
+        possible = event.possibleActions()
+        proposed = event.proposedAction()
+        allows_move = bool(possible & Qt.DropAction.MoveAction)
+        allows_copy = bool(possible & Qt.DropAction.CopyAction)
+        if not (allows_move or allows_copy):
+            allows_move = proposed == Qt.DropAction.MoveAction
+            allows_copy = proposed == Qt.DropAction.CopyAction
+        action = decide_drop_action(
+            force_copy=bool(mods & Qt.KeyboardModifier.ControlModifier),
+            force_move=bool(mods & Qt.KeyboardModifier.ShiftModifier),
+            same_dir_drag=same_dir_drag,
+            allows_move=allows_move,
+            allows_copy=allows_copy,
+            same_vol=same_volume(files, target_dir),
+        )
+        return action
+
     @staticmethod
     def _move_target_inside_sources(files, target_dir):
         """移动目标是否位于任一源目录内部或等于源（防目录移到自身子目录里递归卡死）
@@ -2753,12 +2789,12 @@ class Pane(QWidget):
         drag = QDrag(self)
         mime_data = QMimeData()
         
-        # 设置自定义 MIME 数据
+        # 设置自定义 MIME 数据。只带「谁发的 + 哪些文件」：做什么动作是接收
+        # 端按落点定的（见 `dropEvent` → `_drop_action`），源端猜不准也不该猜
         import json
         drag_data = {
             "source_pane_id": self.pane_id,
             "files": paths,
-            "default_action": "copy"
         }
         mime_data.setData(
             "application/x-pan4dex-drag",

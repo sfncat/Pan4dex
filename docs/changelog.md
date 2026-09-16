@@ -19,6 +19,47 @@
 
 ## 更新记录
 
+### v1.9.012 — 2026-09-16（开发分支 dev/shell-behavior-smb-perf）
+
+#### 🎨 UI/UX：拖放默认动作对齐资源管理器（清单 2.11）
+- **从同一个盘往窗格拖文件，现在是「移动」**（旧版无论从哪里拖入一律复制，拖完原处
+  还留一份）；从U盘/另一张盘拖入仍是复制。Ctrl 强制复制、Shift 强制移动照旧
+- **源端只允许复制时，我们绝不「移动」**：外部拖入先读 `possibleActions()` 当硬约束，
+  不许 move 就永远不会走到删源那一步（否则会删掉别人的文件）；源端只填了
+  `proposedAction()` 的（很多外部程序就这样）退一步拿它当约束
+- **同目录树内拖动总是移动**：同窗格内拖到别的目录行、或把当前目录里的东西拖到子
+  目录，不按 Shift 也是移动
+- 两处「落回自己所在目录」补了无操作防护（同窗格拖到空白处、外部源就在目标目录）——
+  旧版会走到同名冲突询问里去，问用户「这个文件已经存在，要怎么办」
+
+#### 🔧 工程：卷判据与跨卷移动共用一份
+- `same_volume()` / `decide_drop_action()` 落在 Qt 无关的 `core/file_operations.py`（与
+  `describe_removal()` 同族），窗格只做「Qt 枚举 → bool」的翻译；`FileOperations.move()`
+  的跨卷分支改为复用 `same_volume()`，不留第二份 `st_dev` 比较
+- 判据**拿不准一律按跨卷 = 复制**：`os.stat` 失败、UNC 路径都算不确定（Windows 上不同
+  共享的 `st_dev` 可能同为 0，会被误判成同卷然后删源）。比的是源的**父目录**而不是源
+  自己 —— 卷属于目录，而拖拽决策那一刻文件可能已经被别处移走
+- 拖拽 MIME 负载里的 `default_action` 字段删了：动作由**接收端**按上面的规则算，源端建
+  议没有约束力，留着只会让人以为它能决定动作
+
+#### 🧪 测试
+- 新增 `tests/test_drop_action.py` 12 项（真造 `QDropEvent` 打 `dropEvent`）：外部同卷→移动、
+  跨卷→复制、Ctrl→复制、Shift+跨卷→移动、`possibleActions` 单允许的两条、两个都不允许→
+  复制、`possible=Copy` 与 `proposed=Move` 矛盾→按约束走复制、两处落回自身目录→无操作、
+  urls 分支同目录树拖动→移动，另有一项钉住「PyQt6 里 `setDropAction()` 不生效」
+- `tests/test_m2_file_operations.py` 新增 `TestDropActionRules` 9 项 + `TestCrossVolumeMove` 1 项；
+  跨卷那条不能靠 mtime 断言（同盘 `shutil.move` 是 rename，也保 mtime），改为监视
+  `FileOperations.copy` 是否被调到
+- 全量 **476 passed / 1 skipped**，随机序与 `-p no:randomly` 两轮一致；变异验证 19 条全部
+  被杀（首轮存活的 2 条都是用例本身不成立，见 gotchas 第 42 条）
+
+#### 📝 文档更新
+- `architecture.md` §3.2 拖拽协议重写（含动作决策表）；`implementation.md` §2.5 同步，并
+  修掉一处旧文里「用 `drag.result()` 判断动作」的错误说法
+- `gotchas.md` 新增第 42 条：手工构造 `QDropEvent` 的三个坑（`setDropAction` 空操作、构造
+  参数是单个 DropAction 不是集合、事件不接管 `QMimeData` 生命周期会当场 access violation），
+  以及「拿不存在的 UNC 路径测判据是假故事」
+
 ### v1.9.011 — 2026-09-16（开发分支 dev/shell-behavior-smb-perf）
 
 #### 🚀 功能增强：搜索结果列表的批量操作（清单 20.3）
