@@ -1220,3 +1220,100 @@ def test_pane_right_click_adds_through_the_shared_store(qtbot, tmp_path, monkeyp
     assert len(win.bookmark_store.links()) == before + 1
     assert str(target) in [lk["path"] for lk in win.bookmark_store.links()]
     assert read_raw(str(tmp_path / "cfg"))["children"][-1]["name"] == "从窗格来的"
+
+
+# ---------- 首启动默认四条：XDG 本地化目录 ----------
+
+class TestDefaultXdgDirs:
+    """默认收藏项去哪找那些目录（旧版写死英文名，中文桌面上三条全指错）
+
+    freedesktop 的 `user-dirs.dirs` 才是本地化桌面的正解（`~/桌面`、`~/下载`），
+    文件格式有几个坑：值带双引号、家目录写成 `$HOME`、满屏注释行。解析做成纯
+    函数，所以这些坑在 Windows 主机上一样能测到。
+    """
+
+    SAMPLE = (
+        '# ~/.config/user-dirs.dirs\n'
+        '# This file is written by xdg-user-dirs-update\n'
+        '#XDG_DOCUMENTS_DIR="$HOME/文档"\n'
+        'XDG_DESKTOP_DIR="$HOME/桌面"\n'
+        'XDG_DOWNLOAD_DIR="$HOME/下载"\n'
+        'XDG_TEMPLATES_DIR="$HOME/模板"\n'
+        'XDG_DOCUMENTS_DIR="$HOME/Documents"\n'
+        'XDG_MUSIC_DIR=$HOME/音乐\n'
+        '#XDG_PICTURES_DIR="$HOME/图片"\n'
+    )
+
+    def test_expands_home_and_strips_quotes(self, tmp_path):
+        home = str(tmp_path)
+        got = bm.parse_user_dirs(self.SAMPLE, home)
+        # 解析器不管分隔符（它是 POSIX 语义），换分隔符是 `default_links` 的事
+        assert got["XDG_DESKTOP_DIR"] == home + "/桌面"
+        assert got["XDG_DOCUMENTS_DIR"] == home + "/Documents"
+
+    def test_comments_and_non_dir_keys_are_skipped(self, tmp_path):
+        got = bm.parse_user_dirs(self.SAMPLE, str(tmp_path))
+        # 注释掉的那行带着 `=`，只靠「跳过 `#` 开头」才不会把它当配置读进来
+        assert got["XDG_DOCUMENTS_DIR"] == str(tmp_path) + "/Documents"
+        assert "XDG_CONFIG_HOME" not in got
+        # 只以注释形式存在的那一项不该被当成配置读进来
+        assert "XDG_PICTURES_DIR" not in got
+        # 没引号的值也收（上面那行 `XDG_MUSIC_DIR=$HOME/音乐` 就是这种）
+        assert got["XDG_MUSIC_DIR"].endswith("音乐")
+
+    def test_without_home_the_variable_is_left_alone(self):
+        got = bm.parse_user_dirs(self.SAMPLE)
+        assert got["XDG_DOWNLOAD_DIR"] == "$HOME/下载"
+
+    def test_a_tilde_inside_a_name_is_not_mangled(self, tmp_path):
+        """`~` 是合法的目录名字符，只能处理开头的 `~/`，不能无差别替换"""
+        got = bm.parse_user_dirs('XDG_DESKTOP_DIR="$HOME/a~b"\n', str(tmp_path))
+        assert got["XDG_DESKTOP_DIR"] == str(tmp_path) + "/a~b"
+
+    def test_localized_names_win_over_english_ones(self, tmp_path):
+        home = tmp_path
+        (home / "桌面").mkdir()
+        (home / "下载").mkdir()
+        nodes = bm.default_links(str(home), {"XDG_DESKTOP_DIR": str(home / "桌面"),
+                                             "XDG_DOWNLOAD_DIR": str(home / "下载")})
+        paths = [n["path"] for n in nodes]
+        assert str(home / "桌面") in paths and str(home / "下载") in paths
+        assert nodes[0]["name"] == "主目录" and nodes[0]["path"] == str(home)
+
+    def test_missing_directories_are_not_offered(self, tmp_path):
+        """两条都不存在就干脆不给 —— 点不开的空收藏比缺一条更糟"""
+        nodes = bm.default_links(str(tmp_path), {})
+        assert [n["name"] for n in nodes] == ["主目录"]
+
+    def test_english_fallback_when_xdg_table_is_empty(self, tmp_path):
+        home = tmp_path
+        (home / "Desktop").mkdir()
+        (home / "Downloads").mkdir()
+        nodes = bm.default_links(str(home), {})
+        paths = [n["path"] for n in nodes]
+        assert paths == [str(home), str(home / "Desktop"), str(home / "Downloads")]
+
+    def test_default_nodes_reads_the_xdg_file_on_posix(self, tmp_path, monkeypatch):
+        """接线：POSIX 下真的去读 `~/.config/user-dirs.dirs`（在 Windows 主机上伪造）"""
+        home = tmp_path / "home"
+        (home / ".config").mkdir(parents=True)
+        (home / "桌面").mkdir()
+        (home / ".config" / "user-dirs.dirs").write_text(
+            'XDG_DESKTOP_DIR="$HOME/桌面"\n', encoding="utf-8")
+        monkeypatch.setattr(bm.os, "name", "posix")     # 只改这一个用例里的平台判据
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(home / ".config"))
+        paths = [n["path"] for n in bm.default_nodes(str(home))]
+        assert str(home / "桌面") in paths
+        assert str(home / "Desktop") not in paths
+
+    def test_default_nodes_on_windows_ignores_the_xdg_file(self, tmp_path, monkeypatch):
+        """Windows 不读 XDG（那边没有这个文件），只拼 `%USERPROFILE%` 下的英文名"""
+        home = tmp_path / "winhome"
+        (home / ".config").mkdir(parents=True)
+        (home / ".config" / "user-dirs.dirs").write_text(
+            'XDG_DESKTOP_DIR="$HOME/桌面"\n', encoding="utf-8")
+        (home / "Desktop").mkdir()
+        monkeypatch.setattr(bm.os, "name", "nt")
+        paths = [n["path"] for n in bm.default_nodes(str(home))]
+        assert str(home / "桌面") not in paths
+        assert str(home / "Desktop") in paths

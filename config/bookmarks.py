@@ -47,19 +47,91 @@ class BookmarkError(ValueError):
     """
 
 
-def default_nodes() -> list:
+def parse_user_dirs(text: str, home: str = "") -> dict:
+    """解析 freedesktop `user-dirs.dirs` → `{XDG_DESKTOP_DIR: '/home/u/桌面', …}`
+
+    文件长这样（值带双引号，家目录写的是 `$HOME` 而不是绝对路径）：
+
+        # XDG_DESKTOP_DIR="$HOME/Desktop"
+        XDG_DESKTOP_DIR="$HOME/桌面"
+
+    只抽 `*_DIR` 结尾的键、`#` 开头的注释行一律跳过；`home` 给了就把 `$HOME`
+    展开。纯函数（喂文本进、吐字典出），所以本地化目录名、引用、变量
+    这三种坑在任何主机上都能测。
+    """
+    out = {}
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        if not key.startswith("XDG_") or not key.endswith("_DIR"):
+            continue
+        value = value.strip().strip('"').strip("'")
+        if not value:
+            continue
+        if home:
+            # 只做两种受规范支持的写法：`$HOME/…` 与 `~/…`（裸 `~` 是合法目录名
+            # 字符，无差别替换会把 `$HOME/a~b` 这种路径改坏）
+            if value.startswith("$HOME"):
+                value = home + value[5:]
+            elif value.startswith("~/"):
+                value = home + value[1:]
+        out[key] = value
+    return out
+
+
+def _read_user_dirs(home: str) -> dict:
+    """读本机的 `user-dirs.dirs`；文件不存在 / 读不了就返回空字典（不抛）"""
+    config_home = os.environ.get("XDG_CONFIG_HOME") or os.path.join(home, ".config")
+    path = os.path.join(config_home, "user-dirs.dirs")
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            return parse_user_dirs(f.read(), home)
+    except OSError:
+        return {}
+
+
+#: (XDG 键, 英文兼容名, 显示名) —— 顺序就是首启动看到的顺序
+DEFAULT_LINKS = (
+    ("XDG_DESKTOP_DIR", "Desktop", "桌面"),
+    ("XDG_DOWNLOAD_DIR", "Downloads", "下载"),
+    ("XDG_DOCUMENTS_DIR", "Documents", "文档"),
+)
+
+
+def default_links(home: str, user_dirs: dict) -> list:
+    """给定家目录与已解析的 XDG 表，算出默认几条（**只留真实存在的目录**）
+
+    XDG 表里没有这一项时退回英文名为 `~/Desktop` 这种（旧行为）；两条都不存在
+    就干脆不给 —— 给一条点不开的空目录不如不给。分开了这一层与“读哪个文件”，
+    本地化目录名、退回、过滤这三种规则就能在任何主机上直接测。
+    """
+    out = [{"type": "link", "name": "主目录", "path": home}]
+    for key, fallback, name in DEFAULT_LINKS:
+        p = (user_dirs or {}).get(key) or os.path.join(home, fallback)
+        p = os.path.normpath(p)      # XDG 文件里是 `/` 分隔，Windows 上要换过来
+        if os.path.isdir(p):
+            out.append({"type": "link", "name": name, "path": p})
+    return out
+
+
+def default_nodes(home: str = None) -> list:
     """首次启动（配置文件不存在）给的四个常用位置
 
     只在**文件不存在**时用；用户把收藏删空后不会再灌回来（旧版是
     `if not self.bookmarks` 就回灌，等于「删不掉系统给的那几条」）。
+
+    Windows 直接拼 `~\\Desktop` 等（那三个真的存在）；POSIX 先读
+    `~/.config/user-dirs.dirs` —— 中文环境的桌面叫 `~/桌面`、下载叫 `~/下载`，
+    写死英文名会灌进三条指向不存在路径的收藏。
     """
-    from pathlib import Path
-    home = Path.home()
-    out = []
-    for name, p in (("主目录", home), ("桌面", home / "Desktop"),
-                    ("下载", home / "Downloads"), ("文档", home / "Documents")):
-        out.append({"type": "link", "name": name, "path": str(p)})
-    return out
+    if home is None:
+        from pathlib import Path
+        home = str(Path.home())
+    user_dirs = _read_user_dirs(home) if os.name != "nt" else {}
+    return default_links(home, user_dirs)
 
 
 class BookmarkStore:

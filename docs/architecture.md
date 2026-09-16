@@ -34,12 +34,13 @@
 |---|---|
 | `main_window.py` | 主窗口管理、标签页、布局切换、菜单栏、状态栏 |
 | `pane.py` | 单个窗格的完整功能：路径栏、文件列表、导航、上下文菜单（单选文件时挂「打开方式」子菜单，候选延迟到 `aboutToShow` 才枚举）；持有 `PaneSortProxyModel`（排序 + 筛选同一个代理）与 `FilterBar`（Ctrl+F 唤出，状态栏显示「筛选后 M / N 项」）。**拖拽没有独立模块**：`dragEnterEvent` / `dropEvent` 与拖拽高亮（`_apply_drag_highlight`，进前快照样式、离开精确还原）都住在 `FileListTreeView`/`Pane` 里，自定义 MIME `application/x-pan4dex-drag` 只携带源窗格与文件列表（动作由接收端算，见 §3.2） |
-| `dir_model.py` | `DirStoreModel`：以目录为单位的异步文件模型（后台枚举走限流专用线程池 `dir_pool()` + TTL 缓存 + 定向失效；只给**当前显示的本地目录**挂 `QFileSystemWatcher` 自动重扫，监视器是全进程唯一的 `_WatchHub`，网络目录不挂），文件列表专用 |
+| `dir_model.py` | `DirStoreModel`：以目录为单位的异步文件模型（后台枚举走限流专用线程池 `dir_pool()` + TTL 缓存 + 定向失效；只给**当前显示的本地目录**挂 `QFileSystemWatcher` 自动重扫，监视器是全进程唯一的 `_WatchHub`，网络/慢位目录不挂 —— “慢位置”由 `mounts.is_remote_location()` 定，两端同一个判据），文件列表专用 |
 | `lifecycle.py` | `call_later(obj, ms, fn)`：以业务对象为父的延后回调，避免 `QTimer.singleShot` 在对象销毁后回调已删除子对象；`exec_and_drain(app)` / `drain_background_pool()`：退出时排空后台线程，避免未派发的跨线程投递在解释器收尾阶段被释放（退码 0xC0000409） |
 | `file_operations.py` | 文件复制/移动/删除/重命名，支持进度回调和取消（**纯执行层**：不知道有线程、也没有 UI）；另住几个 Qt 无关的共用判据：`describe_removal()`（删除确认文案，按“网络位置没有回收站”说实际后果）、`move_target_inside_sources()`（“不能把目录移到它自己的子目录里”的唯一判据）、`same_volume()` + `decide_drop_action()`（拖放该复制还是移动：同卷移动、跨卷复制，见 §3.2；`move()` 的跨卷分支也共用 `same_volume`，不留第二份 `st_dev` 比较）—— 窗格与搜索结果列表两个入口不能各写一份 |
 | `file_op_runner.py` | `FileOpRunner`：把 `FileOperations` 丢到后台线程，并配齐一整套主线程配合 —— 进度对话框（速度/剩余时间/取消）、同名冲突询问（含「对后续同样处理」只问一次）、跨线程回投、宿主已销毁时丢帧不崩。宿主只给四个可选钩子（`on_status` / `on_bar` / `on_bar_hide` / `on_done`）：窗格与高级搜索共用这一份（见第 4.5 条）。“同一时刻只跑一个”由 `busy` 说出口，入口在宿主（菜单置灰 / 直接拒） |
 | （没有 `drag_drop.py` / `terminal.py`） | 旧表里这两行是假的，本仓从来没有这两个文件：拖拽与 MIME 住在 `pane.py`（`dragEnterEvent` / `dropEvent` / `_apply_drag_highlight`）与 `widgets/bookmark_sidebar.py`；终端候选与启动命令住在 `widgets/terminal_panel.py`，窗格只经 `main_window.open_terminal_at()` 转给它 |
 | `open_with.py` | 「打开方式」候选枚举 + 启动：Windows 读注册表（默认 ProgID / `FileExts\*\OpenWithList` MRU / 两处 `OpenWithProgids` / `App Paths` 兜底）、Linux 扫 `.desktop`（XDG 目录 + `MimeType` 匹配）、macOS 扫顶层 `.app` 的 `Info.plist`；按扩展名 TTL 缓存 + exe 去重 + 上限 15 项，任何一步失败只少候选、绝不外抛；Windows 另可 `OpenAs_RunDLL` 调系统对话框 |
+| `mounts.py` | 「这个位置是不是慢位置」的**唯一判据**（`is_remote_location()`）：Windows 走 UNC + `GetDriveTypeW == DRIVE_REMOTE`，POSIX 解析挂载表（`/proc/mounts` / `mount -p`）后按**最长前缀**找所属挂载点、再看文件系统类型（cifs / smb* / nfs* / 任意 `fuse.*`（含 gvfs）/ sshfs / rclone / 9p / 虚拟机共享盘…）。三个环节都是纯函数（`parse_mount_table` / `longest_matching_mount` / `posix_is_remote`）→ Linux 的判定矩阵在 Windows 主机上就能测满；读表带 10s TTL 缓存，**任何失败都退化成「按本地处理」**（宁可多挂一个 watcher，也不能因判据本身出错而让导航/删除跟着失败）；不做 `realpath`（见 `docs/gotchas.md` 第 43 条）。消费方：`file_operations._is_network_path`（窗格刷新、`describe_removal`）与 `DirStoreModel._is_network`（监视），三处不允许各写一份 |
 
 ### 2.2 widgets/ — UI 组件
 
@@ -59,7 +60,7 @@
 | `paths.py` | `default_config_dir()`：用户级 JSON 存储的唯一落点（win `%APPDATA%/pan4dex`，其余 `~/.config/pan4dex`），文件关联、已保存搜索与收藏夹共用 |
 | `file_associations.py` | 文件类型 → 应用映射的增删改查（配置目录向 `paths.py` 委托） |
 | `saved_searches.py` | `SavedSearchStore`：已保存的搜索条件（清单 20.4）单文件 JSON，存的是真正喂给 worker 的 params；读坏当空表、逐条校验、上限 50 条、写失败返回 (False, 文本) 而不抛 |
-| `bookmarks.py` | `BookmarkStore`：收藏夹树的模型层 + 单文件 JSON（`bookmarks.json`，format v2），**不依赖 Qt**。节点 `{id, type: link|group, name, path|children+expanded}`，根是隐式分组；结构规则全在这层：`can_place`（拖拽与 `move` 共用的一套理由：成环/超 8 层/目标是链接）、500 条上限、v1 平铺列表只读转换（改过才写盘）、坏记录逐条降级、文件里的 id 不信任。侧边栏与窗格右键共用 `MainWindow` 注入的那一份 |
+| `bookmarks.py` | `BookmarkStore`：收藏夹树的模型层 + 单文件 JSON（`bookmarks.json`，format v2），**不依赖 Qt**。节点 `{id, type: link|group, name, path|children+expanded}`，根是隐式分组；结构规则全在这层：`can_place`（拖拽与 `move` 共用的一套理由：成环/超 8 层/目标是链接）、500 条上限、v1 平铺列表只读转换（改过才写盘）、坏记录逐条降级、文件里的 id 不信任。侧边栏与窗格右键共用 `MainWindow` 注入的那一份。首启动默认四条（`default_nodes`）不写死英文目录名：POSIX 先读 `~/.config/user-dirs.dirs`（`parse_user_dirs` → 中文环境的桌面叫 `~/桌面`），`default_links` 只留**真实存在**的目录（点不开的空收藏不如不给），Windows 不读该文件 |
 | `theme_manager.py` | 主题注册、切换、自定义主题加载 |
 
 ## 3. 数据流设计

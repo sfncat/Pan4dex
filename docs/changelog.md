@@ -19,6 +19,68 @@
 
 ## 更新记录
 
+### v1.9.013 — 2026-09-17（开发分支 dev/shell-behavior-smb-perf）
+
+#### 🐛 缺陷修复：网络/慢盘保护在 Linux 上被整体关掉（`docs/linux-gap.md` 第二批）
+- 根因不是“Linux 代码缺失”，而是入口写成了 `if os.name != 'nt': return False`，而且
+  这个判断当时有**两份**（`DirStoreModel._is_network` 与 `file_operations._is_network_path`）。
+  在 Linux 上因此一直不生效的有：gvfs / CIFS 挂载上**不挂 watcher**、**重复导航同一目录
+  强制重扫**、导航时不拿同步 `stat` 猜目录
+- **删除确认框在 Linux 上给了假承诺**：`describe_removal()` 里区分网络位置的分支挂在
+  `elif os.name == 'nt'` 下面，而在 Linux 上这判据本来就恒为 `False` —— 两层都坑在一起，
+  在 gvfs 里按 Del 会被告知「已移到回收站」，而东西是**直接没了**
+
+#### 🔧 工程：「是不是慢位置」全仓收敛为一份判据
+- 新增 `core/mounts.py`：`is_remote_location()` 为唯一入口，Windows 走 UNC + `GetDriveTypeW`，
+  POSIX 解析挂载表（`/proc/mounts` → `mount -p`）按**最长前缀**定所属挂载点、再看文件系统
+  类型（cifs / smb\* / nfs\* / 任意 `fuse.\*`（含 gvfs）/ sshfs / rclone / 9p / 虚拟机共享盘…）；
+  读表带 10s TTL 缓存
+- 两处旧实现改为**委托**（不留第二份判据）；**任何失败一律退化为「按本地处理」** ——
+  判据自己出错时不该把导航或删除一起拖失败，代价是宁可多挂一个 watcher
+- 不做 `realpath`：解析符号链接要对路径每一级 `readlink`，而这条判据恰恰用在可能已经
+  卡住的远端路径上；“经由符号链接访问的挂载点会被判成本地”是**写下来的取舍**
+
+#### 🎨 UI/UX：首启动默认收藏不再写死英文（清单 8.5）
+- `default_nodes()` 在 POSIX 上先读 `~/.config/user-dirs.dirs`（freedesktop 标准）——
+  中文桌面的家目录里那一个叫 `~/桌面` 而不是 `~/Desktop`，旧版给的是一条永远点不开的空收藏
+- 只保留**真实存在**的目录（`default_links` 逐条 `isdir`）：点不开的空收藏不如不给；
+  Windows 不读该文件，行为与旧版一致；解析拆成纯函数 `parse_user_dirs()`（认 `$HOME`
+  与 `~` 两种写法，不做无差别 `~` 替换）
+
+#### 🧪 测试：全量 569 passed / 1 skipped（两轮一致）
+- 新增 `tests/test_mounts.py` **82 项**：把 POSIX 判据拆成三段纯函数
+  （`parse_mount_table` / `longest_matching_mount` / `posix_is_remote`）之后，Linux 的整张
+  判定矩阵在 **Windows 主机上就能测满**（喂一份真的 `/proc/mounts` 文本进去）——
+  推翻了“Linux 专属代码必须 Linux 才能测”这条推断
+- `tests/test_m2_file_operations.py` 去掉两个 `skipif(os.name != 'nt')`、新增 2 项文案用例；
+  `tests/test_bookmarks.py` 新增 `TestDefaultXdgDirs` 9 项（该文件 85 → 94）
+- 修一个**测试套件的假红**：`test_date_presets` 的时刻写在 `@pytest.mark.parametrize` 的
+  参数表里，参数表在**收集阶段**求值、被测函数在**执行时**才读时钟 → 跨过午夜就
+  “今天/昨天”整体错一天、三条一起红（本仓连撞三次）。改为参数表里只放构造器
+- 变异验证 15 条（逐条回退旧行为）：**14 条被抓住、1 条为等价变异**（`#` 注释过滤与
+  键名 `startswith("XDG_")` 语义重叠，删掉不会红 —— 属代码冗余而非漏测）。首轮存活的
+  两条都是真问题：最长前缀的边界检查被“更长的条目也在表里”兜底（要构一表只留
+  `/` 与 `/mnt/nas` 才能单独钉住）；“只在 nt 分类”这类门控在 Windows 宿主上永远走得对
+  （得 `monkeypatch.setattr(mod.os, "name", "posix")` 把宿主也当成 POSIX）
+
+#### 📝 文档更新
+- 新增 `docs/linux-gap.md`（Linux 能力对照与差距，47 处行号引用逐条核对命中）；本版的
+  三项改动在它 §6「第二批」里标 ✅，§3.4 实测表同步为 v1.9.013 的口径
+- `architecture.md` 新增 `mounts.py` 一行，`dir_model.py` / `bookmarks.py` 两行措辞改为真实形状；
+  `AGENT.md` 新增一条「平台判据必须两边都有」的设计决策，并把“网络目录完全不挂”两处
+  说法订正为“网络/慢位置”（判据两端同一个）
+- `feature-checklist.md` 新增 3.5（网络/慢位置识别）与 8.5（首启动默认收藏），2.4 / 12.10
+  的验证措辞改为两端都算；**补记 v1.9.012 漏写的更新记录行**
+- `gotchas.md` 新增第 43 条（四个坑：最长前缀必须拼边界且根挂载特例、`\040` 是空格、
+  同挂载点重复取最后一次、判据不做 `realpath`），第 39 条补“时刻写在参数表里”这
+  第二种形状，审查清单补 2 项；`docs/changelog.md` 本节顺手订正上一版文档对慢盘优化的
+  两处不准确说法（缓存 TTL 2s 是两端同一条规则；全仓从来没有“进度节流”这回事）
+
+#### ❗ 仍未解决
+- Linux 真机验收（L1-L15）仍需一台可达的 Linux 主机；本版新代码在真机上只验到
+  「挂载表本身长什么样」这一层
+- 第三批（`QFileIconProvider` 类型图标、POSIX 权限列、`dolphin/nautilus --select`）未动
+
 ### v1.9.012 — 2026-09-16（开发分支 dev/shell-behavior-smb-perf）
 
 #### 🎨 UI/UX：拖放默认动作对齐资源管理器（清单 2.11）

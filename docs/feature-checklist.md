@@ -26,7 +26,7 @@
 | 2.1 | 复制文件 | P0 | 🟢 | 右键/快捷键复制与外部拖入（跨卷）→ 进度对话框显示，完成后目标窗格刷新 | shutil.copy2 + 后台线程 | file_operations.py copy() |
 | 2.2 | 移动文件 | P0 | 🟢 | 窗格内拖拽移动，或剪切后粘贴；同卷跨窗格拖拽也是移动 | shutil.move + 后台线程；跨卷走「复制+删源」（保 mtime、有字节进度、可取消） | file_operations.py move() |
 | 2.3 | 安全删除 | P0 | 🟢 | 右键删除 → 文件进入回收站，可恢复 | send2trash | file_operations.py delete() |
-| 2.4 | 永久删除 | P1 | 🟢 | Shift+Delete 直接删除（确认框明写「不可恢复」） | 走 `delete(safe=False)`；网络位置本就无回收站，文案同样区分 | pane.py `FileListTreeView.keyPressEvent` → `_delete_paths(permanent=True)` |
+| 2.4 | 永久删除 | P1 | 🟢 | Shift+Delete 直接删除（确认框明写「不可恢复」） | 走 `delete(safe=False)`；网络位置本就无回收站，文案同样区分 —— 「是不是网络位置」两端都算（v1.9.013 前只在 Windows 上分类，见 3.5） | pane.py `FileListTreeView.keyPressEvent` → `_delete_paths(permanent=True)` → `file_operations.describe_removal()` |
 | 2.5 | 重命名 | P0 | 🟢 | F2 / 右键重命名 → 行内编辑，提交走模型 setData | 新模型条目带 ItemIsEditable，内建触发器关掉以免误编辑 | pane.py `rename_selected()` |
 | 2.6 | 新建文件夹 | P1 | 🟢 | 右键菜单 → 新建文件夹，自动进入重命名 | os.makedirs | file_operations.py create_folder() |
 | 2.7 | 新建文件 | P1 | 🟢 | 右键菜单 → 新建空文件 | open(path, 'w') | file_operations.py create_file() |
@@ -43,6 +43,7 @@
 | 3.2 | 路径自动补全 | P1 | 🟢 | 输入路径时弹出候选；只补当前一层，绝不全盘扫描 | QCompleter + QStringListModel（按需填充） | path_bar.py `_setup_completer()` |
 | 3.3 | 路径历史 | P1 | 🟢 | 后退/前进按钮 + Alt+Left/Right；按窗格各自记史，前进截断正确处理 | 历史栈 `_nav_history` + `_nav_index` | pane.py `go_back()` / `go_forward()` |
 | 3.4 | 快速跳转 | P1 | 🟢 | Ctrl+L 聚焦当前窗格路径栏并全选现有路径，直接键入即可跳转 | PathBar.focus_for_input() | main_window.py `on_focus_path_bar()` / path_bar.py |
+| 3.5 | 网络 / 慢位置识别 | P0 | 🟢 | 同一个位置在三处得到**同一个答案**（窗格刷新、目录监视、删除文案）；Linux 上挂在 `/mnt` 的 cifs/nfs/sshfs 也算网络位置（v1.9.013 前判据写死 `os.name != 'nt'` 直接返回 False，整套保守策略在非 Windows 上从不生效） | 全仓唯一入口 `mounts.is_remote_location()`：Windows 走 UNC + `GetDriveTypeW`，POSIX 读挂载表（`/proc/mounts` / `mount -p`）按**最长前缀**定所属挂载点再看 fstype；解析/匹配/判定三段纯函数 → Linux 矩阵在 Windows 主机上就能测满；**任何失败退化为「按本地」**，不做 `realpath`（取舍见 gotchas 第 43 条） | core/mounts.py；tests/test_mounts.py 82 项 |
 
 ## 4. 标签页
 
@@ -87,7 +88,8 @@
 | 8.1 | 收藏夹侧边栏 | P2 | 🟢 | 侧边栏以**树**显示收藏（分组 + 条目），项在 `UserRole` 存 id 而不是靠行号 | QTreeWidget + QDockWidget，模型层 `config/bookmarks.py`（不依赖 Qt） | bookmark_sidebar.py |
 | 8.2 | 添加收藏 | P2 | 🟢 | 拖拽目录到侧边栏（落在光标下的分组，拖文件不收）、工具栏「+」（默认活动窗格的当前目录）、右键「添加到收藏夹」三条路 | 外部拖入走 `dropEvent`（不是 `InternalMove`）+ 同路径去重 | bookmark_sidebar.py `add_bookmark()` / `add_paths_as_bookmarks()` |
 | 8.3 | 移除收藏 | P2 | 🟢 | 右键或 Del 键；删分组时说清会带走几条，**磁盘上的目录不受影响** | 确认框 + 按 id 删（不是按行号） | bookmark_sidebar.py `remove_selected()` |
-| 8.4 | 收藏分组 | P3 | 🟢 | 新建/重命名/删除分组，嵌套≤ 8 层（超出拒绝）；拖拽重排与挪组（成环不给放）、右键「移动到分组…」列合法目标；展开状态与顺序都落盘；老的平铺 bookmarks 自动迁移（改过才写盘） | `BookmarkStore.can_place` 与 `move` 共用一套规则；上限 500 条 | config/bookmarks.py + bookmark_sidebar.py；tests/test_bookmarks.py 85 项 |
+| 8.4 | 收藏分组 | P3 | 🟢 | 新建/重命名/删除分组，嵌套≤ 8 层（超出拒绝）；拖拽重排与挪组（成环不给放）、右键「移动到分组…」列合法目标；展开状态与顺序都落盘；老的平铺 bookmarks 自动迁移（改过才写盘） | `BookmarkStore.can_place` 与 `move` 共用一套规则；上限 500 条 | config/bookmarks.py + bookmark_sidebar.py；tests/test_bookmarks.py 94 项 |
+| 8.5 | 首启动默认收藏 | P2 | 🟢 | 全新配置下侧边栏给出「主目录 + 桌面/下载/文档」，且**中文桌面**（`~/桌面`）不给出 `~/Desktop` 这种点不开的空项（v1.9.013 前写死英文） | POSIX 读 `~/.config/user-dirs.dirs`（`parse_user_dirs` 纯函数，认 `$HOME` 与 `~` 两种写法）；`default_links` 只留真实存在的目录；Windows 不读该文件 | config/bookmarks.py `default_nodes()`；tests/test_bookmarks.py `TestDefaultXdgDirs` |
 
 ## 9. 筛选过滤
 
@@ -135,7 +137,7 @@
 | 12.7 | Ctrl+2 双窗格模式 | P1 | 🟢 | Ctrl+2 上下双窗格、Ctrl+Shift+2 横向、Ctrl+5/Ctrl+6 上2下1/上1下2 | 视图菜单 QAction | main_window.py `switch_to_dual*()` |
 | 12.8 | F3 预览面板 | P2 | 🟢 | 切换右侧预览面板显示（可勾选项） | 视图菜单 QAction | main_window.py `toggle_preview()` |
 | 12.9 | F5 刷新 | P1 | 🟢 | 刷新当前窗格，保留选中与滚动位置 | 编辑菜单 QAction | main_window.py `on_refresh()` |
-| 12.10 | Delete 安全删除 | P0 | 🟢 | 删除选中项到回收站；网络位置文案改为「永久删除」 | 编辑菜单 QAction | main_window.py `on_delete()` → pane `_delete_paths` |
+| 12.10 | Delete 安全删除 | P0 | 🟢 | 删除选中项到回收站；网络位置文案改为「永久删除」（该分类在 Linux 上同样生效，见 3.5） | 编辑菜单 QAction | main_window.py `on_delete()` → pane `_delete_paths` |
 | 12.11 | Shift+Delete 永久删除 | P1 | 🟢 | 直接删除选中项，二次确认明写不可恢复 | 在视图 keyPressEvent 拦，不与 QAction(Delete) 双弹确认框 | pane.py `FileListTreeView.keyPressEvent` |
 | 12.12 | F2 重命名 | P0 | 🟢 | 进入当前行行内编辑 | 编辑菜单 QAction | main_window.py `on_rename()` → pane `rename_selected()` |
 | 12.13 | Ctrl+C / Ctrl+X / Ctrl+V | P0 | 🟢 | 复制/剪切/粘贴，与系统剪贴板互通（含 MoveEffect 识别） | 编辑菜单 QAction | main_window.py / pane.py |
@@ -266,8 +268,10 @@
 | 2026-09-16 | 20.4（保存搜索）实现并转 🟢：新增 `config/saved_searches.py` 与 `config/paths.py`（文件关联的配置目录规则改为向它委托）；同时修一个读代码时发现的真 bug（高级搜索非正则模式下 `*.txt` 被 `re.escape` 当字面量，按 placeholder 写必然 0 结果）；20.3 回退为 🟡（原标 🟢 与代码不符：结果列表没有批量操作） | - |
 | 2026-09-16 | 8.4（收藏分组）实现并转 🟢：新增 `config/bookmarks.py`（Qt 无关的树模型 + JSON，规则全在这层）与重写的 `widgets/bookmark_sidebar.py`（分组树、拖拽重排/挪组、展开持久化、id 引用）；8.1–8.3 的“实现情况”同步改为真实形状（旧版是平铺 `QListWidget` + `currentRow()` 当下标，且 8.2 写的“拖目录进来收藏”根本没接外部拖放） | - |
 | 2026-09-16 | 20.3（搜索结果批量操作）实现并转 🟢：抽出 `core/file_op_runner.py`（后台线程 + 进度框 + 冲突询问 + 取消，窗格与搜索共用一份），结果列表加多选/右键菜单/键位与复制到、移动到、删除；新增 12.19（结果列表键位）与 20.5 🟡（搜索窗口仍为模态）。顺带修两个读代码发现的真 bug：进度对话框从未弹起（`Qt.TextInteractionFlags` 不存在的 AttributeError 被 `except` + `debug` 静默咽掉）、首次同名冲突的用户决策被静默丢弃（`invokeMethod` 拿不到槽返回值） | - |
+| 2026-09-16 | **补记**：v1.9.012（2.11 拖放默认动作对齐资源管理器）当时只加了 2.11 行、漏写本表记录。改动是 `file_operations.same_volume()` / `decide_drop_action()` 一份判据供窗格与 `move()` 共用，Ctrl/Shift 强制 > 同目录树内拖动 > `possibleActions` 硬约束 > 同卷移动/跨卷复制 | - |
+| 2026-09-17 | Linux 第二批「判据去 `nt` 化」：新增 `core/mounts.py` 作为全仓唯一的「是不是慢位置」判据（POSIX 挂载表 + 最长前缀 + fstype），删掉两份 `if os.name != 'nt': return False` 的短路 —— 网络/慢盘的保守策略（不挂 watcher、重复导航强制重扫、删除文案说「永久删除」）在 Linux 上**第一次真的生效**；新增 3.5（判据）与 8.5（首启动默认收藏读 XDG `user-dirs.dirs`）；2.4 / 12.10 的文案分类改为两端都算。顺带修一个测试套件的假红：`test_date_presets` 的时刻写在 `parametrize` 参数表里（收集期求值），跨午夜跑必红 | - |
 
 ---
 
-**文档版本**：v1.5  
-**最后更新**：2026-09-16
+**文档版本**：v1.6  
+**最后更新**：2026-09-17

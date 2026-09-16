@@ -18,13 +18,16 @@
    源目录在仓库里根本不存在（其中一个被 `.gitignore` 挡住），PyInstaller 对缺失的
    add-data 源是**硬失败**（当场实测 `exit 1`）→ 新克隆的仓库构建不出 Linux 包。
    `releases/` 里也没有任何 Linux 产物，最后一次 Linux 构建工作停在 v0.9.68x（≈50 个版本前）。
-3. **本机的测试证据全部是 Windows 的**：476 项用例在 Windows 上跑，Linux 专属分支
-   （`_list_linux`、`same_volume` 的正向路径、pty 后端）在**这套测试里一行都没执行过**
-   —— `tests/test_open_with.py:33-35` 按**宿主平台**挑要替换的枚举函数。
-4. **两处「Windows 特化判据」把 Linux 挡在功能外面**，属于回归性缺失：
+3. **本机的测试证据大部分还是 Windows 的**：569 项用例在 Windows 上跑。v1.9.013 之后，
+   POSIX 的「慢位置」判定矩阵已经能在 Windows 主机上测满（判据是纯函数，喂挂载表
+   文本进去）；仍未执行过的 Linux 分支：`_list_linux`、pty 后端、`same_volume` 的
+   挂载点边界 —— `tests/test_open_with.py:33-35` 按**宿主平台**挑要替换的枚举函数。
+4. ~~**两处「Windows 特化判据」把 Linux 挡在功能外面**~~ → **v1.9.013 已修**：
    网络/慢盘判定（`os.name != 'nt'` 直接 `return False`）与删除后果文案（只有 nt 分支
-   区分网络位置）→ Linux 上访问 gvfs/CIFS 共享时，缓存 TTL、watcher 摘除、进度节流、
-   「这里没有回收站」全部不生效，而 gvfs 恰恰是最需要它们的那类目录。
+   区分网络位置）现在两端都算，判据收拢到 `core/mounts.py` 一份。这次修完真正生效的是：
+   gvfs / CIFS 挂载上**不挂 watcher**、**重复导航同一目录强制重扫**、导航时不拿
+   同步 `stat` 猜目录、删除前说「这里没有回收站」（缓存 TTL 2s 本来就是两端同一条
+   规则，不在这次的范围内）。
 5. **三项在 Linux 上缺得更狠的功能，两端其实都没做**：文件类型图标
    （`dir_model._icon()` 永远只有「文件夹/文件」两张图）、POSIX 权限与所有者
    （右键「加运行权限」执行后**界面上看不到任何变化**，代码注释里承诺的「权限列」从来没有）、
@@ -51,7 +54,7 @@
 | PyInstaller 6.22 遇到不存在的 `--add-data` 源 | `ERROR: Unable to find ...`，**exit 1**（不是警告） |
 | PyInstaller 6.22 遇到不存在的 `--icon` | `FileNotFoundError: Icon input file ... not found`，exit 1 |
 | `pyinstaller packaging/pan4dex.spec`（在仓库根目录） | **exit 0，产物 54.6MB**：spec 仍能跑，且自动带上 QtSvg/imageformats/pillow_heif |
-| 全量测试（Windows） | 476 passed / 1 skipped（随机序与固定序两轮一致） |
+| 全量测试（Windows，v1.9.012 基线） | 476 passed / 1 skipped（随机序与固定序两轮一致）；v1.9.013 起为 **569 passed / 1 skipped**，两轮同样一致 |
 
 「代码取证」的判定标准：一个功能只有走到 `sys.platform == "win32"` 的分支里才算 Windows 专属；
 如果 Linux 分支存在但没跑过，一律记 🟡/❓ 而不是 🟢。
@@ -95,7 +98,7 @@
 
 | 能力 | Windows | Linux | 判定 | 证据 |
 |---|---|---|---|---|
-| 收藏夹默认项 | `~\Desktop`/`Downloads`/`Documents` 真实存在 | **写死英文名**：本地化桌面是 `~/桌面`、`~/下载`，正解在 `~/.config/user-dirs.dirs` → 首启动三条指向不存在的路径 | 🟡 | `config/bookmarks.py:56-62` |
+| 收藏夹默认项 | `~\Desktop`/`Downloads`/`Documents` 真实存在 | ✅ v1.9.013：读 `~/.config/user-dirs.dirs`（本地化桌面是 `~/桌面`、`~/下载`），读不到退英文名，并且只留真实存在的目录 | 🟢 已修 | `config/bookmarks.py` `parse_user_dirs` / `default_links` |
 | 「此电脑」/挂载点/网络邻居 | 未做 | 未做（Linux 侧需 mount 表 / `QStorageInfo`，不是盘符） | 🔴 plan §7 欠账 | 全仓无 `QStorageInfo` |
 | 面包屑地址栏 | 未做 | 未做 | 🔴 plan §7 欠账 | — |
 | 路径补全 | 当前目录一层 | 同（`QDir` + `/`） | 🟢 | `widgets/path_bar.py:214-245` |
@@ -111,8 +114,8 @@
 | 同名冲突 | `os.path.exists` | 同一判据 → Linux 上 `A.txt` 与 `a.txt` 正确视为两个文件（没有 Windows 化的大小写折叠） | 🟢 | 全仓无对路径做 `lower()` 比较 |
 | 符号链接复制 | 建链失败降级为复制（需开发者模式） | `os.symlink` 正常 | 🟢 | `core/file_operations.py:399-410` |
 | 回收站 | `send2trash` + `\\?\` 前缀修正 | `send2trash(path)`（freedesktop Trash） | 🟢 | `core/file_operations.py:761-792` |
-| **删除后果文案** | 区分「本地→回收站 / 网络→永久不可恢复」 | **只有 nt 分支做这个区分**；Linux 上一律说「移到回收站」，而在 gvfs/CIFS 上 send2trash 会抛错（用户看到的是裸 errno） | ⚠️ | `core/file_operations.py:66-80`、`_is_unc_path`/`_is_network_path` 非 nt 直接 False |
-| **慢盘/网络盘加速全套** | UNC + `GetDriveTypeW==DRIVE_REMOTE` → 不挂 watcher、TTL、进度节流 | **Linux 恒判为本地** → gvfs（`~/.gvfs`、`/run/user/UID/gvfs/`）与 CIFS 挂载全部按本地处理：挂 watcher（FUSE 上常常不推事件）、按本地节流 | ⚠️ **本项目头号目标在 Linux 侧等于没做** | `core/file_operations.py:17,30`、`core/dir_model.py:455-466` |
+| 删除后果文案 | 区分「本地→回收站 / 网络→永久不可恢复」 | ✅ v1.9.013：同一个分类不分平台，gvfs/CIFS 上不再承诺“移到回收站” | 🟢 已修 | `describe_removal()` + `core/mounts.py` |
+| **慢盘/网络盘识别** | UNC + `GetDriveTypeW==DRIVE_REMOTE` | ✅ v1.9.013：解析 `/proc/mounts`（macOS `mount -p`）按最长前缀找挂载点 + 慢类型表（cifs/smb/nfs/任意 `fuse.*`（含 gvfs）/sshfs/rclone/9p/虚拟机共享盘…）→ 不挂 watcher、导航强扫、删除文案一次接通 | 🟢 代码与纯函数矩阵已验，❓ 真机挂载待跑 | `core/mounts.py`（两个消费方：`_is_network_path` / `DirStoreModel._is_network`）|
 | 跨线程进度/取消 | `FileOpRunner` | 同一套 | 🟢 | `core/file_op_runner.py` |
 | 撤销（Ctrl+Z） | 未做 | 未做 | 🔴 plan §2.3 明示留二期 | — |
 
@@ -171,6 +174,7 @@
 | `core/open_with.py` 的 Linux 枚举 `_list_linux`（`:432-484`，约 50 行 + 3 个纯函数辅助） | 本机执行 0 次：`tests/test_open_with.py:33-35` 按宿主平台决定替换哪个函数，只有 `_parse_desktop_file` / `_mime_matches` / `_desktop_exec_argv` 三个纯函数在 Windows 上被直接测到 | 真实桌面环境里的目录优先级、`Exec` 里的 `%f/%U`、mime-info 缓存路径都没验过 |
 | `PtyBackend` 的 Linux 分支（`pty`/`fcntl`/`termios`） | 本机 0 次（Windows 走 winpty） | 终端在 Linux 上「代码看着最正」，但完全没有自动化证据 |
 | `same_volume()` 的正向跨挂载点判定 | 本机只验过「同卷/UNC/stat 失败」三种，Linux 的挂载点边界没验 | 拖放动作决策在 Linux 上的正确性靠推断 |
+| 「慢位置」判定的 Linux 矩阵 | ✅ v1.9.013 起在 Windows 主机上测满（`tests/test_mounts.py`，82 项：喂真实 `/proc/mounts` 文本验解析/匹配/类型三段） | 这类判据拆成纯函数后，“Linux 专属”不等于“必须 Linux 才能测”；剩下要真机的只有「挂载表本身长什么样」 |
 
 ---
 
@@ -224,14 +228,17 @@ QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest -q --tb=short 2>&1 | tail -
 4. `apply_windows_native_icon()` 加 `sys.platform == "win32"` 守卫（现在是靠异常吞掉，
    每次启动白抛两次并留 warning 日志）。
 
-### 第二批：把 Windows 特化判据改成真正的跨平台判据
+### 第二批：把 Windows 特化判据改成真正的跨平台判据 —— ✅ v1.9.013 已完成
 
-5. `_is_network_path()` / `DirStoreModel._is_network()` 在 POSIX 上补判据：路径落在
-   `fuse`/`cifs`/`smb2`/`nfs` 挂载点（读 `/proc/mounts` 或 `os.statvfs` + 挂载表缓存）
-   → 一次性接通慢盘全套（不挂 watcher、TTL、删除文案、节流）。**这是头号目标的 Linux 半边。**
-6. `describe_removal()` 的网络分支去 `os.name == 'nt'` 化（与第 5 条共用同一个判据）。
-7. 收藏夹默认项改读 XDG：`~/.config/user-dirs.dirs` 的 `XDG_DESKTOP_DIR` 等，读不到再退
-   `~/Desktop`（Windows 不受影响）。
+5. ✅ `_is_network_path()` / `DirStoreModel._is_network()` 在 POSIX 上补了判据：解析
+   挂载表按最长前缀找挂载点，慢类型（cifs/smb/nfs/`fuse.*` 含 gvfs/sshfs/9p/…）
+   一律算远端 → 一次性接通不挂 watcher、导航强扫、删除文案。**这是头号目标的 Linux 半边。**
+6. ✅ `describe_removal()` 的网络分支去 `os.name == 'nt'` 化（与第 5 条共用同一个判据）。
+7. ✅ 收藏夹默认项改读 XDG：`~/.config/user-dirs.dirs` 的 `XDG_DESKTOP_DIR` 等，读不到
+   再退 `~/Desktop`，并且只留真实存在的目录（Windows 不读该文件，行为不变）。
+
+这一批未做的：真机挂载表本身（L2/L3）。“不做 `realpath`”是写下来的取舍：
+经由符号链接访问的挂载点会被判成本地（见 `docs/gotchas.md` 第 43 条）。
 
 ### 第三批：补「两端都缺、Linux 更疼」的显示能力
 

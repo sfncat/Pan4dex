@@ -89,16 +89,21 @@ def _first_of_month():
     return base.replace(day=1).timestamp()
 
 
-@pytest.mark.parametrize("query,mtime,want", [
-    ("date:今天", _local_noon(0), True),
-    ("date:今天", _local_noon(1.5), False),
-    ("date:昨天", _local_noon(1.2), True),
-    ("date:昨天", _local_noon(0.1), False),      # 今天上午 → 是今天，不是昨天
-    ("date:本周", _this_monday(), True),
-    ("date:本月", _first_of_month(), True),
+@pytest.mark.parametrize("query,build_mtime,want", [
+    ("date:今天", lambda: _local_noon(0), True),
+    ("date:今天", lambda: _local_noon(1.5), False),
+    ("date:昨天", lambda: _local_noon(1.2), True),
+    ("date:昨天", lambda: _local_noon(0.1), False),      # 今天上午 → 是今天，不是昨天
+    ("date:本周", _this_monday, True),
+    ("date:本月", _first_of_month, True),
 ])
-def test_date_presets(query, mtime, want):
-    assert compile_filter(query).matches("f", False, 10, mtime) is want
+def test_date_presets(query, build_mtime, want):
+    """时刻在**用例里**算，不在 `parametrize` 里算
+
+    参数表在收集阶段就求值了，而 `date:今天` 的参考日在执行时才读表：一次跑
+    只要跨过午夜（23:5x 收集、00:0x 执行，实测遇过三次）三条期望就集体错一天。
+    """
+    assert compile_filter(query).matches("f", False, 10, build_mtime()) is want
 
 
 def test_date_explicit_ranges_and_operators():

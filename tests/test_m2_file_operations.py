@@ -240,8 +240,8 @@ class TestRemovalWording:
     `core/file_operations.py` 后，措辞的对错就归这几个用例管。
     """
 
-    @pytest.mark.skipif(os.name != "nt", reason="回收站/网络盘说法是 Windows 特有")
     def test_local_wording_says_recycle_bin(self, tmp_path):
+        """本地位置的文案两端一致（以前这个判据只在 Windows 上做）"""
         from core.file_operations import describe_removal
         paths = [os.path.join(str(tmp_path), f"f{i}.txt") for i in range(3)]
         title, body = describe_removal(paths)
@@ -249,7 +249,6 @@ class TestRemovalWording:
         assert "移到回收站" in body and "永久删除" not in body
         assert "f0.txt" in body and "3" in body
 
-    @pytest.mark.skipif(os.name != "nt", reason="回收站/网络盘说法是 Windows 特有")
     def test_network_paths_are_reported_as_permanent(self, monkeypatch):
         """网络位置没有回收站：必须说明是永久删除，不能承诺可恢复"""
         from core import file_operations as fo
@@ -260,6 +259,36 @@ class TestRemovalWording:
         assert title == "确认删除"
         assert "网络位置的 2 个项目将被永久删除" in body
         assert "本地的 1 个项目将移到回收站" in body
+
+    def test_the_network_branch_is_not_windows_only(self, monkeypatch):
+        """同一个分类在 POSIX 路径上也要跑（gvfs / CIFS 挂载）
+
+        旧实现把这段锁在 `os.name == 'nt'` 里，Linux 上无论挂的是什么都说
+        “移到回收站”—— 而那恰恰是 send2trash 会报错、用户只看到裸 errno 的场景。
+        """
+        from core import file_operations as fo
+        monkeypatch.setattr(fo, "_is_network_path",
+                            lambda p: p.startswith("/run/user/1000/gvfs") or p.startswith("/mnt/nas"))
+        # 把宿主也当成 POSIX：否则这个用例在 Windows 上跑时，旧版那个
+        # `os.name == 'nt'` 门控会“正确”地走进去，测不到它已被打掉
+        monkeypatch.setattr(fo.os, "name", "posix")
+        title, body = fo.describe_removal([
+            "/run/user/1000/gvfs/smb-share:server=gti,share=pub/a.docx",
+            "/mnt/nas/b.xlsx",
+            "/home/sfnca/c.txt",
+        ])
+        assert title == "确认删除"
+        assert "网络位置的 2 个项目将被永久删除" in body
+        assert "本地的 1 个项目将移到回收站" in body
+        assert "a.docx" in body and "c.txt" in body
+
+    def test_all_network_paths_never_promise_a_recycle_bin(self, monkeypatch):
+        """全是网络位置时不能给出“移到回收站”这个承诺"""
+        from core import file_operations as fo
+        monkeypatch.setattr(fo, "_is_network_path", lambda p: True)
+        _title, body = fo.describe_removal(["/mnt/nas/a", "/mnt/nas/b"])
+        assert "移到回收站" not in body and "本地的" not in body
+        assert "网络位置的 2 个项目将被永久删除" in body
 
     def test_permanent_wording_applies_to_local_paths(self, tmp_path):
         from core.file_operations import describe_removal

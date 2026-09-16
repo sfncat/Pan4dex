@@ -23,6 +23,8 @@ import contextlib
 import weakref as _weakref
 from datetime import datetime
 
+from core import mounts
+
 from PyQt6.QtCore import (
     QAbstractItemModel, QCoreApplication, QModelIndex, Qt, QDir,
     QFileSystemWatcher, QTimer, QRunnable, QThreadPool, QObject,
@@ -453,15 +455,14 @@ class DirStoreModel(QAbstractItemModel):
 
     @staticmethod
     def _is_network(path):
+        """该目录是否位于「慢位置」（不配挂 watcher 的那一类）
+
+        判据全仓一份（`core/mounts.py`）：Windows 看 UNC / `DRIVE_REMOTE`，
+        POSIX 看挂载表的文件系统类型（gvfs / CIFS / NFS / 任意 FUSE）。
+        失败一律当本地：宁可多挂一个 watcher，也不能因判据本身出错而少监视。
+        """
         try:
-            if os.name == 'nt':
-                if path.startswith('\\\\'):
-                    return True
-                if len(path) >= 2 and path[1] == ':':
-                    import ctypes
-                    DRIVE_REMOTE = 4
-                    return ctypes.windll.kernel32.GetDriveTypeW(path[:2] + '\\') == DRIVE_REMOTE
-            return False
+            return mounts.is_remote_location(path)
         except Exception:
             return False
 

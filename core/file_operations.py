@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Callable, Optional
 
+from core import mounts
+
 
 def _is_unc_path(p: str) -> bool:
     """判断路径是否为 Windows UNC 网络共享路径：server 共享形式（正斜杠
@@ -20,27 +22,17 @@ def _is_unc_path(p: str) -> bool:
 
 
 def _is_network_path(p: str) -> bool:
-    """判断路径是否为网络路径（Windows）：UNC 共享（\\server\\share）或
-    映射到网络共享的驱动器（如 Z:\\，GetDriveTypeW 返回 DRIVE_REMOTE=4）。
+    """判断路径是否位于「慢位置」：Windows 上是 UNC 共享（\\\\server\\share）或
+    映射到网络共享的驱动器（如 Z:\\，`GetDriveTypeW` 返回 `DRIVE_REMOTE=4`）；
+    POSIX 上是网络 / FUSE 挂载点之下（gvfs、CIFS、NFS …）。判据本体在
+    `core/mounts.py`，与目录监视、删除文案共用一份（以前非 Windows 一律 False，
+    等于 Linux 上这些优化全部失效）。
 
     QFileSystemModel 对网络路径的目录缓存不可靠（QFileSystemWatcher 变更
     通知在 SMB 上经常失效），外部程序复制/删除的文件不会自动出现在列表里，
     需要强制重建模型重扫，因此要能识别这类路径。
     """
-    if os.name != 'nt':
-        return False
-    p = p.replace('/', '\\')
-    if p.startswith('\\\\'):
-        return True
-    root = os.path.splitdrive(p)[0]
-    if root:
-        try:
-            import ctypes
-            t = ctypes.windll.kernel32.GetDriveTypeW(root + '\\')
-            return t == 4  # DRIVE_REMOTE
-        except Exception:
-            pass
-    return False
+    return mounts.is_remote_location(p)
 
 def _normalize_unc(p: str) -> str:
     """把 UNC 路径规范成普通的 server 共享形式（去掉 send2trash 加的
@@ -55,16 +47,20 @@ def _normalize_unc(p: str) -> str:
 def describe_removal(paths, permanent: bool = False) -> tuple:
     """删除确认文案 → `(标题, 正文)`（不依赖 Qt：窗格与搜索结果列表共用一份）
 
-    措辞按**实际后果**区分：网络位置（UNC/映射网络盘）没有回收站，删除即
-    永久删除不可恢复，不能仍写“到回收站”误导用户；`permanent=True`
-    （Shift+Delete）时本地也直接永久删除。正文列出前 5 个名字，多了只报条数。
+    措辞按**实际后果**区分：网络位置（Windows 的 UNC / 映射盘，Linux 的 gvfs /
+    CIFS / NFS 挂载）没有回收站，删除即永久删除不可恢复，不能仍写“到回收站”
+    误导用户；`permanent=True`（Shift+Delete）时本地也直接永久删除。正文列出
+    前 5 个名字，多了只报条数。
+
+    这里的网络/本地分类**不分平台**（以前只在 `os.name == 'nt'` 下做，Linux 上
+    无论挂的是什么都说“移到回收站”），判据与窗格刷新共用 `_is_network_path`。
     """
     paths = list(paths)
     count = len(paths)
     if permanent:
         title = "确认永久删除"
         verb = f"确定要永久删除 {count} 个项目吗？此操作不可恢复！"
-    elif os.name == 'nt':
+    else:
         net_count = sum(1 for p in paths if _is_network_path(p))
         local_count = count - net_count
         parts = []
@@ -73,10 +69,7 @@ def describe_removal(paths, permanent: bool = False) -> tuple:
         if local_count:
             parts.append(f"本地的 {local_count} 个项目将移到回收站")
         title = "确认删除"
-        verb = '，；'.join(parts) + "。"
-    else:
-        title = "确认删除"
-        verb = f"确定要删除 {count} 个项目吗？"
+        verb = '，；'.join(parts) + "。" if parts else f"确定要删除 {count} 个项目吗？"
     names = '\n'.join(os.path.basename(p) or p for p in paths[:5])
     if count > 5:
         names += f"\n… 等共 {count} 项"
