@@ -54,10 +54,17 @@ ssh gti 'chmod +x ~/tools/pan4dex/pan4dex-0.9.657-linux'
 2. `docker build --network=host` 构建镜像 `pan4dex-builder-linux`（`packaging/Dockerfile-linux`）——`--network=host` 解决容器内 DNS 解析失败
 3. `docker run` 挂载项目根目录到 `/app`，容器内：
    - `sed` 覆盖 `config/app_config.py` 的 `VERSION` / `BUILD_TIME`
-   - `pyinstaller --onefile --windowed --name=pan4dex`，**显式打包资源**：
-     - `resources/icons`（图标，否则任务栏/文件管理器显示默认图标）
-     - `resources/themes`（主题）
-     - `resources/tools/exiftool-linux`（应用内携带的 ExifTool Perl 包，拍摄日期列用系统 perl 运行）
+   - `pyinstaller --onefile --windowed --name=pan4dex`，打包资源**按目录存在才带**（宿主
+     算好 `--add-data` 清单后以 `DATA_ARGS` 传进容器）：
+     - `resources/icons`（图标，否则任务栏/文件管理器显示默认图标）—— 它是 `git ls-files
+       resources` 里唯一真入库的目录，缺了就是源码树不完整，直接 exit 1
+     - `resources/tools/exiftool-linux`（内置 ExifTool Perl 包，拍摄日期列用系统 perl 跑）
+     - `resources/tools/7z`（内置 7zz）、`resources/tools/qt6-im-plugins`（Qt6 输入法插件）
+     - **为什么必须“存在才带”**：`/resources/tools/` 被 `.gitignore` 排除（二进制不入库），
+       干净检出上它不存在，而 PyInstaller 6 对缺失的 `--add-data` 源是 `ERROR ... exit 1`（不是
+       警告）—— 写死四条会让新克隆上的 Linux 构建必失败。缺工具时只打一条“本包不含 X，
+       该能力依赖系统安装”：代码里 exiftool / 7z 都是“系统优先、应用内兜底”。
+     - `resources/themes` 已删除：主题实际来自 `qdarkstyle` 包，代码不读该目录
      - **注意**：不打包 `resources/tools/exiftool`（Windows 专用 exe + Perl 运行时）
    - 产物移动到 `releases/pan4dex-${VERSION}-linux` 并加可执行位
 
@@ -70,17 +77,18 @@ config/app_config.py             # 版本号 / 编译时间 / 应用元数据
 docker/
 ├── README.md                    # 本文档
 ├── build.sh                     # 薄封装：转发给 scripts/build-linux-docker.sh（兼容旧习惯）
-├── Dockerfile                   # 历史副本，与 packaging/Dockerfile-linux 一致（勿改）
+├── Dockerfile                   # 已冻结的历史副本（3.10 + cairosvg），与 canonical 不再一致，仅供追溯
 └── entrypoint.sh                # 历史入口脚本（packaging 镜像已内联同样的逻辑，仅供参考）
 ```
 
 ## 镜像要点
 
-- 基础镜像 `python:3.10-bullseye`（glibc 2.31）
+- 基础镜像 `python:3.11-bullseye`（glibc 2.31）—— 发行版不能升（上表），但 Python 升到了
+  3.11以符合 `pyproject.toml` 的 `requires-python = ">=3.11"`（以前镜像 3.10 / 声明 3.11 / `.python-version` 3.13 三者各说各话）
 - Qt6 运行时库齐全，额外包含：
   - `libxcb-cursor0`：Qt6 xcb 平台插件硬依赖
   - `libgtk-3-0` / `libgdk-pixbuf-2.0-0` / `libatk1.0-0` / `libglib2.0-0`：qgtk3 主题插件；这些库会被 PyInstaller 收集进 onefile，避免目标机器缺库
-- PyQt6 用 manylinux_2_28 预编译 wheel（`--only-binary=:all:`），依赖：PyInstaller / send2trash / Pillow / qdarkstyle / cairosvg / pyte
+- PyQt6 用 manylinux_2_28 预编译 wheel（`--only-binary=:all:`），依赖：PyInstaller / send2trash / Pillow / **pillow-heif** / qdarkstyle / pyte（`pillow-heif` 之前列表里缺，导致 Linux 包上 HEIC 静默不可用；`cairosvg` 全仓无引用，已删）
 - 入口脚本内联创建：启动 Xvfb `:99` 虚拟显示后执行命令
 
 ### 为什么选 Debian bullseye？

@@ -60,13 +60,24 @@ else:
 # 持有 Windows 原生图标句柄，防止被 GC（进程退出时系统统一清理）
 _WIN_HICONS: list = []
 
+# 崩溃日志：名字固定，实际落点由 resolve_crash_log_path() 选（不一定在 exe 旁边）
+CRASH_LOG_NAME = "pan4dex_crash.log"
+_CRASH_LOG_PATH: str = ""
+_CRASH_LOG_FH = None            # faulthandler 用的文件句柄，不持有会被 GC 关掉
+
 
 def apply_windows_native_icon(hwnd: int, ico_path: str):
     """直接向窗口句柄发送 WM_SETICON（Windows 任务栏/标题栏/Alt-Tab 最底层取图通道）。
 
     Qt 的 windowIcon 在少数系统/桌面环境下可能不被任务栏采纳，
     WM_SETICON 是 Explorer 取任务栏按钮图标的直接来源，双保险。
+
+    调用点已在 `sys.platform == "win32"` 里；这里再拦一道是因为函数体依赖
+    `ctypes.windll` / `ctypes.wintypes`（Linux 上 `from ctypes import wintypes` 直接
+    ImportError），将来新增没罩住的调用点就会在每次启动白抛一次并留 warning 日志。
     """
+    if sys.platform != "win32":
+        return
     try:
         import ctypes
         from ctypes import wintypes
@@ -97,19 +108,68 @@ def apply_windows_native_icon(hwnd: int, ico_path: str):
         logger.warning(f"Native icon apply failed: {e}")
 
 
+def _crash_log_candidates() -> list:
+    """崩溃日志的落点候选（按优先级）：可执行文件同目录 → 用户缓存目录 → 临时目录。
+
+    首选与 exe 同级是历史约定（发布流程与文档都按 `releases/pan4dex_crash.log` 找），
+    但装在只读目录里时那里根本写不进去：Linux 的 `/opt/pan4dex/pan4dex`（属 root）、
+    Windows 的 `Program Files`。Linux 真机上就是这个情形：`install_signal_handlers()`
+    直接 `open(<exe 同级>, 'w')` 抛 PermissionError，**应用在启动第一步就死**，
+    而日志目录是 docker 以 root 身份建出来的。崩溃日志这道安全网不能反过来当扳机。
+    """
+    import tempfile
+
+    if getattr(sys, 'frozen', False):
+        exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+    else:
+        exe_dir = os.path.dirname(os.path.abspath(__file__))
+    cands = [os.path.join(exe_dir, CRASH_LOG_NAME)]
+    if sys.platform == "win32":
+        base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+        cands.append(os.path.join(base, "pan4dex", CRASH_LOG_NAME))
+    else:
+        base = os.environ.get("XDG_CACHE_HOME") or os.path.join(os.path.expanduser("~"), ".cache")
+        cands.append(os.path.join(base, "pan4dex", CRASH_LOG_NAME))
+    cands.append(os.path.join(tempfile.gettempdir(), CRASH_LOG_NAME))
+    return cands
+
+
+def resolve_crash_log_path() -> str:
+    """返一个确定能写的崩溃日志路径，解析结果固定下来给三个写入点共用。
+
+    用 `'a'` 试探而不是直接 `'w'`：`'w'` 会当场截断已有日志，试探阶段不该破坏现场。
+    一个候选都写不了时回退到第一个（调用方自己包异常），不抛 —— 抛出去就是一个
+    “记录崩溃的代码把程序弄崩”的故事。
+    """
+    global _CRASH_LOG_PATH
+    if _CRASH_LOG_PATH:
+        return _CRASH_LOG_PATH
+    cands = _crash_log_candidates()
+    for cand in cands:
+        try:
+            parent = os.path.dirname(cand)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            with open(cand, 'a', encoding='utf-8'):
+                pass
+        except OSError:
+            continue
+        _CRASH_LOG_PATH = cand
+        return cand
+    _CRASH_LOG_PATH = cands[0]
+    return _CRASH_LOG_PATH
+
+
 def write_crash_log(error_msg: str):
-    """写入启动崩溃日志到可执行文件旁边"""
+    """写入启动崩溃日志（落点见 resolve_crash_log_path）"""
     try:
         import traceback
         import datetime
         import os
         import sys
 
-        if getattr(sys, 'frozen', False):
-            exe_dir = os.path.dirname(os.path.abspath(sys.executable))
-        else:
-            exe_dir = os.path.dirname(os.path.abspath(__file__))
-        crash_file = os.path.join(exe_dir, "pan4dex_crash.log")
+        crash_file = resolve_crash_log_path()
+        exe_dir = os.path.dirname(crash_file)
         frozen_info = f"frozen=True, _MEIPASS={sys._MEIPASS}" if getattr(sys, 'frozen', False) else "frozen=False"
         with open(crash_file, "w", encoding="utf-8") as f:
             f.write(f"=== Pan4dex Crash Log ===\n")
@@ -153,11 +213,8 @@ def install_crash_handler():
     def excepthook(exc_type, exc_value, exc_tb):
         try:
             error_msg = ''.join(traceback.format_exception(exc_type, exc_value, exc_value))
-            if getattr(sys, 'frozen', False):
-                exe_dir = os.path.dirname(os.path.abspath(sys.executable))
-            else:
-                exe_dir = os.path.dirname(os.path.abspath(__file__))
-            crash_file = os.path.join(exe_dir, "pan4dex_crash.log")
+            crash_file = resolve_crash_log_path()
+            exe_dir = os.path.dirname(crash_file)
             with open(crash_file, "w", encoding="utf-8") as f:
                 f.write(f"=== Pan4dex Crash Log ===\n")
                 f.write(f"Time: {datetime.datetime.now().isoformat()}\n")
@@ -188,18 +245,26 @@ def install_crash_handler():
 
 
 def install_signal_handlers():
-    """安装信号处理器，捕获段错误等"""
+    """安装信号处理器，捕获段错误等
+
+    注意：这里不得让任何异常逃出去。它在 `main()` 里比窗口创建还早，以前就是它
+    把“写不了崩溃日志”变成了“应用启动即死”（Linux 装在只读目录下）。
+    """
     import faulthandler
     import os
     import sys
 
-    if getattr(sys, 'frozen', False):
-        exe_dir = os.path.dirname(os.path.abspath(sys.executable))
-    else:
-        exe_dir = os.path.dirname(os.path.abspath(__file__))
-    crash_file = os.path.join(exe_dir, "pan4dex_crash.log")
-    # 启用 faulthandler，将段错误写入崩溃日志
-    faulthandler.enable(file=open(crash_file, 'w', encoding='utf-8'), all_threads=True)
+    global _CRASH_LOG_FH
+    try:
+        crash_file = resolve_crash_log_path()
+        fh = open(crash_file, 'w', encoding='utf-8')
+    except OSError as exc:
+        # 一个落点都写不了：至少把段错误打到 stderr，不能拉倒启动
+        logger.warning(f"崩溃日志不可写（{exc}），faulthandler 退到 stderr")
+        faulthandler.enable()
+        return
+    _CRASH_LOG_FH = fh          # faulthandler 不接管生命周期，必须持有引用
+    faulthandler.enable(file=fh, all_threads=True)
 
 
 def install_qt_plugin_path():

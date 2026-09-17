@@ -186,6 +186,21 @@ name/attr/size/mtime），在专用线程池 `dir_pool()`（限 4 线程，不�
 抽取过程中修掉两个长期潜伏的真 bug（进度框从未弹起、首次冲突决策被丢），经
 `tests/test_file_op_runner.py` 钉住，详见 `docs/gotchas.md` 第 40 条。
 
+### 4.6 为什么崩溃日志的落点在运行时选，而不是写死在 exe 旁边？
+
+崩溃日志是**安全网**，它在 `main()` 里比窗口创建还早。写死在 exe 同级目录时，
+“能不能写这个文件”就变成了“能不能启动”：Linux 装 `/opt`（root 拥有）、Windows 装
+`Program Files` 都是每次启动必死，而用户在启动器上只会看到“双击没反应”（linux230
+真机出的第一个产物就踩上了，见 `docs/gotchas.md` 第 45 条）。
+
+现在的做法：`main.py: _crash_log_candidates()` 给候选序列（exe 同级 → 用户缓存 → 临时），
+`resolve_crash_log_path()` 取**第一个能写的**（用 `'a'` 试探，不截断上一次的现场）并缓存，
+三个写入点共用同一个结果。选不到可写落点时也不抛，`faulthandler` 退到 stderr。
+
+这条不是“加个 try”能代替的：try 只保住了启动，但日志一个字都没落盘 ——
+所以配套不变式是“永远找一个能写的地方，且绝不抛”，由
+`tests/test_crash_log_path.py` 钉住（含一条真只读目录的 POSIX 用例）。
+
 ## 5. 扩展点
 
 ### 5.1 插件接口（预留）

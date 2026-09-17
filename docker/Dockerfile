@@ -1,8 +1,9 @@
-# Pan4dex Docker 构建镜像（历史副本）
+# Pan4dex Docker 构建镜像（已冻结的历史副本）
 #
-# ⚠️ canonical 位置：packaging/Dockerfile-linux
-# 本文件仅作为 docker/ 目录的历史副本保留，请以 packaging/Dockerfile-linux 为准。
-# 两者内容保持一致，但后续修改只改 packaging/Dockerfile-linux。
+# ⚠️ canonical 位置：packaging/Dockerfile-linux，本文件不参与任何构建。
+# 以前这里写“两者内容保持一致”，但 v1.9.015 起已故意分歧（canonical 升到
+# python:3.11-bullseye、依赖表补 pillow-heif 删 cairosvg），本文件保持旧内容
+# 仅供追溯当时为什么选 bullseye。改构建环境只改 packaging/Dockerfile-linux。
 
 FROM python:3.10-bullseye
 

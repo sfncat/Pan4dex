@@ -82,12 +82,14 @@ pan4dex/
 │   ├── test_m5_tools.py      # M5 工具功能测试
 │   └── test_m6_tools.py      # M6 工具功能测试
 ├── scripts/                  # 辅助脚本
-│   ├── build.sh              # Linux 构建脚本（gti 远程打包）
-│   ├── build_windows.py      # Windows 构建脚本（win54 远程打包）
+│   ├── build-linux-docker.sh # Linux 构建唯一入口（Docker：pan4dex-builder-linux）
+│   ├── build.sh              # 跨机编排：Linux 构建转发给上面那条，再部署到 gti/win55
+│   ├── build_windows.py      # Windows 构建脚本（本机直接跑）
 │   ├── zip_it.py             # 打包 zip（自动找最新 exe）
 │   └── extract_zip.py        # 解压部署到目标机器
 ├── packaging/                # 打包配置
-│   └── pan4dex.spec          # PyInstaller spec 文件
+│   ├── Dockerfile-linux      # Linux 构建镜像（canonical）
+│   └── pan4dex.spec          # PyInstaller spec（手动/降级路线，见下）
 ├── resources/                # 资源文件（图标等）
 ├── requirements.txt          # 运行时依赖
 ├── AGENT.md                  # 本文件
@@ -129,13 +131,15 @@ pan4dex/
 
 ### 构建脚本
 ```bash
-# Linux 版本（在 gti 192.168.5.58 上打包）
-./scripts/build.sh v{版本号}
+# Linux 版本（唯一入口：Docker 内 PyInstaller，产物 releases/pan4dex-<版本>-linux）
+bash scripts/build-linux-docker.sh            # 版本缺省取 config/app_config.py 的 VERSION
+# 镜像需重建时（改了 packaging/Dockerfile-linux）：sudo docker rmi pan4dex-builder-linux
 
-# Windows 版本（在 win54 192.168.5.54 上打包）
-scp {同步文件} win54:C:/workspace/pan4dex/
-ssh win54 'cmd /c "cd C:\workspace\pan4dex && python scripts/build_windows.py v{版本号}"'
-ssh win54 'cmd /c "cd C:\workspace\pan4dex && python scripts/zip_it.py"'
+# Windows 版本（本机直接构建，产物 releases/pan4dex-<版本>/ + .zip）
+python scripts/build_windows.py
+
+# 跨机部署编排（需要 gti / win54 / win55 可达，开发机上跑不通）
+bash scripts/build.sh --skip-windows
 ```
 
 ### 机器配置

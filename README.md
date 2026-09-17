@@ -126,15 +126,17 @@ pytest tests/ -v --qt-api=pyqt6
 
 
 
+```bash
+# Linux（Docker 构建，唯一入口；产物 releases/pan4dex-<版本>-linux）
+bash scripts/build-linux-docker.sh
+
+# Windows（本机 PyInstaller；产物 releases/pan4dex-<版本>/ + 同名 .zip）
+python scripts/build_windows.py
 ```
-\# Linux
 
-pyinstaller packaging/pan4dex.spec
-
-\# Windows
-
-pyinstaller packaging/pan4dex.spec --icon=resources/icons/pan4dex.ico
-```
+两条命令的版本号都缺省取自 `config/app_config.py`。`pyinstaller packaging/pan4dex.spec`
+是手动/降级路线，只在 Docker 不可用时应急（不带输入法插件与内置 exiftool/7zz），
+差异见 `docs/development-guide.md` §5.2。
 
 
 

@@ -870,6 +870,61 @@ been deleted`。子菜单没被删过，是它的**父菜单**（一个函数局
    率**；所以崩率必须在同一条命令行下反复跑。宿主的 apport 虽然有 crash 文件，但
    `ulimit -c` 为 0、`StacktraceTop` 为空，想拿 C++ 栈得先解决核心转储与符号。
 
+### 45. 崩溃日志写不了，会让应用“启动即死”（安全网不能当扳机）
+
+**现象**（linux230 实测）：Linux 产物在 `--version` / `--info` 都正常的情况下，一旦真起
+GUI 就 exit 1，栈在 `main.py: install_signal_handlers`：
+`PermissionError: [Errno 13] ... releases/pan4dex_crash.log` —— 因为 `releases/` 是 docker
+以 root 身份建的。同一个二进制拷到 `/opt/pan4dex/`（root 拥有，系统级安装的常规位置）
+就是**每次启动都死**，而且用户在启动器上只会看到“双击没反应”。Windows 装进
+`Program Files` 是同一件事，只是开发机一直把 exe 放在自己可写的 `releases/` 里，所以躲过了。
+
+**根因**：三处写日志的代码（`write_crash_log`、`excepthook`、`install_signal_handlers`）各自
+硬编码“exe 同级目录”，而 `install_signal_handlers` 那处没包异常 —— 它在 `main()` 里比窗口
+创建还早，于是“能不能写崩溃日志”成了“能不能启动”。
+
+**写法**（`main.py: _crash_log_candidates` / `resolve_crash_log_path`）：
+
+1. 候选按优先级：exe 同级（历史约定，文档与发布流程都按 `releases/pan4dex_crash.log` 找）
+   → 用户缓存目录（Windows `%LOCALAPPDATA%\pan4dex`、POSIX `$XDG_CACHE_HOME`/`~/.cache`）
+   → 临时目录；取**第一个能写的**，解析结果缓存下来给三处共用（否则三个写入点各写一个文件）。
+2. 探测用 `'a'` 而不是 `'w'`：`'w'` 会在“只是看看能不能写”的阶段就把上一次的崩溃现场清空。
+3. `install_signal_handlers` 全包 `OSError`：一个落点都写不了时 `faulthandler.enable()` 退到
+   stderr，**不抛**。另外要自己握住文件句柄（`_CRASH_LOG_FH`）：faulthandler 不接管生命
+   周期，句柄被 GC 关掉之后段错误就无处可写了。
+
+**写测试的收获**：只断言“不抛异常”不够 —— `install_signal_handlers` 自己包了 `OSError`，
+哪怕退路完全失效它也“不抛”，但那时用户一个字都拿不到，与没修一样。必须再钉一条
+“日志真的落在某个文件里、且 faulthandler 接的就是那个文件”
+（`tests/test_crash_log_path.py::test_signal_handlers_log_still_lands_somewhere`）。变异验证：
+把“逐候选试探”删掉（直接返第一个）时，这两条一起红；而光有“不抛”那条不会红。
+跨平台的“写不了”用普通文件当父目录（`tmp/blocker.bin/sub/x.log`）造，比 `chmod` 可靠
+（Windows 上 chmod 不拦写）；真只读目录那条用 `0o500` 复刻，只在 POSIX 跑。
+
+### 46. Linux 发布链路：三条只在真机出包时才暴露的坑
+
+这一节的三条全部来自“真的跑一次 `docker build` + 真的跑一次产物”，读代码看不出来：
+
+1. **`--add-data` 指向不入库的目录，干净检出上必失败**。`/resources/tools/` 被 `.gitignore`
+   排除（二进制不入库），而 PyInstaller 6 对缺失的 `--add-data` 源是 `ERROR ... exit 1`；
+   写得死的四条让 Linux 构建在新克隆上根本过不去。**同一件事在 spec 路线里却是另一样**：
+   `Analysis(datas=[...])` 里缺目录是静默跳过（所以 `pan4dex.spec` 多年“能跑”）。
+   写法：存在才带，缺工具时报一句“本包不含 X，该能力依赖系统安装”（exiftool/7z 代码里
+   本来就是“系统优先、应用内兜底”），但图标缺了就是硬错（源码树不完整）。
+2. **`bash -c "... $VAR ..."` 会把变量在宿主侧先展开**。把资源清单从宿主传进容器时，
+   `$DATA_ARGS` 是个数组，不加花括号只展开为第 0 个元素 `--add-data`，于是 `main.py` 被
+   当成 `--add-data` 的值吞掉；PyInstaller 只报 “Wrong syntax, should be --add-data=SOURCE:DEST”，
+   **完全不提真正的错处**（参数在宿主侧就错了一个字）。同族：`for x in "a"⟨换行⟩"b"; do` 是
+   语法错 —— `for` 的 in 列表里换行就是结束符，多行字面量必须用数组。
+3. **镜像不可重建：bullseye 的 LTS 刚结束**。`deb.debian.org` 上的 `bullseye-security`
+   归档已被搬走，Dockerfile 原样的 `apt-get update` 会拿到一堆 `+deb11uNN` 的 404（exit 100）。
+   改法：换 `archive.debian.org`、删掉 security 源那一行、`-o Acquire::Check-Valid-Until=false`
+   （EOL 发行版没有 security 通道，这是“还要兼容旧 glibc 目标机”的代价，不是能在这层修好的）。
+
+**方法论**：“镜像存在”不等于“Dockerfile 能构建”。构建脚本里的“镜像已存在就跳过构建”
+正好把这个坏状态藏住了 —— 只要不主动 `docker rmi`，没人会知道它早就建不出来了。
+所以验证发布链路必须至少跑一次 `docker build`（或者显式打个新 tag）。
+
 
 ---
 
@@ -952,6 +1007,13 @@ python scripts/deploy.py 0.9.618
 - [ ] 碰“网络/慢位置”判据的：是否只有一处实现（`core/mounts.py`），窗格刷新与目录
       监视与删除文案是否拿的同一个答案？有没有新写 `os.name != 'nt'` 这种“非 Windows
       就 `return False`”的门控（见第 43 条）？平台专属的用例是否在假宿主上跑了一遍？
+- [ ] 新增“安全网”性质的代码（崩溃日志、日志系统、诊断转储、上报）：它自己有没有
+      致命失败路径？写不了文件时是否能退到下一个落点而不外抛（它在 `main()` 里可能比
+      窗口创建还早，抛一下就是“双击没反应”，见第 45 条）？它的用例是否只断了
+      “不抛”（那盖不住退路失效）？
+- [ ] 改构建/发布脚本：是否在**干净克隆**上跑过一次（本地工作树里有而被 `.gitignore`
+      排除的文件，是这类脚本最常见的隐性依赖）？`docker run ... bash -c "..."` 里的变量
+      是否明确知道它在**哪一侧**展开（见第 46 条）？
 - [ ] 切换可见性后是否 `update()` + `repaint()`
 - [ ] 导航是否用 `setRootIndex` 而不是 `setRootPath`
 - [ ] QDockWidget 是否保存了显式 parent 引用

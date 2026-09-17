@@ -14,14 +14,15 @@
    （`main.py` + `core/`、`widgets/`、`config/`），Linux 侧基本都有对应实现，
    而且好几处比 Windows 做得更细（真 PTY、AppImage、`LD_LIBRARY_PATH` 清洗、
    `.desktop` 枚举、`xdg-open → 内置候选 → gio` 三级兜底）。**没有发现「Linux 一启动就崩」级别的死路。**
-2. **真正断掉的是发布链路**：`scripts/build-linux-docker.sh` 需要的 4 个 `--add-data`
-   源目录在仓库里根本不存在（其中一个被 `.gitignore` 挡住），PyInstaller 对缺失的
-   add-data 源是**硬失败**（当场实测 `exit 1`）→ 新克隆的仓库构建不出 Linux 包。
-   `releases/` 里也没有任何 Linux 产物，最后一次 Linux 构建工作停在 v0.9.68x（≈50 个版本前）。
-3. **本机的测试证据大部分还是 Windows 的**：569 项用例在 Windows 上跑。v1.9.013 之后，
-   POSIX 的「慢位置」判定矩阵已经能在 Windows 主机上测满（判据是纯函数，喂挂载表
-   文本进去）；仍未执行过的 Linux 分支：`_list_linux`、pty 后端、`same_volume` 的
-   挂载点边界 —— `tests/test_open_with.py:33-35` 按**宿主平台**挑要替换的枚举函数。
+2. ~~**真正断掉的是发布链路**~~ → **v1.9.015 已修**：`scripts/build-linux-docker.sh` 需要的
+   4 个 `--add-data` 源在仓库里不存在（其中一个被 `.gitignore` 挡住），而 PyInstaller 对
+   缺失的 add-data 源是**硬失败**（当场实测 `exit 1`）→ 新克隆的仓库构建不出 Linux 包。
+   现已改为“存在才带”（`resources/icons` 除外，它缺了仍算致命），并在真机上用干净克隆
+   确认不再必失败。`releases/` 里从没有 Linux 产物的局面也从本版结束（见 §3）。
+3. **本机的测试证据已从“只有 Windows”变成“两端都有”**：v1.9.014 起 Linux 真机（linux230）
+   跑过全量——单进程定序 1 次 + 随机序 3 次，**572 passed / 6 skipped**，与 Windows 的
+   575+3 总数相等（差异全在 `skipif` 门控）。v1.9.015 再 +6 项崩溃日志用例（Windows 581/4）。
+   `_list_linux`、pty 后端、`same_volume` 的挂载点边界均已在真机测到（见 §4）。
 4. ~~**两处「Windows 特化判据」把 Linux 挡在功能外面**~~ → **v1.9.013 已修**：
    网络/慢盘判定（`os.name != 'nt'` 直接 `return False`）与删除后果文案（只有 nt 分支
    区分网络位置）现在两端都算，判据收拢到 `core/mounts.py` 一份。这次修完真正生效的是：
@@ -54,7 +55,9 @@
 | PyInstaller 6.22 遇到不存在的 `--add-data` 源 | `ERROR: Unable to find ...`，**exit 1**（不是警告） |
 | PyInstaller 6.22 遇到不存在的 `--icon` | `FileNotFoundError: Icon input file ... not found`，exit 1 |
 | `pyinstaller packaging/pan4dex.spec`（在仓库根目录） | **exit 0，产物 54.6MB**：spec 仍能跑，且自动带上 QtSvg/imageformats/pillow_heif |
-| 全量测试（Windows，v1.9.012 基线） | 476 passed / 1 skipped（随机序与固定序两轮一致）；v1.9.013 起为 **569 passed / 1 skipped**，两轮同样一致 |
+| 全仓在 docker 里真机出包（v1.9.015，干净克隆无 `resources/tools/`） | 修复前：必失败（上面那条 `--add-data` 硬错误）；修复后：3.10 与 3.11 镜像各自 exit 0，产物 `--version`/`--info` 正常 |
+| 产物放进 root 拥有的只读目录后启动（/opt 场景） | 修复前 **exit 1**（`PermissionError` on `pan4dex_crash.log`）→ 修复后 exit 124（timeout 杀的，即活着），退路日志落在 `~/.cache/pan4dex/` |
+| 全量测试（Windows，v1.9.012 基线） | 476 passed / 1 skipped（随机序与固定序两轮一致）；v1.9.013 起为 **569 passed / 1 skipped**；v1.9.015 为 **581 passed / 4 skipped** |
 
 「代码取证」的判定标准：一个功能只有走到 `sys.platform == "win32"` 的分支里才算 Windows 专属；
 如果 Linux 分支存在但没跑过，一律记 🟡/❓ 而不是 🟢。
@@ -154,14 +157,21 @@
 
 ## 3. 阻断项：Linux 的构建与发布链路今天跑不通
 
+> **状态（v1.9.015）**：下表 3.1–3.5 已在真机（linux230 + docker 出包）修完并验证，标记见每行行首；
+> 3.6（历史 Linux 包停在 0.9.68x）由本次出包自然终结。修的过程中又真机抓出两条
+> **不在原表里**的问题，见 3.7 / 3.8。
+
 | # | 问题 | 后果 | 证据 |
 |---|---|---|---|
-| 3.1 | `scripts/build-linux-docker.sh` 要求 4 个 `--add-data` 源：`resources/themes`、`resources/tools/exiftool-linux`、`resources/tools/7z`、`resources/tools/qt6-im-plugins` | **全部不在仓库**（`resources/` 只有 `icons/`；`/resources/tools/` 被 `.gitignore:57` 排除；`resources/themes` 连代码都不读它）→ PyInstaller 对缺失源是 `ERROR ... exit 1` → 新克隆必失败 | ✅ 实测缺失即硬失败 + `git ls-files resources` |
-| 3.2 | `packaging/Dockerfile-linux` 的 pip 列表：`PyInstaller send2trash Pillow qdarkstyle cairosvg pyte` | **缺 `pillow-heif`**（→ HEIC 静默不可用，只记一条 debug 日志）；`cairosvg` 是早年遗留项（全仓没有任何地方引用它，也没有 SVG→PNG 的调用） | 📖 与 `pyproject.toml` 依赖表逐项对 + `rg cairosvg` |
-| 3.3 | 镜像是 `python:3.10-bullseye`，而 `pyproject.toml` 写 `requires-python = ">=3.11"`、`.python-version` 是 3.13 | 自相矛盾：要么构建环境低于声明下限，要么声明是虚的（静态扫过：没有 3.11+ 专属 API，理论上能跑） | 📖 + ❓ |
-| 3.4 | `scripts/build.sh` 仍被 `AGENT.md:131-132` 列为 Linux 构建入口 | 它取版本靠 `main.py` 的 `__version__`、注 `__build_time__` 也改 `main.py`（两者早已搬到 `config/app_config.py`）→ 版本退化成 `v0.0.0-dev`、编译时间为空；且 `pyinstaller ... main.py` 不带任何 `--add-data`（图标进不去）；产物名带 `v` 前缀，`install-linux.sh` 按 `pan4dex-<VERSION>-linux`（无前缀）去找 → 找不到 | 📖 `scripts/build.sh:39,76-79,44` vs `scripts/install-linux.sh:19-20`（`docker/README.md:139` 已标注该脚本废弃，但 AGENT.md 没同步） |
-| 3.5 | Linux 构建入口实际有**三条并存**：`build-linux-docker.sh`（canonical）、`packaging/pan4dex.spec`（README:132 与 `docs/development-guide.md:198` 推荐）、`scripts/build.sh`（AGENT.md 推荐，已废弃） | spec 路线今天确实能跑（✅ 实测 exit 0，还自动收了 QtSvg/imageformats/pillow_heif），但它不带 `resources/tools/*` 与输入法插件，产物能力面与 docker 路线不同；README:136 那行（Windows）**`--icon=resources/icons/pan4dex.ico` 指向不存在的文件**（现在叫 `resources/icons/icon.ico`），而缺 icon 在 PyInstaller 6 是 `FileNotFoundError` 硬失败 | ✅ + 📖 |
+| 3.1 ✅已修 | `scripts/build-linux-docker.sh` 要求 4 个 `--add-data` 源：`resources/themes`、`resources/tools/exiftool-linux`、`resources/tools/7z`、`resources/tools/qt6-im-plugins` | **全部不在仓库**（`resources/` 只有 `icons/`；`/resources/tools/` 被 `.gitignore:57` 排除；`resources/themes` 连代码都不读它）→ PyInstaller 对缺失源是 `ERROR ... exit 1` → 新克隆必失败。**改法**：`themes` 那条彻底删（无人读）；tools 三项「存在才带」+ 构建末尾打印「本包不含 X」；`resources/icons` 仍视为致命（缺了产物没图标还出货） | ✅ 实测缺失即硬失败 + `git ls-files resources`；修复后干净检出出包成功（见 3.7 那次构建） |
+| 3.2 ✅已修 | `packaging/Dockerfile-linux` 的 pip 列表：`PyInstaller send2trash Pillow qdarkstyle cairosvg pyte` | **缺 `pillow-heif`**（→ HEIC 静默不可用，只记一条 debug 日志）；`cairosvg` 是早年遗留项（全仓没有任何地方引用它，也没有 SVG→PNG 的调用）→ 已补 pillow-heif、删 cairosvg | 📖 与 `pyproject.toml` 依赖表逐项对 + `rg cairosvg` |
+| 3.3 ✅已修 | 镜像是 `python:3.10-bullseye`，而 `pyproject.toml` 写 `requires-python = ">=3.11"`、`.python-version` 是 3.13 | 自相矛盾。静态扫过：没有 3.11+ 专属 API，3.10 确实能跑 —— 但声明与工具链不一致本身就是坑。已把镜像升 `python:3.11-bullseye`（glibc 仍 2.31，目标机 2.35 约束不变），声明与构建环境对齐 | 📖 + ✅ 3.11 镜像出包（v1.9.015-p27） |
+| 3.3b ⚠️新发现 | bullseye 的 LTS support 刚结束 | `deb.debian.org/debian-security` 上的 `+deb11uNN` 包全部 404 → **旧 Dockerfile 从此不可重建**（`apt-get update` exit 100）。镜像源已改 `archive.debian.org`（main + updates），security 通道在 archive 里不存在、已删；archive 的 Release 过期，需 `-o Acquire::Check-Valid-Until=false`。代价：不再有安全更新 —— 这是编译镜像不是运行环境，可接受 | ✅ 404 原文 + archive 上 apt-get update 通过 |
+| 3.4 ✅已修 | `scripts/build.sh` 仍被 `AGENT.md:131-132` 列为 Linux 构建入口 | 它取版本靠 `main.py` 的 `__version__`、注 `__build_time__` 也改 `main.py`（两者早已搬到 `config/app_config.py`）→ 版本退化成 `v0.0.0-dev`、编译时间为空；且 `pyinstaller ... main.py` 不带任何 `--add-data`（图标进不去）；产物名带 `v` 前缀，`install-linux.sh` 按 `pan4dex-<VERSION>-linux`（无前缀）去找 → 找不到。**改法**：Linux 段整段替换为转发 `build-linux-docker.sh`，版本源改 `config/app_config.py` 并去 `v` 前缀 | 📖 `scripts/build.sh:39,76-79,44` vs `scripts/install-linux.sh:19-20`（`docker/README.md:139` 已标注该脚本废弃，但 AGENT.md 没同步） |
+| 3.5 ✅已修 | Linux 构建入口实际有**三条并存**：`build-linux-docker.sh`（canonical）、`packaging/pan4dex.spec`（README:132 与 `docs/development-guide.md:198` 推荐）、`scripts/build.sh`（AGENT.md 推荐，已废弃） | spec 路线今天确实能跑（✅ 实测 exit 0，还自动收了 QtSvg/imageformats/pillow_heif），但它不带 `resources/tools/*` 与输入法插件，产物能力面与 docker 路线不同；README:136 那行（Windows）**`--icon=resources/icons/pan4dex.ico` 指向不存在的文件**（现在叫 `resources/icons/icon.ico`），而缺 icon 在 PyInstaller 6 是 `FileNotFoundError` 硬失败。现在文档里只剩一条 canonical 路线，spec 明确标注为「手动/降级路线」并修掉了不存在的 `--icon` | ✅ + 📖 |
 | 3.6 | `releases/` 无任何 Linux 产物；最后一次 Linux 构建工作记在 v0.9.644–v0.9.684 | 从 0.9.68x 到 1.9.012 约 50 个版本的改动**从没进过 Linux 包**，Linux 现状只能靠读代码判断 | 📖 `git log -- docker/ packaging/ scripts/*linux*` + changelog |
+| 3.7 ✅已修（真机抓出） | 崩溃日志落点硬编码在 exe 同级，且 `install_signal_handlers()` 不包异常 | **Linux 装到 root 拥有的目录（`/opt`）时每次启动即死**，Windows 装 `Program Files` 同理。栈：`main()` → `install_signal_handlers` → `PermissionError: releases/pan4dex_crash.log`。安全网自己成了扳机，而且它比窗口创建还早 → 用户连错误框都看不到。已改为候选序列（exe 同级 → 用户缓存 → 临时）+ `'a'` 试探 + 缓存 + 全失败也不抛 | ✅ 真机 exit 1 → 修复后 124（`docs/gotchas.md` 第 45 条） |
+| 3.8 ⚠️新发现 | 构建脚本里 `docker run ... bash -c "... $DATA_ARGS ..."` 的变量未转义 | 宿主 bash 先把它展开成**数组的第 0 个元素**，容器里收到 `--add-data main.py` → PyInstaller 只报「`--add-data` 语法错」，绝不提示 `main.py` 消失了。必须写 `\$DATA_ARGS` 把展开推迟到容器侧 | ✅ p24 第一轮构建失败原文（见 gotchas 46.2） |
 
 ---
 
@@ -206,7 +216,7 @@ QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest -q --tb=short 2>&1 | tail -
 
 | # | 验什么 | 判定标准 |
 |---|---|---|
-| L1 | 能不能构建出来 | 先手工建 `resources/{themes,tools/exiftool-linux,tools/7z,tools/qt6-im-plugins}` 或改脚本为「存在才带」，`build-linux-docker.sh` 走完 |
+| L1 | 能不能构建出来 | ✅ **v1.9.015 已过**：不再需要手工造 `resources/tools/*`，“存在才带”后干净检出能直接出包；3.10 与 3.11 两个镜像都验过，产物 `--version`/`--info` 正常，offscreen 下能常驻 |
 | L2 | 挂 SMB（gvfs 或 CIFS）后浏览 | 打开 1 万个条目的共享目录：不闪、能取消、切走窗格不继续扫；**当前必然表现为按本地目录处理**（§2.4 ⚠️） |
 | L3 | 回收站 | 本地删除进 Trash；gvfs 上删除的**文案**是否骗人（说「移到回收站」实则失败） |
 | L4 | 拖放 | 从 Nautilus/Dolphin 拖入：同分区应移动、跨分区应复制；源端不允许 move 时不得删源 |
@@ -216,7 +226,7 @@ QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest -q --tb=short 2>&1 | tail -
 | L8 | 桌面集成 | `--install-menu` 后应用菜单出现图标；GNOME 任务栏分组/窗口图标是否正确（WM_CLASS 那条） |
 | L9 | 全盘搜索 | 搜 `/` 或 `/home`：`/proc`、`/sys` 是否被扫、耗时、能否中途取消 |
 | L10 | 权限 | 右键「加运行权限」后从界面能否看出生效了（现在看不出，因为没有权限列） |
-| L11 | 中文输入 | 地址栏/重命名/搜索框里能否打中文（依赖 ibus/fcitx5 插件是否进包） |
+| L11 | 中文输入 | ✅ v1.9.015 查清一半：PyQt6 wheel **自带的就是 `libibusplatforminputcontextplugin.so` + compose**，且它们确实进了 onefile 包（运行时解包目录里可见）→ ibus 桌面预期可用。fcitx5 的 Qt6 插件不在 wheel 里（只在系统的 `qt6/plugins/platforminputcontexts/`），而冻结后的查找路径只认包内 —— 这正是 `resources/tools/qt6-im-plugins` 该装的东西，而它仍不在仓库。剩下：ibus/fcitx5 两种桌面上真打一次字 |
 | L12 | Wayland vs X11 | 两种会话下都跑一遍：高 DPI、拖拽、`QT_QPA_PLATFORM` 自动选择 |
 | L13 | 大目录内存/CPU | 10 万条目目录（Linux 上 ext4/xfs 很常见）下列表与排序 |
 | L14 | 无桌面环境（纯 TTY/SSH） | 明确「不支持」还是能起（offscreen） |
@@ -226,18 +236,25 @@ QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest -q --tb=short 2>&1 | tail -
 
 ## 6. 建议的修复顺序
 
-### 第一批：让 Linux 重新可交付（不碰功能代码）
+### 第一批：让 Linux 重新可交付（不碰功能代码）—— ✅ v1.9.015 已完成并在真机验通
 
-1. **`build-linux-docker.sh` 的 `--add-data` 改为「目录存在才带」**（`[ -d ... ] && ARGS="$ARGS --add-data ..."`），
-   并把 `resources/themes` 这条彻底删掉（代码里没有人读它）；缺 `exiftool-linux`/`7z` 时
-   打印「本包不含 X，功能依赖系统安装」而不是构建失败。
-2. **Dockerfile 补 `pillow-heif`、删 `cairosvg`**；明确 Python 版本（要么镜像升 3.11+，
-   要么 `requires-python` 降回 3.10 —— 二选一，别一边写 3.13 一边构建 3.10）。
-3. **Linux 构建入口收敛成一条**：`build-linux-docker.sh`；`AGENT.md` 的 build.sh 行改掉，
-   README 与 `docs/development-guide.md` 的 `pyinstaller packaging/pan4dex.spec` 要么删要么标注
-   为「手动/降级路线，不含 tools 资源」；顺带修 README 里不存在的 `--icon=resources/icons/pan4dex.ico`。
-4. `apply_windows_native_icon()` 加 `sys.platform == "win32"` 守卫（现在是靠异常吞掉，
-   每次启动白抛两次并留 warning 日志）。
+1. ✅ **`build-linux-docker.sh` 的 `--add-data` 改为「目录存在才带」**；`resources/themes` 已删
+   （代码里没人读它）；缺 `exiftool-linux`/`7z`/输入法插件时打印「本包不含 X，功能依赖系统安装」
+   而不是构建失败；`resources/icons` 缺了仍直接 `exit 1`（那是真产品残次）。
+2. ✅ **Dockerfile 补 `pillow-heif`、删 `cairosvg`**；Python 版本选“镜像升到 3.11”（不动
+   `requires-python`，也不动 glibc 基线）。附带发现：bullseye LTS 已结束，镜像源必须换
+   archive.debian.org，否则 Dockerfile 本身不可重建（见 3.3b）。
+3. ✅ **Linux 构建入口收敛成一条**：`build-linux-docker.sh`。`scripts/build.sh` 的 Linux 段
+   改成转发它（不再是第二套实现）；`AGENT.md`/README/`docs/development-guide.md` 已同步，
+   spec 降为“手动/降级路线”并修掉了不存在的 `--icon=resources/icons/pan4dex.ico`。
+4. ✅ `apply_windows_native_icon()` 加了 `sys.platform != "win32"` 早退。~~每次启动白抛两次~~
+   —— **本条结论已推翻**：两个调用点（`main.py:584-601`）早已在 `if sys.platform == "win32":`
+   块内，Linux 上根本不会被调到。现在这个守卫是防御性的（防未来新增未罩住的调用点），
+   不是修 bug。
+
+**第一批修完后真机额外抓出的（不属原计划）**：崩溃日志不可写导致启动即死（3.7）、
+`$DATA_ARGS` 宿主展开（3.8）、bullseye 镜像不可重建（3.3b）—— 三条都是“不在 Linux 真机上
+跑一遍构建就永远看不见”的那类。
 
 ### 第二批：把 Windows 特化判据改成真正的跨平台判据 —— ✅ v1.9.013 已完成
 

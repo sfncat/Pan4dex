@@ -19,6 +19,70 @@
 
 ## 更新记录
 
+### v1.9.015 — 2026-09-17（开发分支 dev/shell-behavior-smb-perf）
+
+> Linux 发布链路第一批（`docs/linux-gap.md` §6）四条，目标只有一个：**让新克隆的仓库能真的
+> 造出一个能跑的 Linux 包**。完成后在 linux230 上用 docker 真机出包验通（3.10 与 3.11 两个
+> 镜像），结果：**干净克隆不再必失败**，产物 79MB、`--version`/`--info` 正常、offscreen 常驻。
+>
+> 过程中真机报出一个被当作“已验证”长期挂着的产品 bug（下面第一条），以及三个只在
+> “真的跑一次构建”时才会暴露的工程坑。
+
+#### 🐛 缺陷修复：只读安装目录下启动即死（崩溃日志把安全网变成了扳机）
+- Linux 产物 `--version`/`--info` 都正常，但一真起 GUI 就 **exit 1**：
+  `install_signal_handlers()` → `PermissionError: releases/pan4dex_crash.log`。原因是三处写日志
+  的代码各自硬编码“exe 同级目录”，而 `install_signal_handlers` 那一处没包异常 —— 它在 `main()`
+  里比窗口创建还早，于是“能不能写崩溃日志”成了“能不能启动”。装到 `/opt`（root 拥有）是
+  **每次启动都死**，Windows 装 `Program Files` 同理，只是开发机一直把 exe 放在自己可写的
+  `releases/` 里所以躲过了
+- 现在 `_crash_log_candidates()` 给候选序列（exe 同级 → 用户缓存 `%LOCALAPPDATA`/
+  `$XDG_CACHE_HOME` → 临时目录），`resolve_crash_log_path()` 取**第一个能写的**并缓存给三处
+  共用；探测用 `'a'` 不用 `'w'`（不能把上一次的崩溃现场清空）；一个都写不了时也不抛，
+  `faulthandler` 退到 stderr；自己握住文件句柄（faulthandler 不接管生命周期）
+- **真机端到端确证**：同一个只读 `/opt/pan4dex-test/pan4dex` 从 exit 1 变 124（被 timeout 杀的，
+  即活着），退路日志落在 `~/.cache/pan4dex/pan4dex_crash.log`，`/opt` 下不留下任何文件
+- 新增 `tests/test_crash_log_path.py` 6 项（Windows）+ 1 项 POSIX 只读目录复刻。其中一项是
+  **被变异验证逼出来的**：只断“不抛异常”的用例在退路完全失效时仍会绿（函数自己包了
+  `OSError`），补了“日志真的落盘、且 faulthandler 接的就是那个文件”后才报红
+
+#### 🔧 工程：Linux 构建不再依赖不入库的目录
+- `--add-data` 改为**存在才带**：`resources/tools/` 整目录被 `.gitignore` 排除，而 PyInstaller 6
+  对缺失源是 `ERROR ... exit 1`（同一件事在 `pan4dex.spec` 的 `datas` 里却是静默跳过 —— 所以
+  “spec 能跑”从来不是“构建链路健康”的证据）。缺 `exiftool-linux`/`7z`/输入法插件时打一句
+  「本包不含 X，该能力依赖系统安装」；`resources/themes` 这条直接删（主题来自 qdarkstyle 包，
+  代码不读该目录）；`resources/icons` 缺了仍是硬错
+- **Linux 构建入口收敛成一条**：`scripts/build.sh` 的 Linux 段整段删掉（它早已失真：从 `main.py`
+  取版本得到 `v0.0.0-dev`、不带任何 `--add-data`、产物名多一个 `v` 前缀让 `install-linux.sh`
+  找不到），改为转发 `build-linux-docker.sh`；版本源改 `config/app_config.py`。`AGENT.md` /
+  `README.md` / `docs/development-guide.md` / `docker/README.md` 同步，`pyinstaller packaging/pan4dex.spec`
+  降为“手动/降级路线”并修掉不存在的 `--icon=resources/icons/pan4dex.ico`
+- **两个只在真机跑构建时才暴露的坑**：① 参数传递 —— `bash -c "... $DATA_ARGS ..."` 里的变量由
+  **宿主**先展开，数组不加花括号只得到第 0 个元素，`main.py` 被当成 `--add-data` 的值吞掉，
+  而 PyInstaller 只报“语法错” —— 已改 `\$DATA_ARGS` 并把展开推迟到容器侧；② bullseye 的 LTS 刚结束，
+  `debian-security` 上的 `+deb11uNN` 全 404 → 镜像**不可重建**； apt 源改 `archive.debian.org`
+  （删 security 行 + `Check-Valid-Until=false`），并把镜像升到 `python:3.11-bullseye`（glibc 仍 2.31，
+  与目标机 2.35 的约束不冲突）以对齐 `requires-python`
+- `packaging/Dockerfile-linux` 补 `pillow-heif`、删 `cairosvg`（全仓零引用）；`docker/Dockerfile` 标注
+  为已冻结的历史副本
+
+#### 🛡️ 稳定性：图标函数的平台守卫（并更正一条旧结论）
+- `apply_windows_native_icon()` 顶部加 `sys.platform != "win32"` 早退。~~每次启动白抛两次~~
+  已证实不成立：两个调用点（`main.py:584-601`）本来就在 `if sys.platform == "win32":` 块内，
+  Linux 上根本不会被调到 —— 这个守卫是防御性的，不是修 bug（linux-gap §6 已同步更正）
+
+#### 📖 文档
+- `docs/linux-gap.md`：§3 逐条标上状态并新增 3.7/3.8（只读安装目录、`$DATA_ARGS`）、3.3b
+  （bullseye 镜像不可重建）；§5.2 的 L1 标为已过，L11 补上“wheel 只带 ibus/compose、fcitx5
+  插件仍不在仓库”的实测；§6 第一批标完成
+- `docs/gotchas.md` 第 45、46 条（安全网不能当扳机；Linux 发布链路三条真机坑）+ 两条审查清单；
+  `docs/architecture.md` §4.6（崩溃日志落点为何在运行时选）
+
+#### 🧪 测试与构建计数
+- Windows 全量：**581 passed / 4 skipped**（+6，新增的 1 项 POSIX 用例在本机 skip）
+- 产物实测（linux230）：`python 3.11.13 / PyQt 6.9.1 / Qt 6.9.0`，包内确认含
+  `_pillow_heif.cpython-311…so` + `libheif-*.so`、`resources/icons/{ico,jpg,png}`、
+  `platforminputcontexts/{libibus,libcompose}…so`、`imageformats` 含 qsvg（与 3.10 产物 70MB 对比 79MB）
+
 ### v1.9.014 — 2026-09-17（开发分支 dev/shell-behavior-smb-perf）
 
 > 第一节在真机上跑 Linux：用户给了 linux230（Ubuntu 24.04，两个已挂的 CIFS 共享）。目标不是

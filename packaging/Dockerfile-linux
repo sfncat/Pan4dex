@@ -1,11 +1,24 @@
-FROM python:3.10-bullseye
+# 构建基座：Python 3.11 + Debian bullseye（glibc 2.31）。
+# 为什么是 3.11：`pyproject.toml` 写 `requires-python = ">=3.11"`，而本文件以前是 3.10
+# —— 声明与构建环境自相矛盾（要么代码里不该有 3.11+ 假设，要么声明是虚的）。取两者
+# 交集里最低的 3.11：既符合声明，又尽量保留老 glibc 目标机的兼容性（bullseye 不变）。
+# 升 Python 不需要升发行版，所以目标机兼容性没受影响。
+FROM python:3.11-bullseye
 
 ENV QT_QPA_PLATFORM=offscreen
 
 # 安装 Qt6 运行时库（glibc 2.31 ≤ gti 2.35，兼容）
 # libxcb-cursor0 是 Qt6 xcb 平台插件的硬依赖；libgtk-3/gdk-pixbuf/atk/glib 供 qgtk3 主题插件使用
 # 这些库在构建容器中存在，PyInstaller 会把它们收集进 onefile，避免目标机器缺库
-RUN apt-get update && apt-get install -y --no-install-recommends \
+#
+# 为什么要改 apt 源：bullseye 的 LTS 在 2026-08 结束，deb.debian.org 上的 security
+# 归档已被搬走 —— 不改则镜像根本建不起来（230 实测：libegl1-mesa-dev、xvfb 等一堆
+# `+deb11uNN` 版本全 404，apt 退 exit 100）。EOL 发行版只剩 archive.debian.org，
+# 而且没有 security 通道（只剩当年冻结的版本）；Release 日期过期，还要关掉 Valid-Until。
+# 代价：不再拿安全补丁。这是“戒不掉旧 glibc 目标机”的必然结果，不是我们能在这一层修的。
+RUN sed -i '/debian-security/d' /etc/apt/sources.list && \
+    sed -i 's|deb.debian.org/debian |archive.debian.org/debian |g' /etc/apt/sources.list && \
+    apt-get update -o Acquire::Check-Valid-Until=false && apt-get install -y --no-install-recommends \
     libgl1-mesa-dev \
     libxkbcommon-dev \
     libxkbcommon-x11-0 \
@@ -40,9 +53,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # 用 pip 安装 PyQt6 预编译 wheel（manylinux_2_28，glibc 2.28+ 可运行）
+# 依赖表以 pyproject.toml 为准：pillow-heif 负责 HEIC/HEIF 缩略图与元数据（少了它仅
+# 记一条 debug 日志静默不可用）；cairosvg 是全仓无任何引用的早年遗留项（也没有 SVG→PNG
+# 的调用），不再安装。
 RUN python -m pip install --upgrade pip && \
     pip install --no-cache-dir --only-binary=:all: PyQt6 PyQt6-Qt6 PyQt6-sip && \
-    pip install --no-cache-dir PyInstaller send2trash Pillow qdarkstyle cairosvg pyte
+    pip install --no-cache-dir --only-binary=:all: PyInstaller send2trash Pillow pillow-heif qdarkstyle pyte
 
 WORKDIR /app
 

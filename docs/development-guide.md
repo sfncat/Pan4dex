@@ -188,19 +188,30 @@ pytest tests/ -n auto
 
 ## 5. 打包指南
 
-### 5.1 PyInstaller 打包
+### 5.1 正式构建入口
+
+| 平台 | 命令 | 产物 |
+|---|---|---|
+| Linux | `bash scripts/build-linux-docker.sh [版本号]` | `releases/pan4dex-<版本>-linux`（onefile） |
+| Windows | `python scripts/build_windows.py [版本号]` | `releases/pan4dex-<版本>/` + 同名 `.zip` |
+
+版本号缺省从 `config/app_config.py` 的 `VERSION` 读（构建时会连 `BUILD_TIME` 一起写回源码，
+构建完由发布提交还原）。Linux 走 Docker（镜像 `packaging/Dockerfile-linux`，
+`python:3.11-bullseye` / glibc 2.31）是为了不把构建机的新 glibc 烧进产物，细节见
+`docker/README.md`。
+
+### 5.2 手动 / 降级路线：`packaging/pan4dex.spec`
 
 ```bash
-# 安装 PyInstaller
-pip install pyinstaller
-
-# 打包
-pyinstaller packaging/pan4dex.spec
-
-# 输出在 dist/pan4dex
+pyinstaller packaging/pan4dex.spec        # 输出在 dist/pan4dex
 ```
 
-### 5.2 spec 文件关键配置
+跑得通，但它只是一份“把 `resources/` 整目录 + 一批 hiddenimports 收进去”的最小配置，
+与正式入口的差集：不带 Qt6 输入法插件、不带 `resources/tools/` 下的内置 ExifTool 与 7zz
+（那个目录本就不入库，见 `.gitignore`），也不做 Windows 侧 imageformats / winpty 的处理。
+用它出包 = 一个能力面更小的包，只在 Docker 不可用时应急。
+
+关键片段（与文件实际内容一致）：
 
 ```python
 # packaging/pan4dex.spec
@@ -209,17 +220,18 @@ a = Analysis(
     pathex=[],
     binaries=[],
     datas=[
-        ('../resources/icons', 'resources/icons'),
-        ('../resources/themes', 'resources/themes'),
+        ('../resources', 'resources'),
     ],
-    hiddenimports=['PyQt6.QtCore', 'PyQt6.QtGui', 'PyQt6.QtWidgets'],
+    hiddenimports=['PyQt6.QtCore', 'PyQt6.QtGui', 'PyQt6.QtWidgets',
+                   'PyQt6.QtNetwork', 'qdarkstyle', 'qdarkstyle.dark',
+                   'qdarkstyle.light'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
     excludes=[],
     noarchive=False,
-    optimize=0,
 )
+# 随后有一串 a.binaries 过滤：排掉 libstdc++/libxcb/libglib 等系统库，让产物用目标机的版本
 ```
 
 ### 5.3 测试打包结果

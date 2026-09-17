@@ -1,8 +1,14 @@
 #!/usr/bin/env bash
-# Pan4dex 万格 — 统一构建脚本
-# Linux: Docker 本机构建（Debian bullseye, glibc 2.31）→ 部署到 gti (58)
+# Pan4dex 万格 — 跨机构建/部署编排脚本（多机内网专用，不在开发机上跑不通）
+# Linux: Docker 本机构建 → 部署到 gti (58)
 # Windows: win54 (54) 构建 → 部署到 win55 (55)
 # 用法: ./scripts/build.sh [--skip-windows] [版本号]
+#
+# 注：本脚本只负责“编排 + 部署”，Linux 构建本身不在这里 —— 唯一入口是
+# scripts/build-linux-docker.sh（本脚本第 1 步直接转发给它）。以前这里自己
+# 跑了一遍 pyinstaller，那是一份已经跟代码脱节的第二套构建知识（版本取自
+# main.py 的 `__version__`、注编译时间改的是 main.py 的 `__build_time__`，两者
+# 早已搬到 config/app_config.py；且不带任何 --add-data，产物里图标会空）。
 
 set -euo pipefail
 
@@ -34,14 +40,16 @@ WIN_DEPLOY_HOST="192.168.5.55"
 WIN_DEPLOY_USER="sshuser"
 WIN_DEPLOY_DIR="D:\\workspace\\2026\\pan4dex\\dist"
 
-# 获取版本号
+# 获取版本号（VERSION/BUILD_TIME 单一来源：config/app_config.py）
 if [ -z "$VERSION" ]; then
-    VERSION=$(grep -oP '__version__\s*=\s*["\x27]([^"\x27]+)["\x27]' "${PROJECT_ROOT}/main.py" 2>/dev/null | grep -oP '["\x27]([^"\x27]+)["\x27]' | tr -d '"' | tr -d "'")
+    VERSION=$(grep -oP '^VERSION\s*=\s*["\x27]([^"\x27]+)["\x27]' "${PROJECT_ROOT}/config/app_config.py" | grep -oP '[0-9][^"\x27]*')
 fi
 if [ -z "$VERSION" ]; then
-    VERSION="v0.0.0-dev"
+    VERSION="0.0.0-dev"
 fi
-[[ "$VERSION" != v* ]] && VERSION="v${VERSION}"
+# 产物名不带 `v` 前缀（releases/ 与 install-linux.sh 都按 pan4dex-<VERSION>-linux 找），
+# 而 VERSION 会被原样写回 config/app_config.py，带上前缀会让关于对话框显示 v v1.9.014。
+VERSION="${VERSION#v}"
 
 echo "=========================================="
 echo "  Pan4dex 构建"
@@ -49,38 +57,9 @@ echo "  版本: ${VERSION}"
 echo "  Windows: $([ "$SKIP_WINDOWS" = true ] && echo "跳过" || echo "启用")"
 echo "=========================================="
 
-# ── 1. Linux Docker 构建 ──
+# ── 1. Linux Docker 构建（转发给唯一入口） ──
 echo "[1/5] Linux Docker 构建..."
-
-# 确保 Docker 运行
-if ! sudo systemctl is-active --quiet docker; then
-    echo "  启动 Docker..."
-    sudo systemctl start docker
-    sleep 2
-fi
-
-# 构建镜像 + 运行构建
-DOCKER_IMAGE="pan4dex-builder-linux"
-CONTAINER_NAME="pan4dex-build-linux"
-
-sudo docker build -t ${DOCKER_IMAGE} -f docker/Dockerfile . 2>&1 | tail -3
-sudo docker rm -f ${CONTAINER_NAME} 2>/dev/null || true
-
-sudo docker run --name ${CONTAINER_NAME} \
-    -v "$(pwd):/app" \
-    -e "VERSION=${VERSION}" \
-    ${DOCKER_IMAGE} \
-    bash -c "
-        cd /app
-        export PYBUILD_TIME=\$(date '+%Y-%m-%d %H:%M:%S')
-        sed -i \"s/__build_time__ = \\\"\\\"/__build_time__ = \\\"\${PYBUILD_TIME}\\\"/\" main.py
-        pyinstaller --onefile --windowed --name=pan4dex main.py
-        mkdir -p /app/releases
-        mv dist/pan4dex /app/releases/pan4dex-${VERSION}-linux
-        chmod +x /app/releases/pan4dex-${VERSION}-linux
-    " 2>&1 | tail -5
-
-sudo docker rm -f ${CONTAINER_NAME} 2>/dev/null || true
+bash "${SCRIPT_DIR}/build-linux-docker.sh" "${VERSION}"
 
 # 验证 Linux 产物
 LINUX_BIN="${RELEASES_DIR}/pan4dex-${VERSION}-linux"
