@@ -22,22 +22,29 @@ import logging
 
 
 def setup_logging():
-    """初始化日志 - 跨平台"""
+    """初始化日志 - 跨平台
+
+    文件日志写不了（HOME 未设、配置目录只读、磁盘满）时只退成“没文件日志”，
+    不拖垮启动：本函数在 `import main` 时就被调用，比 `main()` 还早，在这里抛
+    一下就是“双击没反应”（同一个教训见 resolve_crash_log_path 的注释）。
+    """
     if sys.platform == "win32":
         # Windows: %APPDATA%\pan4dex\logs
         log_dir = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), "pan4dex", "logs")
     else:
         # Linux/macOS: ~/.config/pan4dex/logs
         log_dir = os.path.expanduser("~/.config/pan4dex/logs")
-    os.makedirs(log_dir, exist_ok=True)
     log_file = os.path.join(log_dir, "pan4dex.log")
     # 日志格式
     fmt = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
     datefmt = "%Y-%m-%d %H:%M:%S"
     # 文件处理器（记录所有级别）
-    file_handler = logging.FileHandler(log_file, encoding="utf-8")
-    file_handler.setLevel(logging.DEBUG)
-    file_handler.setFormatter(logging.Formatter(fmt, datefmt))
+    file_handler = None
+    try:
+        os.makedirs(log_dir, exist_ok=True)
+        file_handler = logging.FileHandler(log_file, encoding="utf-8")
+    except OSError as exc:
+        print(f"[pan4dex] 文件日志不可用（{exc}），仅输出到 stderr", file=sys.stderr)
     # 控制台处理器（只显示 INFO 以上）
     console_handler = logging.StreamHandler()
     console_handler.setLevel(logging.INFO)
@@ -45,7 +52,10 @@ def setup_logging():
     # 根日志器
     root = logging.getLogger("pan4dex")
     root.setLevel(logging.DEBUG)
-    root.addHandler(file_handler)
+    if file_handler is not None:
+        file_handler.setLevel(logging.DEBUG)
+        file_handler.setFormatter(logging.Formatter(fmt, datefmt))
+        root.addHandler(file_handler)
     root.addHandler(console_handler)
     return root
 
@@ -64,6 +74,7 @@ _WIN_HICONS: list = []
 CRASH_LOG_NAME = "pan4dex_crash.log"
 _CRASH_LOG_PATH: str = ""
 _CRASH_LOG_FH = None            # faulthandler 用的文件句柄，不持有会被 GC 关掉
+_CRASH_LOG_MAX_BYTES = 256 * 1024   # 追加写的上限，超了才另起一段（不让它无限长）
 
 
 def apply_windows_native_icon(hwnd: int, ico_path: str):
@@ -160,6 +171,35 @@ def resolve_crash_log_path() -> str:
     return _CRASH_LOG_PATH
 
 
+def _crash_log_for_append() -> str:
+    """返崩溃日志路径，并为「追加写」控好尺寸。
+
+    三处写入点必须都是追加而不是 `'w'`：`'w'` 会在**每次成功启动**时把上一次的崩溃
+    现场清空，而用户的动作顺序恰恰是“崩了 → 再双击一次试试”—— 等他能来看日志时，
+    最该看的那一段已经没了（本仓追偶发段错误时就反复碰到：日志文件在，内容却是空的）。
+    超过 `_CRASH_LOG_MAX_BYTES` 才清空一次，不让它无限增长。
+    """
+    path = resolve_crash_log_path()
+    try:
+        if os.path.getsize(path) > _CRASH_LOG_MAX_BYTES:
+            with open(path, 'w', encoding='utf-8'):
+                pass
+    except OSError:
+        pass        # 尺寸拿不到不算事：写不写得进由上一层决定，这里不抛
+    return path
+
+
+def _show_error_box(title: str, text: str):
+    """Windows 下弹错误对话框，其他平台什么也不做。**绝不外抛** —— 它跑在崩溃路径上。"""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        ctypes.windll.user32.MessageBoxW(0, text, title, 0x10)  # MB_ICONERROR
+    except Exception:
+        pass
+
+
 def write_crash_log(error_msg: str):
     """写入启动崩溃日志（落点见 resolve_crash_log_path）"""
     try:
@@ -168,11 +208,11 @@ def write_crash_log(error_msg: str):
         import os
         import sys
 
-        crash_file = resolve_crash_log_path()
+        crash_file = _crash_log_for_append()
         exe_dir = os.path.dirname(crash_file)
         frozen_info = f"frozen=True, _MEIPASS={sys._MEIPASS}" if getattr(sys, 'frozen', False) else "frozen=False"
-        with open(crash_file, "w", encoding="utf-8") as f:
-            f.write(f"=== Pan4dex Crash Log ===\n")
+        with open(crash_file, "a", encoding="utf-8") as f:
+            f.write(f"\n=== Pan4dex Crash Log ===\n")
             f.write(f"Time: {datetime.datetime.now().isoformat()}\n")
             f.write(f"Version: {VERSION}\n")
             f.write(f"Build: {BUILD_TIME}\n")
@@ -186,18 +226,8 @@ def write_crash_log(error_msg: str):
             f.write(f"\n\n--- Traceback ---\n")
             f.write(traceback.format_exc())
         # Windows: 弹出错误对话框
-        if sys.platform == "win32":
-            try:
-                import ctypes
-
-                ctypes.windll.user32.MessageBoxW(
-                    0,
-                    f"启动失败，错误已写入：\n{crash_file}\n\n错误信息：\n{error_msg[:500]}",
-                    "Pan4dex 启动错误",
-                    0x10  # MB_ICONERROR
-                )
-            except:
-                pass
+        _show_error_box("Pan4dex 启动错误",
+                        f"启动失败，错误已写入：\n{crash_file}\n\n错误信息：\n{error_msg[:500]}")
         return crash_file
     except Exception as e:
         return None
@@ -213,10 +243,10 @@ def install_crash_handler():
     def excepthook(exc_type, exc_value, exc_tb):
         try:
             error_msg = ''.join(traceback.format_exception(exc_type, exc_value, exc_value))
-            crash_file = resolve_crash_log_path()
+            crash_file = _crash_log_for_append()
             exe_dir = os.path.dirname(crash_file)
-            with open(crash_file, "w", encoding="utf-8") as f:
-                f.write(f"=== Pan4dex Crash Log ===\n")
+            with open(crash_file, "a", encoding="utf-8") as f:
+                f.write(f"\n=== Pan4dex Crash Log ===\n")
                 f.write(f"Time: {datetime.datetime.now().isoformat()}\n")
                 f.write(f"Version: {VERSION}\n")
                 f.write(f"Build: {BUILD_TIME}\n")
@@ -225,18 +255,8 @@ def install_crash_handler():
                 f.write(f"\n--- Error ---\n")
                 f.write(error_msg)
             # Windows: 弹出错误对话框
-            if sys.platform == "win32":
-                try:
-                    import ctypes
-
-                    ctypes.windll.user32.MessageBoxW(
-                        0,
-                        f"发生错误，已写入：\n{crash_file}\n\n{exc_type.__name__}: {str(exc_value)[:200]}",
-                        "Pan4dex 错误",
-                        0x10
-                    )
-                except:
-                    pass
+            _show_error_box("Pan4dex 错误",
+                            f"发生错误，已写入：\n{crash_file}\n\n{exc_type.__name__}: {str(exc_value)[:200]}")
         except:
             pass
         # 调用默认处理
@@ -249,15 +269,22 @@ def install_signal_handlers():
 
     注意：这里不得让任何异常逃出去。它在 `main()` 里比窗口创建还早，以前就是它
     把“写不了崩溃日志”变成了“应用启动即死”（Linux 装在只读目录下）。
+
+    日志以**追加**方式打开，并给每次启动写一行起始标记：没有这道标记就无法区分
+    “上一次运行留下的栈”与“本次运行的”（而前者往往才是要看的那一段）。
     """
     import faulthandler
+    import datetime
     import os
     import sys
 
     global _CRASH_LOG_FH
     try:
-        crash_file = resolve_crash_log_path()
-        fh = open(crash_file, 'w', encoding='utf-8')
+        crash_file = _crash_log_for_append()
+        fh = open(crash_file, 'a', encoding='utf-8')
+        fh.write(f"\n=== Pan4dex {VERSION} 启动于 "
+                 f"{datetime.datetime.now().isoformat(timespec='seconds')} ===\n")
+        fh.flush()
     except OSError as exc:
         # 一个落点都写不了：至少把段错误打到 stderr，不能拉倒启动
         logger.warning(f"崩溃日志不可写（{exc}），faulthandler 退到 stderr")

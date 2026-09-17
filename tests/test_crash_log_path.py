@@ -5,10 +5,16 @@
 创建还早的一步 —— 崩溃日志这道安全网反过来成了启动即死的扳机。Windows 装在
 `Program Files` 下是同一件事，只是本机从没那么装过所以没人看见。
 
-这些用例钉的是「**永远找一个能写的地方，且绝不抛**」这条不变式。
+这些用例钉的是两条不变式：
+
+1. **永远找一个能写的地方，且绝不抛**（启动第一步就得活着）；
+2. **日志只追加、不截断**（只有追加，才能活过“崩了 → 再双击一次”这个用户动作），
+   同时有尺寸上限；同一类不变式也适用于文件日志（`setup_logging`）。
 """
 import os
 import sys
+import logging
+import tempfile
 import faulthandler
 
 import pytest
@@ -137,3 +143,98 @@ def test_read_only_install_dir_falls_back_posix(tmp_path, monkeypatch):
 
     assert got != first, "只读安装目录里写不了日志，必须退到别处而不是抛"
     assert os.access(os.path.dirname(got), os.W_OK)
+
+
+# ---- 追加而不是截断：重启不得清空上一次的崩溃现场 ------------------------------------
+
+def test_restart_keeps_previous_crash_scene(tmp_path, monkeypatch):
+    """上一次的栈必须还在：用户的顺序是“崩了 → 再双击一次试试”，重启会洗掉现场
+
+    以前三处写入点都用 `'w'`，每次成功启动就把上一次崩溃日志截成 0 字节 —— 本仓追
+    偶发段错误时反复看到的“日志文件在、内容是空的”就是这么来的。
+    """
+    log = tmp_path / main.CRASH_LOG_NAME
+    scene = "Windows fatal exception: access violation\n\nThread 0x00001a2c:\n"
+    log.write_text(scene, encoding="utf-8")
+    monkeypatch.setattr(main, "_crash_log_candidates", lambda: [str(log)])
+    was_enabled = faulthandler.is_enabled()
+    try:
+        main.install_signal_handlers()
+    finally:
+        if not was_enabled:
+            faulthandler.disable()
+
+    kept = log.read_text(encoding="utf-8")
+    assert scene in kept, "启动截断了上一次的崩溃现场"
+    assert "启动于" in kept, "没写本次启动的起始标记，无法区分哪一段是哪次运行留下的"
+
+
+def test_write_crash_log_appends(tmp_path, monkeypatch):
+    """启动失败时写的新崩溃，也不能顶掉已有的旧崩溃"""
+    log = tmp_path / main.CRASH_LOG_NAME
+    log.write_text("旧的一次崩溃\n", encoding="utf-8")
+    monkeypatch.setattr(main, "_crash_log_candidates", lambda: [str(log)])
+    # 错误对话框在用例里必须不能真弹（Win 上会阻塞整个会话）
+    monkeypatch.setattr(main, "_show_error_box", lambda title, text: None)
+
+    got = main.write_crash_log("新的崩溃：PermissionDenied")
+
+    assert got == str(log)
+    kept = log.read_text(encoding="utf-8")
+    assert "旧的一次崩溃" in kept and "新的崩溃：PermissionDenied" in kept
+
+
+def test_crash_log_size_is_bounded(tmp_path, monkeypatch):
+    """追加写不等于无限增长：超过上限才另起一段"""
+    log = tmp_path / main.CRASH_LOG_NAME
+    log.write_text("x" * (main._CRASH_LOG_MAX_BYTES + 1024), encoding="utf-8")
+    monkeypatch.setattr(main, "_crash_log_candidates", lambda: [str(log)])
+    was_enabled = faulthandler.is_enabled()
+    try:
+        main.install_signal_handlers()
+    finally:
+        if not was_enabled:
+            faulthandler.disable()
+
+    assert os.path.getsize(str(log)) < main._CRASH_LOG_MAX_BYTES, "该轮转时没轮转"
+
+
+# ---- 同一类不变式推广到日志系统本身 -------------------------------------------------
+
+def test_setup_logging_survives_unwritable_log_dir(monkeypatch, capsys):
+    """文件日志写不了时只退成“没文件日志”，不能报错退出
+
+    `setup_logging()` 在 `import main` 时就跑，比 `main()` 还早；HOME 未设 / 配置目录
+    只读 / 磁盘满 都会让 `makedirs` 与 `FileHandler` 抛 OSError，那又是同一个
+    “日志把程序弄死”的故事。只验不抛在这里也不够（函数自己包了异常），所以同时
+    验“logger 仍可用、stderr 上能看见降级提示”。
+    """
+    root = logging.getLogger("pan4dex")
+    before = list(root.handlers)
+    base = tempfile.mkdtemp()
+    a_file = os.path.join(base, "blocker.bin")
+    with open(a_file, "wb"):
+        pass
+    blocked = os.path.join(a_file, "nope")                 # 父目录是普通文件 → 必写不了
+    try:
+        if sys.platform == "win32":
+            monkeypatch.setenv("APPDATA", blocked)
+        else:
+            monkeypatch.setenv("HOME", blocked)
+
+        logger = main.setup_logging()                      # 这里抛出来就是回归
+        assert logger is root
+        logger.info("降级后仍可用")
+        assert not any(
+            isinstance(h, logging.FileHandler) and blocked in h.baseFilename
+            for h in root.handlers
+        ), "写不了的 FileHandler 不应再挂到 logger 上"
+        assert "文件日志不可用" in capsys.readouterr().err
+    finally:
+        for h in list(root.handlers):
+            if h not in before:
+                root.removeHandler(h)
+                try:
+                    h.close()
+                except Exception:
+                    pass

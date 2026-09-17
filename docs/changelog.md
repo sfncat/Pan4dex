@@ -41,9 +41,22 @@
   `faulthandler` 退到 stderr；自己握住文件句柄（faulthandler 不接管生命周期）
 - **真机端到端确证**：同一个只读 `/opt/pan4dex-test/pan4dex` 从 exit 1 变 124（被 timeout 杀的，
   即活着），退路日志落在 `~/.cache/pan4dex/pan4dex_crash.log`，`/opt` 下不留下任何文件
-- 新增 `tests/test_crash_log_path.py` 6 项（Windows）+ 1 项 POSIX 只读目录复刻。其中一项是
-  **被变异验证逼出来的**：只断“不抛异常”的用例在退路完全失效时仍会绿（函数自己包了
+- 新增 `tests/test_crash_log_path.py` 11 项（其中 1 项 POSIX 只读目录复刻，Windows 上 skip）。
+  有一项是**被变异验证逼出来的**：只断“不抛异常”的用例在退路完全失效时仍会绿（函数自己包了
   `OSError`），补了“日志真的落盘、且 faulthandler 接的就是那个文件”后才报红
+
+#### 🐛 缺陷修复（同一道安全网上的第 2 坑）：崩溃日志只追加、不截断
+- 三处写入点（`install_signal_handlers` / `write_crash_log` / `excepthook`）原本都用 `'w'`，
+  而第一处在**每次成功启动**时都会跑 —— 上一次的崩溃现场被直接截成 0 字节。用户的动作
+  顺序恰恰是“崩了 → 再双击一次试试”，第二个动作就把证据洗掉了 —— 本仓追偶发段错误时
+  长期看到的“crash 文件在、内容是空的”就是这个原因（直接妨碍 `av-watch` 与残余崩率调查）
+- 现在统一走 `_crash_log_for_append()`：三处都追加，启动时写一行
+  `=== Pan4dex <ver> 启动于 <时间> ===` 作为分段标记；超过 `_CRASH_LOG_MAX_BYTES`（256KB）
+  才先清空一次，不让它无限增长
+- 同一个标准补到 `setup_logging()`（它在 `import main` 时就跑，比 `main()` 还早）：文件日志
+  写不了（HOME 未设 / 配置目录只读 / 磁盘满）时只退成“没文件日志”+ 一句 stderr 降级提示，
+  不再让 `makedirs` 抛一下就“双击没反应”；弹错误框那段也抽成 `_show_error_box()`（跨平台
+  统一处理，且测试里可被替掉 —— 真弹一下就是整个会话挂死）
 
 #### 🔧 工程：Linux 构建不再依赖不入库的目录
 - `--add-data` 改为**存在才带**：`resources/tools/` 整目录被 `.gitignore` 排除，而 PyInstaller 6
@@ -78,7 +91,8 @@
   `docs/architecture.md` §4.6（崩溃日志落点为何在运行时选）
 
 #### 🧪 测试与构建计数
-- Windows 全量：**581 passed / 4 skipped**（+6，新增的 1 项 POSIX 用例在本机 skip）
+- Windows 全量两轮：**585 passed / 4 skipped**（随机序与固定序一致；较 v1.9.014 的 575/3
+  +10，全部在 `tests/test_crash_log_path.py`）
 - 产物实测（linux230）：`python 3.11.13 / PyQt 6.9.1 / Qt 6.9.0`，包内确认含
   `_pillow_heif.cpython-311…so` + `libheif-*.so`、`resources/icons/{ico,jpg,png}`、
   `platforminputcontexts/{libibus,libcompose}…so`、`imageformats` 含 qsvg（与 3.10 产物 70MB 对比 79MB）

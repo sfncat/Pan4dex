@@ -21,7 +21,7 @@
    确认不再必失败。`releases/` 里从没有 Linux 产物的局面也从本版结束（见 §3）。
 3. **本机的测试证据已从“只有 Windows”变成“两端都有”**：v1.9.014 起 Linux 真机（linux230）
    跑过全量——单进程定序 1 次 + 随机序 3 次，**572 passed / 6 skipped**，与 Windows 的
-   575+3 总数相等（差异全在 `skipif` 门控）。v1.9.015 再 +6 项崩溃日志用例（Windows 581/4）。
+   575+3 总数相等（差异全在 `skipif` 门控）。v1.9.015 再 +10 项崩溃日志/启动安全用例（Windows 585/4）。
    `_list_linux`、pty 后端、`same_volume` 的挂载点边界均已在真机测到（见 §4）。
 4. ~~**两处「Windows 特化判据」把 Linux 挡在功能外面**~~ → **v1.9.013 已修**：
    网络/慢盘判定（`os.name != 'nt'` 直接 `return False`）与删除后果文案（只有 nt 分支
@@ -57,7 +57,7 @@
 | `pyinstaller packaging/pan4dex.spec`（在仓库根目录） | **exit 0，产物 54.6MB**：spec 仍能跑，且自动带上 QtSvg/imageformats/pillow_heif |
 | 全仓在 docker 里真机出包（v1.9.015，干净克隆无 `resources/tools/`） | 修复前：必失败（上面那条 `--add-data` 硬错误）；修复后：3.10 与 3.11 镜像各自 exit 0，产物 `--version`/`--info` 正常 |
 | 产物放进 root 拥有的只读目录后启动（/opt 场景） | 修复前 **exit 1**（`PermissionError` on `pan4dex_crash.log`）→ 修复后 exit 124（timeout 杀的，即活着），退路日志落在 `~/.cache/pan4dex/` |
-| 全量测试（Windows，v1.9.012 基线） | 476 passed / 1 skipped（随机序与固定序两轮一致）；v1.9.013 起为 **569 passed / 1 skipped**；v1.9.015 为 **581 passed / 4 skipped** |
+| 全量测试（Windows，v1.9.012 基线） | 476 passed / 1 skipped（随机序与固定序两轮一致）；v1.9.013 起为 **569 passed / 1 skipped**；v1.9.015 为 **585 passed / 4 skipped** |
 
 「代码取证」的判定标准：一个功能只有走到 `sys.platform == "win32"` 的分支里才算 Windows 专属；
 如果 Linux 分支存在但没跑过，一律记 🟡/❓ 而不是 🟢。
@@ -170,7 +170,7 @@
 | 3.4 ✅已修 | `scripts/build.sh` 仍被 `AGENT.md:131-132` 列为 Linux 构建入口 | 它取版本靠 `main.py` 的 `__version__`、注 `__build_time__` 也改 `main.py`（两者早已搬到 `config/app_config.py`）→ 版本退化成 `v0.0.0-dev`、编译时间为空；且 `pyinstaller ... main.py` 不带任何 `--add-data`（图标进不去）；产物名带 `v` 前缀，`install-linux.sh` 按 `pan4dex-<VERSION>-linux`（无前缀）去找 → 找不到。**改法**：Linux 段整段替换为转发 `build-linux-docker.sh`，版本源改 `config/app_config.py` 并去 `v` 前缀 | 📖 `scripts/build.sh:39,76-79,44` vs `scripts/install-linux.sh:19-20`（`docker/README.md:139` 已标注该脚本废弃，但 AGENT.md 没同步） |
 | 3.5 ✅已修 | Linux 构建入口实际有**三条并存**：`build-linux-docker.sh`（canonical）、`packaging/pan4dex.spec`（README:132 与 `docs/development-guide.md:198` 推荐）、`scripts/build.sh`（AGENT.md 推荐，已废弃） | spec 路线今天确实能跑（✅ 实测 exit 0，还自动收了 QtSvg/imageformats/pillow_heif），但它不带 `resources/tools/*` 与输入法插件，产物能力面与 docker 路线不同；README:136 那行（Windows）**`--icon=resources/icons/pan4dex.ico` 指向不存在的文件**（现在叫 `resources/icons/icon.ico`），而缺 icon 在 PyInstaller 6 是 `FileNotFoundError` 硬失败。现在文档里只剩一条 canonical 路线，spec 明确标注为「手动/降级路线」并修掉了不存在的 `--icon` | ✅ + 📖 |
 | 3.6 | `releases/` 无任何 Linux 产物；最后一次 Linux 构建工作记在 v0.9.644–v0.9.684 | 从 0.9.68x 到 1.9.012 约 50 个版本的改动**从没进过 Linux 包**，Linux 现状只能靠读代码判断 | 📖 `git log -- docker/ packaging/ scripts/*linux*` + changelog |
-| 3.7 ✅已修（真机抓出） | 崩溃日志落点硬编码在 exe 同级，且 `install_signal_handlers()` 不包异常 | **Linux 装到 root 拥有的目录（`/opt`）时每次启动即死**，Windows 装 `Program Files` 同理。栈：`main()` → `install_signal_handlers` → `PermissionError: releases/pan4dex_crash.log`。安全网自己成了扳机，而且它比窗口创建还早 → 用户连错误框都看不到。已改为候选序列（exe 同级 → 用户缓存 → 临时）+ `'a'` 试探 + 缓存 + 全失败也不抛 | ✅ 真机 exit 1 → 修复后 124（`docs/gotchas.md` 第 45 条） |
+| 3.7 ✅已修（真机抓出） | 崩溃日志落点硬编码在 exe 同级，且 `install_signal_handlers()` 不包异常 | **Linux 装到 root 拥有的目录（`/opt`）时每次启动即死**，Windows 装 `Program Files` 同理。栈：`main()` → `install_signal_handlers` → `PermissionError: releases/pan4dex_crash.log`。安全网自己成了扳机，而且它比窗口创建还早 → 用户连错误框都看不到。已改为候选序列（exe 同级 → 用户缓存 → 临时）+ `'a'` 试探 + 缓存 + 全失败也不抛 | ✅ 真机 exit 1 → 修复后 124（`docs/gotchas.md` 第 45 条）。**顺带查出第 2 坑**：三处写入点都用 `'w'`，每次启动截断上一次的现场 —— 长期“crash 日志是空的”、拿不到段错误栈就是这个原因（直接妨碍 av-watch 与残余崩率调查）。现在三处都追加 + 超 256KB 才轮转，`setup_logging()` 也按同样标准包了 |
 | 3.8 ⚠️新发现 | 构建脚本里 `docker run ... bash -c "... $DATA_ARGS ..."` 的变量未转义 | 宿主 bash 先把它展开成**数组的第 0 个元素**，容器里收到 `--add-data main.py` → PyInstaller 只报「`--add-data` 语法错」，绝不提示 `main.py` 消失了。必须写 `\$DATA_ARGS` 把展开推迟到容器侧 | ✅ p24 第一轮构建失败原文（见 gotchas 46.2） |
 
 ---
