@@ -45,6 +45,12 @@
    “程序里什么也没发生”）；同时量出一个产品级缺陷：**`WindowShortcut` 会把 F2/F5/F7/F8/Ctrl+F
    从文本控件（包括内嵌终端）手里抢走**。L8 本轮已闭环，L3/L5/L10 仍待第三轮（p41），
    但现在已知“不是工具问题”，阻塞源已消除。见 gotchas 第 49 条。
+9. **v1.9.018：第三轮验收（p41）两项修复都在真机自证生效，同时把「删除」这条链跑到了底**。
+   回焦与 F7 守卫各自有一个「现场反证」（选中行真的跳了 / 弹框数 1 vs 0），L10（加运行权限）
+   首次命中。而「Linux 本地删除没落地」查到底是**取证脚本的坑**（确认框默认按钮是 No，
+   `key Return` 等于取消），顺着同一条路才摸到真的那个：**文案与行为的判据只共用了一半** ——
+   `delete()` 里「走不走回收站」的门控还锁在 `os.name == 'nt'`，Linux 上删 CIFS 共享里的文件，
+   弹框说「永久删除」，`send2trash` 却在共享根凭空建了 `.Trash-1000/`（p42 实测）。见 gotchas 第 50 条。
 
 ---
 
@@ -126,9 +132,9 @@
 | 拖放默认动作（同卷移动/跨卷复制） | 🟢 v1.9.012 | 判据跨平台（`st_dev` 在 Linux 就是设备号，挂载点边界天然正确；UNC 排除只影响 Windows） | 🟢 | `same_volume()` / `decide_drop_action()` |
 | 同名冲突 | `os.path.exists` | 同一判据 → Linux 上 `A.txt` 与 `a.txt` 正确视为两个文件（没有 Windows 化的大小写折叠） | 🟢 | 全仓无对路径做 `lower()` 比较 |
 | 符号链接复制 | 建链失败降级为复制（需开发者模式） | `os.symlink` 正常 | 🟢 | `core/file_operations.py:399-410` |
-| 回收站 | `send2trash` + `\\?\` 前缀修正 | `send2trash(path)`（freedesktop Trash） | 🟢 | `core/file_operations.py:761-792` |
-| 删除后果文案 | 区分「本地→回收站 / 网络→永久不可恢复」 | ✅ v1.9.013：同一个分类不分平台，gvfs/CIFS 上不再承诺“移到回收站” | 🟢 已修 | `describe_removal()` + `core/mounts.py` |
-| **慢盘/网络盘识别** | UNC + `GetDriveTypeW==DRIVE_REMOTE` | ✅ v1.9.013：解析 `/proc/mounts`（macOS `mount -p`）按最长前缀找挂载点 + 慢类型表（cifs/smb/nfs/任意 `fuse.*`（含 gvfs）/sshfs/rclone/9p/虚拟机共享盘…）→ 不挂 watcher、导航强扫、删除文案一次接通 | 🟢 代码与纯函数矩阵已验，❓ 真机挂载待跑 | `core/mounts.py`（两个消费方：`_is_network_path` / `DirStoreModel._is_network`）|
+| 回收站 | `send2trash` + `\\?\` 前缀修正 | ✅ v1.9.018：本地走 freedesktop Trash（`~/.local/share/Trash/{files,info}`，p42 真机确认会自己建），**网络位置不分平台一律永久删除** | 🟢 已修 | `core/file_operations.py:754-781`；旧行为会在 CIFS 共享根造 `.Trash-1000/` |
+| 删除后果文案 | 区分「本地→回收站 / 网络→永久不可恢复」 | ✅ v1.9.013 文案不分平台；✅ v1.9.018 **行为**也跟上了同一个判据（以前只有文案改了，`delete()` 里的回收站门控还锁在 nt） | 🟢 已修 | `describe_removal()` + `_is_network_path()` 现在是同一句话的两个消费方 |
+| **慢盘/网络盘识别** | UNC + `GetDriveTypeW==DRIVE_REMOTE` | ✅ v1.9.013：解析 `/proc/mounts`（macOS `mount -p`）按最长前缀找挂载点 + 慢类型表（cifs/smb/nfs/任意 `fuse.*`（含 gvfs）/sshfs/rclone/9p/虚拟机共享盘…）→ 不挂 watcher、导航强扫、删除文案一次接通 | 🟢 已验：✅ v1.9.018 真机（p40b，64 项真 `/proc/mounts`）上 CIFS 挂载命中、本地 ext4 与 `/proc` 不误判 | `core/mounts.py`（四个消费方：`_is_network_path` / `DirStoreModel._is_network` / 确认文案 / **实际删除**）|
 | 跨线程进度/取消 | `FileOpRunner` | 同一套 | 🟢 | `core/file_op_runner.py` |
 | 撤销（Ctrl+Z） | 未做 | 未做 | 🔴 plan §2.3 明示留二期 | — |
 
@@ -190,7 +196,7 @@
 | 事实 | 数字 | 影响 |
 |---|---|---|
 | 在 Linux 上会被 `skipif` 跳过的用例 | 6 项（回收站文案 2、注册表 2、Windows 命令行规则 1、Windows `Preferred DropEffect` 1） | 这些本来就是 Windows 专属，合理 |
-| 在 Windows 上被跳过的 Linux 专属用例 | 4 项（v1.9.014 新增 3 项 + v1.9.015 的只读安装目录复刻 1 项） | Windows 开 **585 passed / 4 skipped**，Linux（已提交状态、定序与随机各一次）**583 / 6**，总数 589 吻合 —— 但 Linux 专属那几项在 Windows 上**从未执行过**，只能在真机上算测到。v1.9.016 再加 14 项（落点 8 + `.desktop` 6）后 Windows 为 **599 / 4**，Linux（已提交状态 72de75a，定序与随机各一次）**597 / 6**（差 2 项 = Windows 专属的 skipif 门控，新用例本身两端全绿）。v1.9.017 再加 20 项（快捷键作用面）后 Windows 为 **619 / 4**，Linux 侧待推码后复测 |
+| 在 Windows 上被跳过的 Linux 专属用例 | 4 项（v1.9.014 新增 3 项 + v1.9.015 的只读安装目录复刻 1 项） | Windows 开 **585 passed / 4 skipped**，Linux（已提交状态、定序与随机各一次）**583 / 6**，总数 589 吻合 —— 但 Linux 专属那几项在 Windows 上**从未执行过**，只能在真机上算测到。v1.9.016 再加 14 项（落点 8 + `.desktop` 6）后 Windows 为 **599 / 4**，Linux（已提交状态 72de75a，定序与随机各一次）**597 / 6**（差 2 项 = Windows 专属的 skipif 门控，新用例本身两端全绿）。v1.9.017 再加 20 项（快捷键作用面）后 Windows 为 **619 / 4**，Linux 侧 **617 / 6**（总数 623 吻合）。v1.9.018 再加 6 项（回收站只给本地位置）后 Windows **624 / 5**（多的那 1 项跳过是系统剪贴板被占用，环境性飘移），Linux 侧待推码后复测 |
 | `core/open_with.py` 的 Linux 枚举 `_list_linux` | ✅ v1.9.014 起在 linux230 真机上测满（`test_open_with` 23 passed），并在真机上抓出它与 Windows 不一致的兜底门控 | 真实桌面环境里的目录优先级、`Exec` 里的 `%f/%U`、mime-info 缓存路径都验过了；剩下的是界面里的观感（L5） |
 | `PtyBackend` 的 Linux 分支（`pty`/`fcntl`/`termios`） | 本机 0 次（Windows 走 winpty）；真机上 `test_terminal_lifecycle` 13 passed | 终端在 Linux 上“代码看着最正”已有自动化证据，但 vim/htop 这类全屏程序的实测仍在 L6 |
 | `same_volume()` 的正向跨挂载点判定 | ✅ v1.9.014：真机（两个 CIFS 挂载 + 一堆系统挂载）上 `test_m2_file_operations` 38 passed；用例不再写死 `E:\` | 拖放动作决策在 Linux 上的正确性不再靠推断；真挂载上的耗时仍在 L2/L4 |
@@ -244,19 +250,31 @@ offscreen 下能起，日志里 `延迟创建 pane2-4: 189.2ms` 正常完成。
 > 但阻塞源已消除 —— 下一轮不能再拿“工具问题”当结论。L6/L8 本轮已定论（见下表）。
 > 附带发现：上一轮误关的「修改日期」列**跨重启仍在**（列状态持久化，本身不是缺陷，
 > 但它是验收里的干扰项）。
+>
+> **v1.9.018 第三轮（p41）+ 一次代码路径探针（p42）**：两项修复各自拿到现场反证 ——
+> 导航后按 Down 截图字节数变了（选中行真的跳），而焦点在路径栏时按 F7 **弹框数 0**、
+> 焦点在列表时按 F7 **弹框数 1**（守卫真在拦）。L10 首次命中（`photo_2.png`
+> `-rw-rw-r--` → `-rwxrwxr-x`）。L3 则拆成了两半：文案半边✅，而「本地删除没落地」
+> 查到底是**取证脚本的坑**（确认框默认按钮是 No，`key Return` 等于取消），
+> p42 用产品同一条代码路径证明本地 `send2trash` 完全正常 —— 但顺着同一条路撞出了
+> 真缺陷：`delete()` 里回收站门控还锁在 nt，Linux 上删 CIFS 共享里的文件会在**共享根
+> 目录**造一个 `.Trash-1000/`（与文案承诺的「永久删除」相反）。v1.9.018 已修 + 6 项用例。
+> 另一个取证发现：高级搜索那一段 `typeit` 打进了空气（焦点不在「搜索目录」框），
+> 于是弹了「请输入搜索目录（保存与搜索用同一套校验）」—— 脚本的锅，但顺手证明了
+> 空目录校验在 Linux 上是中文且明确的。
 
 | # | 验什么 | 判定标准 | 状态（最新一轮） |
 |---|---|---|---|
 | L1 | 能不能构建出来 | 不再需要手工造 `resources/tools/*`，干净检出能直接出包；产物 `--version`/`--info` 正常、能常驻 | ✅ **v1.9.015 已过**：3.10 与 3.11 两个镜像都验过，offscreen 下能常驻 |
 | L2 | 挂 SMB（gvfs 或 CIFS）后浏览 | 打开 1 万个条目的共享目录：不闪、能取消、切走窗格不继续扫；**当前必然表现为按本地目录处理**（§2.4 ⚠️） | ❓ **未做**：230 上两个 CIFS 共享都太小（photos 13 项 / backupSpaceInJKJ 2 项），而**不在用户 NAS 上造 1 万个文件**；要么用 `big100k` 当本地基线 + 在真挂载上只验“判据命中”（ln6） |
-| L3 | 回收站 | 本地删除进 Trash；gvfs 上删除的**文案**是否骗人（说「移到回收站」实则失败） | ❓ **仍未拿到证据，但阻塞源已查明**：p38 第 5/6 段 Delete 没弹确认框、`~/.local/share/Trash/files/` 根本不存在 —— 因为**导航后焦点卡在路径栏**（v1.9.017 已修），不是删除坏了。第三轮（p41）重做：CIFS 只看文案不确认 + 本地真删 |
+| L3 | 回收站 | 本地删除进 Trash；gvfs/CIFS 上**行为**是否与文案一致 | 🟡 **文案与行为已一致（v1.9.018），GUI 闭环待 p43**：p42 用产品同一条代码路径实测 —— 本地 `delete(safe=True)` 确实建了 `~/.local/share/Trash/{files,info}` 并把文件搬进去；而修复之前的 CIFS 分支会在共享根造 `.Trash-1000/`（已修）。p41 那两段「没落地」是默认按钮 No + `key Return` 的坑；p43 改 `alt+y` 重跑。<br>⚠️ 待拍：要不要把确认框默认按钮翻成 Yes（资源管理器里回车就是 Yes） |
 | L4 | 拖放 | 从 Nautilus/Dolphin 拖入：同分区应移动、跨分区应复制；源端不允许 move 时不得删源 | ❓ **未做**：跨程序拖拽需要真鼠标轨迹（`xdotool` 能做但极不稳），放到有人在现场的那一轮 |
-| L5 | 打开方式 | 右键 → 打开方式：候选列表是否来自 `.desktop`、mime 匹配是否正确、`%f/%U` 是否被剥掉 | 🟡 **v1.9.016 部分过**：真机右键菜单 13 项齐全（含「打开方式▶」，子菜单能展开）；候选内容是否真来自 `.desktop` 且能启动成功待第三轮（p38 第 2/3 段因焦点卡在路径栏，`Menu` 键根本没弹菜单 —— v1.9.017 已修）|
+| L5 | 打开方式 | 右键 → 打开方式：候选列表是否来自 `.desktop`、mime 匹配是否正确、`%f/%U` 是否被剥掉 | ✅ **v1.9.018 第三轮命中（p41 shot 96）**：对 `photo_2.png` 展开子菜单，候选是 **Image Viewer / ristretto Image Viewer / xdg-open / 选择其它应用并设为默认…**，状态栏显示解析出的 `/usr/bin/eog` —— 确实来自 `.desktop` 枚举且 mime 匹配对了，`Exec` 里的 `%f` 已被剥掉（否则会被当成文件名）。剩下：选中某一项后能不能真把图打开（p43 之后补）|
 | L6 | 内嵌终端 | `$SHELL`、vim/htop 全屏程序、resize、关闭窗口后 shell 是否真退 | 🟡 **v1.9.016 查清一半，本轮补上后半**：起的确实是 `/usr/bin/zsh`；“关 dock 后 shell 不退”经读 `closeEvent` docstring 确认是**有意设计**；Ctrl+Q 后应用进程归 0，退出前 shell 子进程 1 个，`pgrep -u kali -x zsh` 的 4 个残留 etime 均为 01:29:54（**早于本次测试的会话 shell**，不是泄漏）。剩下：vim/htop 与 resize（注意：v1.9.017 之前 F2/F5/F7/F8 会被窗口抢走，这一类用例必须在新版上跑）|
 | L7 | 图标与缩略图 | 确认「所有文件同图标」的实际观感；SVG/PNG/HEIC 缩略图是否出得来（qsvg 插件、pillow-heif） | 🟡 **v1.9.016 前半已确认**：非目录文件确实共用同一个通用图标（观感与 Windows 一致地差，属第三批的 `QFileIconProvider` 范围）；缩略图与 HEIC 未试（造 HEIC 靶子需要 `pillow_heif`，230 宿主 venv 里没有） |
 | L8 | 桌面集成 | `--install-menu` 后应用菜单出现图标；GNOME 任务栏分组/窗口图标是否正确（WM_CLASS 那条） | ✅ **v1.9.016 修匹配键 + 本轮真机闭环**：`--install-menu` 生成的 `StartupWMClass=Pan4dex` 与运行窗口的 `WM_CLASS = "pan4dex-1.9.016-linux", "Pan4dex"` **第二项完全一致**，`Exec` 指着正跑的产物、文件无 CR。仍待的只剩 GNOME 上“图标真的分组了”的目视确认（230 是 Xfce，且未调 `setDesktopFileName`）|
-| L9 | 全盘搜索 | 搜 `/` 或 `/home`：`/proc`、`/sys` 是否被扫、耗时、能否中途取消 | ❓ **未做**：p36 只验到“空搜索模式不给搜”的告警（对话框模态，后续按键全被吞）；搜索本身能不能中途停止仍未看 |
-| L10 | 权限 | 右键「加运行权限」后从界面能否看出生效了（现在看不出，因为没有权限列） | ❓ **本轮未命中（根因已定位）**：p38 第 3 段用 `Menu` 键 + 方向键，但菜单根本没弹 —— 焦点卡在路径栏（v1.9.017 已修），chmod 前后 4 个文件都是 `-rw-rw-r--`。「界面看不出变化」本身就是已下定的结论（第三批补权限列）；第三轮（p41）重做 |
+| L9 | 全盘搜索 | 搜 `/` 或 `/home`：`/proc`、`/sys` 是否被扫、耗时、能否中途取消 | 🟡 **v1.9.018 第三轮前进一格**：`alt+t → f` 能打开对话框（p41 shot a2/a3），控件与中文文案在 Linux 下渲染完整，空目录有明确校验「请输入搜索目录」。仍未验：真跑一次搜索 + 中途停止（p41 的 `typeit` 打进了空气；p43 改用坐标点输入框重做）|
+| L10 | 权限 | 右键「加运行权限」后从界面能否看出生效了（现在看不出，因为没有权限列） | ✅ **v1.9.018 第三轮首次命中（p41）**：`Menu` + 4 下方向键 + Return 后，`photo_2.png` 从 `-rw-rw-r--` 变 `-rwxrwxr-x`，日志「加运行权限: /home/kali/pics/photo_2.png」。**「界面上看不出来」这条结论不变**（没有权限列，第三批补）|
 | L11 | 中文输入 | ✅ v1.9.015 查清一半：PyQt6 wheel **自带的就是 `libibusplatforminputcontextplugin.so` + compose**，且它们确实进了 onefile 包（运行时解包目录里可见）→ ibus 桌面预期可用。fcitx5 的 Qt6 插件不在 wheel 里（只在系统的 `qt6/plugins/platforminputcontexts/`），而冻结后的查找路径只认包内 —— 这正是 `resources/tools/qt6-im-plugins` 该装的东西，而它仍不在仓库。剩下：ibus/fcitx5 两种桌面上真打一次字。<br>🟡 **v1.9.016 再加一条硬证据**：跑着的冻结产物 `/proc/<pid>/maps` 里**没有任何** fcitx/ibus/platforminputcontext 模块（系统里确实有 `libfcitx5platforminputcontextplugin.so`）→ 与上面的推断吻合。注意：ssh 起的进程环境里根本没有 `QT_IM_MODULE`（桌面会话才有），所以“真打一次字”必须在 `:10` 会话内做 |
 | L12 | Wayland vs X11 | 两种会话下都跑一遍：高 DPI、拖拽、`QT_QPA_PLATFORM` 自动选择 | ❓ **只剩 Wayland 半边**：230 上没有 Wayland 会话（`XDG_SESSION_TYPE=x11`），本轮只覆盖了 X11 + xrdp；高 DPI 在 96dpi 下也没得验 |
 | L13 | 大目录内存/CPU | 10 万条目目录（Linux 上 ext4/xfs 很常见）下列表与排序 | ✅ **v1.9.016 已过**：自造 `/home/kali/big100k`（10 万项，枚举本身 9.7s）后子进程 RSS ≈ 105MB、%CPU 6.0，列表能出、界面能继续操作（Down×30 不卡）。另 1 万项目录 0.6s 建完，导航无感 |

@@ -731,7 +731,8 @@ class FileOperations:
         
         Args:
             paths: 要删除的文件/目录路径列表
-            safe: 是否安全删除（使用回收站）
+            safe: 是否安全删除（使用回收站）；**网络位置无论这个值是多少都是
+                永久删除**（没有回收站可用），与 `describe_removal` 的文案同一判据
         
         Returns:
             FileOperationResult: 操作结果
@@ -753,36 +754,30 @@ class FileOperations:
             
             try:
                 if safe:
-                    import send2trash
-                    if os.name == 'nt' and _is_unc_path(path):
-                        # 网络共享没有回收站（资源管理器同样直接删除），且
-                        # send2trash 内部生成的 \\?\UNC\... 前缀 Shell API
-                        # 不识别，会报 Errno 2 找不到文件。直接永久删除。
-                        target = _normalize_unc(path)
+                    if _is_network_path(path):
+                        # 网络位置没有回收站（Windows 的 UNC 与映射盘，Linux 的
+                        # CIFS / NFS / gvfs 挂载）：与资源管理器一致直接永久删除，
+                        # 并在结果里标记供 UI 提示。判据必须和确认文案共用同一个
+                        # `_is_network_path`，否则会出现「嘴上说永久删除、手上却进了
+                        # 回收站」。Linux 上尤其不能让 send2trash 动手：它会在共享根
+                        # 凭空建一个 .Trash-1000/，把文件藏进 NAS（230 真机实测），
+                        # 既不是文案承诺的永久删除，也不是桌面能看到的回收站。
+                        target = _normalize_unc(path) if _is_unc_path(path) else path
                         if os.path.isdir(target):
                             shutil.rmtree(target)
                         else:
                             os.remove(target)
-                    elif os.name == 'nt':
-                        # send2trash 的 Windows 实现会给路径加 \\?\ 长路径前缀，
-                        # 但不会把正斜杠转反斜杠（\\?\C:/x 不被 Win32 识别，报
-                        # Errno 2）。Qt 传入的是正斜杠路径，必须先规范化。
-                        try:
-                            send2trash.send2trash(os.path.normpath(path))
-                        except OSError:
-                            # 映射网络驱动器（Z:\ 等）同样没有回收站，
-                            # send2trash 会抛异常；与资源管理器行为一致回退为
-                            # 永久删除，并在结果中标记供 UI 提示
-                            if _is_network_path(path):
-                                if os.path.isdir(path):
-                                    shutil.rmtree(path)
-                                else:
-                                    os.remove(path)
-                                permanent_fallbacks += 1
-                            else:
-                                raise
+                        permanent_fallbacks += 1
                     else:
-                        send2trash.send2trash(path)
+                        # 只有真要进回收站时才需要它（网络位置不装也不影响删除）
+                        import send2trash
+                        if os.name == 'nt':
+                            # send2trash 的 Windows 实现会给路径加 \\?\ 长路径前缀，
+                            # 但不会把正斜杠转反斜杠（\\?\C:/x 不被 Win32 识别，报
+                            # Errno 2）。Qt 传入的是正斜杠路径，必须先规范化。
+                            send2trash.send2trash(os.path.normpath(path))
+                        else:
+                            send2trash.send2trash(path)
                 else:
                     if os.path.isdir(path):
                         shutil.rmtree(path)

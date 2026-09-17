@@ -25,7 +25,7 @@
 |---|---|---|---|---|---|---|
 | 2.1 | 复制文件 | P0 | 🟢 | 右键/快捷键复制与外部拖入（跨卷）→ 进度对话框显示，完成后目标窗格刷新 | shutil.copy2 + 后台线程 | file_operations.py copy() |
 | 2.2 | 移动文件 | P0 | 🟢 | 窗格内拖拽移动，或剪切后粘贴；同卷跨窗格拖拽也是移动 | shutil.move + 后台线程；跨卷走「复制+删源」（保 mtime、有字节进度、可取消） | file_operations.py move() |
-| 2.3 | 安全删除 | P0 | 🟢 | 右键删除 → 文件进入回收站，可恢复 | send2trash | file_operations.py delete() |
+| 2.3 | 安全删除 | P0 | 🟢 | 右键删除 → **本地位置**文件进入回收站、可恢复；**网络位置无论怎样都是永久删除**（没有回收站可用；以前 Linux 上删 CIFS 共享里的文件会在共享根凭空建 `.Trash-1000/`，与文案承诺相反） | 本地 `send2trash`；网络那一档先于平台判定走 `os.remove`/`rmtree`，与 `describe_removal` 共用 `_is_network_path`（v1.9.018，gotchas 第 50 条）| file_operations.py `delete()`；tests/test_m2_file_operations.py `TestTrashIsForLocalPathsOnly` 6 项 |
 | 2.4 | 永久删除 | P1 | 🟢 | Shift+Delete 直接删除（确认框明写「不可恢复」） | 走 `delete(safe=False)`；网络位置本就无回收站，文案同样区分 —— 「是不是网络位置」两端都算（v1.9.013 前只在 Windows 上分类，见 3.5） | pane.py `FileListTreeView.keyPressEvent` → `_delete_paths(permanent=True)` → `file_operations.describe_removal()` |
 | 2.5 | 重命名 | P0 | 🟢 | F2 / 右键重命名 → 行内编辑，提交走模型 setData | 新模型条目带 ItemIsEditable，内建触发器关掉以免误编辑 | pane.py `rename_selected()` |
 | 2.6 | 新建文件夹 | P1 | 🟢 | 右键菜单 → 新建文件夹，自动进入重命名 | os.makedirs | file_operations.py create_folder() |
@@ -43,7 +43,7 @@
 | 3.2 | 路径自动补全 | P1 | 🟢 | 输入路径时弹出候选；只补当前一层，绝不全盘扫描 | QCompleter + QStringListModel（按需填充） | path_bar.py `_setup_completer()` |
 | 3.3 | 路径历史 | P1 | 🟢 | 后退/前进按钮 + Alt+Left/Right；按窗格各自记史，前进截断正确处理 | 历史栈 `_nav_history` + `_nav_index` | pane.py `go_back()` / `go_forward()` |
 | 3.4 | 快速跳转 | P1 | 🟢 | Ctrl+L 聚焦当前窗格路径栏并全选现有路径，直接键入即可跳转 | PathBar.focus_for_input() | main_window.py `on_focus_path_bar()` / path_bar.py |
-| 3.5 | 网络 / 慢位置识别 | P0 | 🟢 | 同一个位置在三处得到**同一个答案**（窗格刷新、目录监视、删除文案）；Linux 上挂在 `/mnt` 的 cifs/nfs/sshfs 也算网络位置（v1.9.013 前判据写死 `os.name != 'nt'` 直接返回 False，整套保守策略在非 Windows 上从不生效） | 全仓唯一入口 `mounts.is_remote_location()`：Windows 走 UNC + `GetDriveTypeW`，POSIX 读挂载表（`/proc/mounts` / `mount -p`）按**最长前缀**定所属挂载点再看 fstype；解析/匹配/判定三段纯函数 → Linux 矩阵在 Windows 主机上就能测满；**任何失败退化为「按本地」**，不做 `realpath`（取舍见 gotchas 第 43 条） | core/mounts.py；tests/test_mounts.py 82 项 |
+| 3.5 | 网络 / 慢位置识别 | P0 | 🟢 | 同一个位置在四处得到**同一个答案**（窗格刷新、目录监视、删除文案、**实际删除走不走回收站**）；Linux 上挂在 `/mnt` 的 cifs/nfs/sshfs 也算网络位置（v1.9.013 前判据写死 `os.name != 'nt'` 直接返回 False，整套保守策略在非 Windows 上从不生效；v1.9.018 补上最后泄漏的第四处） | 全仓唯一入口 `mounts.is_remote_location()`：Windows 走 UNC + `GetDriveTypeW`，POSIX 读挂载表（`/proc/mounts` / `mount -p`）按**最长前缀**定所属挂载点再看 fstype；解析/匹配/判定三段纯函数 → Linux 矩阵在 Windows 主机上就能测满；**任何失败退化为「按本地」**，不做 `realpath`（取舍见 gotchas 第 43 条） | core/mounts.py；tests/test_mounts.py 82 项 |
 
 ## 4. 标签页
 
@@ -137,7 +137,7 @@
 | 12.7 | Ctrl+2 双窗格模式 | P1 | 🟢 | Ctrl+2 上下双窗格、Ctrl+Shift+2 横向、Ctrl+5/Ctrl+6 上2下1/上1下2 | 视图菜单 QAction | main_window.py `switch_to_dual*()` |
 | 12.8 | F3 预览面板 | P2 | 🟢 | 切换右侧预览面板显示（可勾选项） | 视图菜单 QAction | main_window.py `toggle_preview()` |
 | 12.9 | F5 刷新 | P1 | 🟢 | 刷新当前窗格，保留选中与滚动位置 | 编辑菜单 QAction | main_window.py `on_refresh()` |
-| 12.10 | Delete 安全删除 | P0 | 🟢 | 删除选中项到回收站；网络位置文案改为「永久删除」（该分类在 Linux 上同样生效，见 3.5） | 编辑菜单 QAction | main_window.py `on_delete()` → pane `_delete_paths` |
+| 12.10 | Delete 安全删除 | P0 | 🟢 | 删除选中项到回收站；网络位置文案与行为**都是**「永久删除」（该分类在 Linux 上同样生效，见 3.5）| 编辑菜单 QAction | main_window.py `on_delete()` → pane `_delete_paths` |
 | 12.11 | Shift+Delete 永久删除 | P1 | 🟢 | 直接删除选中项，二次确认明写不可恢复 | 在视图 keyPressEvent 拦，不与 QAction(Delete) 双弹确认框 | pane.py `FileListTreeView.keyPressEvent` |
 | 12.12 | F2 重命名 | P0 | 🟢 | 进入当前行行内编辑 | 编辑菜单 QAction | main_window.py `on_rename()` → pane `rename_selected()` |
 | 12.13 | Ctrl+C / Ctrl+X / Ctrl+V | P0 | 🟢 | 复制/剪切/粘贴，与系统剪贴板互通（含 MoveEffect 识别） | 编辑菜单 QAction | main_window.py / pane.py |
@@ -158,7 +158,7 @@
 | 13.2 | 复制 | P0 | 🟢 | 右键复制，然后到目标窗格粘贴 | 剪贴板机制 | pane.py copy_selected() |
 | 13.3 | 剪切 | P0 | 🟢 | 右键剪切 | 剪贴板机制 | pane.py cut_selected() |
 | 13.4 | 粘贴 | P0 | 🟢 | 右键粘贴到当前目录 | 剪贴板机制 | pane.py paste() |
-| 13.5 | 删除 | P0 | 🟢 | 右键删除到回收站 | send2trash | pane.py delete_selected() |
+| 13.5 | 删除 | P0 | 🟢 | 右键删除（本地进回收站，网络位置永久删除）| send2trash / `os.remove` | pane.py delete_selected() |
 | 13.6 | 重命名 | P0 | 🟢 | 右键重命名 | 内联编辑 | pane.py rename_selected() |
 | 13.7 | 新建文件夹 | P1 | 🟢 | 右键新建文件夹 | os.makedirs | pane.py create_folder() |
 | 13.8 | 新建文件 | P1 | 🟢 | 右键新建文件 | open(path, 'w') | pane.py create_file() |

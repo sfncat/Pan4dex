@@ -321,6 +321,114 @@ class TestRemovalWording:
         assert move_target_inside_sources([outer], sibling) is False
 
 
+class _FakeTrash:
+    """替掉 `send2trash` 模块：记下被丢进来的路径，但不碰真实的回收站"""
+
+    def __init__(self):
+        self.calls = []
+
+    def send2trash(self, path):
+        self.calls.append(path)
+
+
+class TestTrashIsForLocalPathsOnly:
+    """回收站只给本地位置（行为的半边必须跟上了文案的那半边）
+
+    `describe_removal` 早就开始对网络位置说「将被永久删除、无法恢复」，但
+    `delete()` 里走不走回收站的门控还锁在 `os.name == 'nt'`：Linux 上删 CIFS
+    共享里的文件，文案说永久删除，代码却把文件丢进 `send2trash` —— 230 真机
+    实测它在共享根凭空建了一个 `.Trash-1000/`，既没按承诺删掉，也不是任何
+    桌面能看到的回收站。这几个用例钉的是「谁进回收站」而不是「怎么说」。
+    """
+
+    @pytest.fixture
+    def fake_trash(self, monkeypatch):
+        fake = _FakeTrash()
+        monkeypatch.setitem(sys.modules, "send2trash", fake)
+        return fake
+
+    def test_network_paths_are_never_sent_to_trash(self, tmp_path, monkeypatch, fake_trash):
+        from core import file_operations as fo
+        f = tmp_path / "on_share.txt"
+        f.write_text("x")
+        monkeypatch.setattr(fo, "_is_network_path", lambda p: True)
+
+        result = fo.FileOperations().delete([str(f)], safe=True)
+
+        assert result.success and fake_trash.calls == []
+        assert not f.exists(), "网络位置该被直接删掉，不是留在原地"
+        assert "永久删除" in result.error
+
+    def test_the_no_trash_branch_is_not_windows_only(self, tmp_path, monkeypatch, fake_trash):
+        """把宿主当成 POSIX：旧实现在这里会掉进 `send2trash`，新实现不分平台"""
+        from core import file_operations as fo
+        f = tmp_path / "cifs.txt"
+        f.write_text("x")
+        monkeypatch.setattr(fo.os, "name", "posix")
+        monkeypatch.setattr(fo, "_is_network_path",
+                            lambda p: p.startswith(str(tmp_path)))
+
+        result = fo.FileOperations().delete([str(f)], safe=True)
+
+        assert result.success
+        assert fake_trash.calls == [], "Linux 上的网络挂载不能走 send2trash"
+        assert not f.exists()
+
+    def test_network_directory_is_removed_recursively(self, tmp_path, monkeypatch, fake_trash):
+        from core import file_operations as fo
+        d = tmp_path / "share_dir"
+        (d / "sub").mkdir(parents=True)
+        (d / "sub" / "a.txt").write_text("x")
+        monkeypatch.setattr(fo, "_is_network_path", lambda p: True)
+
+        result = fo.FileOperations().delete([str(d)], safe=True)
+
+        assert result.success and fake_trash.calls == []
+        assert not d.exists()
+
+    def test_local_paths_still_go_to_trash(self, tmp_path, monkeypatch, fake_trash):
+        """反方向也要钉住：本地文件不能被误当成网络位置而绕过回收站"""
+        from core import file_operations as fo
+        f = tmp_path / "local.txt"
+        f.write_text("x")
+        monkeypatch.setattr(fo, "_is_network_path", lambda p: False)
+
+        result = fo.FileOperations().delete([str(f)], safe=True)
+
+        assert result.success
+        assert fake_trash.calls == [str(f)]
+        assert f.exists(), "回收站由 send2trash 负责搬，我们不该自己删"
+        assert result.error == "", "本地删除不该报「网络位置已永久删除」"
+
+    def test_permanent_delete_never_touches_trash(self, tmp_path, monkeypatch, fake_trash):
+        from core import file_operations as fo
+        f = tmp_path / "shift_del.txt"
+        f.write_text("x")
+        monkeypatch.setattr(fo, "_is_network_path", lambda p: False)
+
+        result = fo.FileOperations().delete([str(f)], safe=False)
+
+        assert result.success and fake_trash.calls == [] and not f.exists()
+
+    def test_send2trash_prefix_is_normalized_before_removal(self, tmp_path, monkeypatch, fake_trash):
+        r"""`\\?\UNC\...`（send2trash 造出的形式）先还原再删
+
+        真 UNC 路径在测试机上造不出来，所以盯「递给 `os.remove` 的是哪个字符串」：
+        还原掉长路径前缀这一步是 Windows 分支原有的能力，不能因为改判据而丢。
+        """
+        from core import file_operations as fo
+        seen = []
+        # `_is_unc_path` 本身只在 nt 下说事，不伪造宿主就测不到那条还原
+        monkeypatch.setattr(fo.os, "name", "nt")
+        monkeypatch.setattr(fo, "_is_network_path", lambda p: True)
+        monkeypatch.setattr(fo.os.path, "isdir", lambda p: False)
+        monkeypatch.setattr(fo.os, "remove", lambda p: seen.append(p))
+
+        fo.FileOperations().delete([r"\\?\UNC\srv\share\a.txt"], safe=True)
+
+        assert seen == [r"\\srv\share\a.txt"]
+
+
 class TestDropActionRules:
     """拖放默认动作的判据矩阵（对齐资源管理器：同卷移动、跨卷复制）
 
