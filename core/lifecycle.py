@@ -14,10 +14,56 @@ Pan4dex 万格 — Qt 对象生命周期防护
 
 同一类的另一半问题发生在**进程退出时**：后台枚举任务的跨线程投递还没派发完，解释器
 就开始收尾。用 `exec_and_drain()` 进入事件循环可保证循环一返回就排空后台线程。
+
+第三类发生在 **C++ 往 Python 回调的路上**（事件过滤器）：那里抛出的异常不但没人接，
+sip 连返回值都不会被赋值 —— 见 `safe_event_filter`。Linux 真机取证时它确实撞上了
+一个拖了很久的随机崩溃，**但不是它造成的**（兜住异常后崩率 12/12 不变）；包它是因为
+“异常不该逃进 C++ 派发栈”本身就成立。
 """
+import functools
+import logging
+
 from PyQt6.QtCore import QCoreApplication, QThreadPool, QTimer
 
-__all__ = ["call_later", "drain_background_pool", "exec_and_drain"]
+__all__ = ["call_later", "drain_background_pool", "exec_and_drain",
+           "safe_event_filter"]
+
+logger = logging.getLogger("pan4dex.lifecycle")
+
+
+def safe_event_filter(fn):
+    """事件过滤器装饰器：任何异常都不准逃进 C++ 的事件派发栈
+
+    `bool QObject::eventFilter(QObject*, QEvent*)` 的返回值是个 `bool`。Python
+    侧抛异常时 sip 无法给它赋值，Qt 就在一个未定义的值上继续派发：当成“事件已
+    被吃掉”就会跳过它本来要做的清理（焦点/销毁通知）。现场能观测到的就是
+    `RuntimeError: wrapped C/C++ object of type ... has been deleted` 从 Qt 事件
+    循环里报出来（Linux 上 pytest-qt 会把它拼到“Exceptions caught in Qt event loop”，
+    Windows 上则多表现为随机的 access violation）。
+
+    注意：它不是包了就不崩。本仓那个拖很久的段错误根源另有其人（跨用例泄漏的
+    app 级 stylesheet，见 `tests/conftest.py`），包上它只为了不让异常未定义地进 C++。
+
+    拆子树时的“对象一半已死”是常态而不是 bug，所以一律当成“没过滤”放行；
+    同一个过滤器只报一次警告（拆窗时每个事件都会走到这里，不限制就会刷屏）。
+    """
+    warned = set()
+
+    @functools.wraps(fn)
+    def wrapper(self, obj, event):
+        try:
+            return bool(fn(self, obj, event))
+        except Exception as exc:                       # RuntimeError（对象已删）是主项
+            key = (type(self).__name__, type(exc).__name__)
+            if key in warned:
+                logger.debug("事件过滤器异常已忽略 %s: %s", key, exc)
+            else:
+                warned.add(key)
+                logger.warning("事件过滤器异常已按“没过滤”处理（否则会把随机值交给 Qt）%s: %s",
+                               key, exc)
+            return False
+
+    return wrapper
 
 
 def call_later(receiver, msec: int, fn):

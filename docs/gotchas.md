@@ -828,6 +828,48 @@ been deleted`。子菜单没被删过，是它的**父菜单**（一个函数局
 本机执行 0 次”。而“只在 nt 分类”这类门控，在 Windows 主机上永远验不到它被拆掉
 —— 得在用例里 `monkeypatch.setattr(mod.os, "name", "posix")` 把宿主也当成 POSIX。
 
+### 44. app 级全局状态泄漏给下一个用例，会伪装成“产品随机崩溃”
+
+**现象**：Linux 真机（linux230 / Ubuntu 24.04）上 `pytest tests/test_m4_theme.py -q`
+稳定段错误（基线 8/10，本轮改动后测得 **12/12**），栈落在 `Pane.init_ui` /
+`_setup_model`，调用者是 `_create_remaining_panes`（250ms 延迟建窗格），而且**崩点会
+漂移**（一次在 `addWidget`，一次在 `_setup_model`）。同一类现场在 Windows 上只表现为
+偶发 access violation，所以一直没能定位。
+
+**A/B 数据**（每格单跑 `test_m4_theme.py` 12 次，命令行完全一致）：
+
+| 变体 | 崩率 |
+| --- | --- |
+| 现状（apt Qt 6.4.2 / PyQt 6.6.1） | 12/12 |
+| 换成发布用的 PyQt 6.9.1 / Qt 6.9.2 | 12/12（**不是旧 Qt 的 bug**） |
+| 先兜住 `Pane.eventFilter` 抛进 C++ 的 `RuntimeError` | 11/12（**因果假设当场被否**） |
+| 窗格改在构造函数里同步创建（不延迟） | **0/12** |
+| 延迟改 0ms（仍走定时器） | 12/12（载体是“从定时器回调里建树”，不是 250ms 跨过用例边界） |
+| conftest 在每个用例边界还原 app 级 stylesheet/font | host 1/12、release Qt 3/12；**整场全量 4 次 0 崩** |
+
+**真凶在测试里**：`TestThemeManager.test_apply_theme` 把 qdarkstyle `setStyleSheet` 到
+`QApplication` 上就不管了，之后每个用例都在“样式表缓存里挂着已销毁控件”的状态下
+建窗格树。修法是测试侧的（`tests/conftest.py` 的 `_reap_top_level_widgets` 现在顺手
+还原 stylesheet/font）；产品的 250ms 延迟建窗格**保留不改**：真机
+`QT_QPA_PLATFORM=offscreen python main.py` 跑 10s × 3 次全部正常，日志里
+`延迟创建 pane2-4: 476.3ms` 正常完成 —— 先确认产品在真实环境下是否真坏，再决定要不要
+改产品代码。
+
+**四条可复用的教训**：
+
+1. `skipif sys.platform == "win32"` 的用例在 Windows 开发机上**一次都不会执行**。
+   本仓新加的那条 open_with Linux 用例就是带着一条写错的断言上机才发现的（4 个
+   desktop 候选却断言 `["desktop", "builtin"]`）。Linux-only 用例必须在真机上跑一遍才算完。
+2. 崩点在别的对象上时，**先拿崩率再下因果结论**：`eventFilter` 里那个 `RuntimeError`
+   是真的、也确实该兜（异常不该逃进 C++ 派发栈），但它不是那次段错误的原因。
+   防护仍然保留，并用结构守卫用例钉住“所有 `eventFilter` 必须已包装”
+   （`tests/test_lifecycle.py`）—— 因为崩点会漂，逐条盯住不现实。
+3. 拿“插打印”排查时记得 pytest 默认 `--capture=fd` 会吞掉**通过用例**的 stderr；要么
+   加 `-s`，否则打印白打（探针变体一度显示 0/12，其实是打印拖慢时序造成的 Heisenbug）。
+4. `gdb` / `-v` / 插打印都会把 250ms 定时器推到别的事件批次里，**观测工具本身改变复现
+   率**；所以崩率必须在同一条命令行下反复跑。宿主的 apport 虽然有 crash 文件，但
+   `ulimit -c` 为 0、`StacktraceTop` 为空，想拿 C++ 栈得先解决核心转储与符号。
+
 
 ---
 

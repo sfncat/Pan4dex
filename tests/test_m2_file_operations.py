@@ -386,7 +386,14 @@ class TestDropActionRules:
         os.makedirs(other)
         assert same_volume([good, os.path.join(other, "b.txt")], other) is True
 
-    def test_a_second_drive_is_not_the_same_volume(self, tmp_path, monkeypatch):
+    def test_a_path_on_another_device_is_not_the_same_volume(self, tmp_path, monkeypatch):
+        r"""`st_dev` 不同 = 不同卷（Windows 上是盘号，Linux 上是设备号）
+
+        旧写法用“路径以 `E:` 开头”伪造另一个卷，但 `same_volume` 会先做
+        `dirname(abspath(src))`：POSIX 上 `E:\media\a.mp4` 是个相对目录名，前缀被抹掉，
+        假卷根本没造出来（Linux 真机上实测就报 `True is False`）。改为在路径里放
+        一段能原样穿过 abspath/dirname 的标记。
+        """
         from core import file_operations as fo
         real_stat = os.stat
 
@@ -394,16 +401,19 @@ class TestDropActionRules:
             def __init__(self, dev):
                 self.st_dev = dev
 
+        MARK = "other-device"
+        other_dev = real_stat(str(tmp_path)).st_dev + 7
+
         def fake_stat(path, *a, **k):
-            # 假装 E:\ 是另一个卷（Windows 上 st_dev 就是盘号）
-            return _St(99) if str(path).lower().startswith("e:") else real_stat(path)
+            # 带标记的那一条假装在另一台设备上
+            return _St(other_dev) if MARK in str(path) else real_stat(path)
 
         monkeypatch.setattr(fo.os, "stat", fake_stat)
-        assert fo.same_volume([r"E:\media\a.mp4"], str(tmp_path)) is False
+        far = os.path.join(str(tmp_path), MARK, "media", "a.mp4")
+        assert fo.same_volume([far], str(tmp_path)) is False
         assert fo.same_volume([str(tmp_path / "a.mp4")], str(tmp_path)) is True
         # 多个源要逐个比：只查第一个会把跨卷的一批说成同卷
-        assert fo.same_volume([str(tmp_path / "a.mp4"), r"E:\media\b.mp4"],
-                              str(tmp_path)) is False
+        assert fo.same_volume([str(tmp_path / "a.mp4"), far], str(tmp_path)) is False
 
     def test_unc_paths_are_never_reported_as_same_volume(self, tmp_path, monkeypatch):
         """Windows 上不同共享的 st_dev 可能同为 0，会把两个共享误判成同卷

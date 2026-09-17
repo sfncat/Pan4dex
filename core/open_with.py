@@ -28,6 +28,7 @@ logger = logging.getLogger("pan4dex.open_with")
 
 MAX_ENTRIES = 15                 # 候选上限：注册表里同类型可能挂着几十项
 CACHE_TTL = 300.0                # 秒；装/卸软件后最多 5 分钟就出现在列表里
+FALLBACK_TOPUP_BELOW = 5         # 已枚举候选少于此数才补内置常用程序（两端同一规则）
 
 # 命令行里的"文件位置"占位符（`%1` / `%L` / `%U` / `%*` …）。本模块一律剥掉它们并把
 # 目标路径追加到末尾 —— 少数程序要求参数在前，那种情况由调用点不适用，实践中极少
@@ -344,7 +345,7 @@ def _list_windows(ext: str) -> list:
     # 4) 兜底：注册表这条链上候选太少时，按类型补几个常用程序
     #    （没装的自然被 App Paths 查不到而跳过）。不补到前几项里：那会把
     #    “画图/Word”挂到 .txt 上，反而比资源管理器多一堆不相干项。
-    if len(apps) < 5:
+    if needs_builtin_topup(len(apps)):
         for exe_name in _windows_fallback(ext):
             full = _win_app_paths(exe_name)
             if full and os.path.exists(full):
@@ -386,6 +387,16 @@ def _windows_fallback(ext: str) -> tuple:
     if not kind:
         return ("notepad.exe", "code.exe")
     return _WINDOWS_FALLBACK[kind]
+
+
+def needs_builtin_topup(count: int) -> bool:
+    """系统枚举出的候选太少时，才补内置常用程序
+
+    两端必须同一条规则：Windows 上早就有这道门（`_list_windows` 第 4 步），Linux 上
+    原来是**无条件**追加，结果在真机桌面环境里 `.desktop` 已经给出 gedit/mousepad 了
+    还再补一串内置项，菜单比 Windows 多出一堆不相干条目（见 `docs/linux-gap.md`）。
+    """
+    return count < FALLBACK_TOPUP_BELOW
 
 
 # ---------------------------------------------------------------- Linux
@@ -473,12 +484,14 @@ def _list_linux(ext: str, file_path: str) -> list:
             apps.append(OpenWithApp(name=name, exe=exe,
                                     args=tuple(argv[1:]), source="desktop"))
 
-    # 内置候选兜底（桌面集成缺失/没装 shared-mime-info 时仍然有东西可选）
+    # 内置候选兜底（桌面集成缺失/没装 shared-mime-info 时仍然有东西可选）。
+    # 与 Windows 同一道门：`.desktop` 已经给出足够候选就不再往下堆。
     from config.file_associations import _LINUX_APP_CANDIDATES
-    for exe_name in _LINUX_APP_CANDIDATES.get(ext, ()):
-        exe = shutil.which(exe_name)
-        if exe:
-            apps.append(OpenWithApp(name=exe_name, exe=exe, source="builtin"))
+    if needs_builtin_topup(len(apps)):
+        for exe_name in _LINUX_APP_CANDIDATES.get(ext, ()):
+            exe = shutil.which(exe_name)
+            if exe:
+                apps.append(OpenWithApp(name=exe_name, exe=exe, source="builtin"))
     return apps
 
 

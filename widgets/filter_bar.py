@@ -33,6 +33,8 @@ from PyQt6.QtWidgets import (
     QWidget, QHBoxLayout, QLineEdit, QLabel, QComboBox,
 )
 
+from core.lifecycle import safe_event_filter
+
 
 # ---------- 值解析 ----------
 
@@ -434,6 +436,7 @@ class FilterBar(QWidget):
         # 样式由全局 ThemeManager 统一管理（不在此硬编码颜色，避免主题切换时显示异常）
 
     # ---- 事件 ----
+    @safe_event_filter
     def eventFilter(self, obj, event):
         """Esc：清除并让窗格收起筛选栏（ QLineEdit 内部会先吃掉 Esc，故用过滤器）"""
         if obj is self.filter_edit and event.type() == QEvent.Type.KeyPress:

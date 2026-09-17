@@ -159,3 +159,83 @@ def test_delayed_pane_creation_on_dead_host_is_silent(qapp, qtbot):
     quad._create_remaining_panes()             # 旧写法：在这一步抛 RuntimeError
     # `sip.delete` 不清 `__dict__`，所以死包装器上的 Python 属性仍可读（实测）
     assert quad._all_panes_created is False, "已销毁的宿主不该被标成建好了"
+
+
+# ---------------------------------------------------------------- 事件过滤器
+
+def test_a_raising_event_filter_returns_false_instead_of_garbage():
+    """过滤器里的异常必须在 Python 侧咽掉
+
+    `bool QObject::eventFilter()` 的返回值由 sip 写入：Python 抛异常时它根本没被
+    赋值，Qt 读到的是未初始化的随机值（当成“已过滤”就会跳过焦点/销毁通知的清理）。
+    Linux 真机的实测链：拆窗时 `Pane.eventFilter` 碰已删的 `tree_view` 抛
+    RuntimeError → 几毫秒后新建窗格的 `pane_tabs.addTab` 段错误。
+    """
+    from core.lifecycle import safe_event_filter
+
+    @safe_event_filter
+    def boom(self, obj, event):
+        raise RuntimeError("wrapped C/C++ object of type FileListTreeView has been deleted")
+
+    class Host:
+        eventFilter = boom
+
+    assert Host().eventFilter(None, None) is False
+
+
+def test_safe_event_filter_keeps_the_original_return_values():
+    """包上去了不能改变语义：过滤为真还是真，返回 None（没过滤）仍算假"""
+    from core.lifecycle import safe_event_filter
+
+    @safe_event_filter
+    def yes(self, obj, event):
+        return True
+
+    @safe_event_filter
+    def no(self, obj, event):
+        return None
+
+    class Host:
+        pass
+
+    Host.yes = yes
+    Host.no = no
+    assert Host().yes(None, None) is True
+    assert Host().no(None, None) is False
+
+
+def test_the_filter_warning_is_logged_once_per_kind(caplog):
+    """拆一棵子树时每个事件都会踩到这里，不限频就会把日志冲干净"""
+    import logging
+
+    from core.lifecycle import safe_event_filter
+
+    @safe_event_filter
+    def boom(self, obj, event):
+        raise RuntimeError("gone")
+
+    class Host:
+        eventFilter = boom
+
+    h = Host()
+    with caplog.at_level(logging.WARNING, logger="pan4dex.lifecycle"):
+        for _ in range(5):
+            assert h.eventFilter(None, None) is False
+    warned = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warned) == 1, f"同一类异常只该报一次，实际 {len(warned)} 次"
+
+
+def test_every_widget_event_filter_in_the_app_is_wrapped():
+    """结构守卫：任何一个 `eventFilter` 都必须套上 `safe_event_filter`
+
+    这一类缺陷不需要每个过滤器各自踩一次才被发现：逃进 C++ 派发栈的异常
+    崩溃点不在自己这里（Linux 实测崩在下一个窗格的 `addTab`），报上来的栈完全看不
+    到真凶，所以直接钉住“全部已包装”。
+    """
+    from core.main_window import MainWindow
+    from core.pane import Pane
+    from widgets.filter_bar import FilterBar
+
+    for cls in (Pane, MainWindow, FilterBar):
+        fn = cls.__dict__["eventFilter"]        # 取本类自己定义的那个（不是继承来的）
+        assert hasattr(fn, "__wrapped__"), f"{cls.__name__}.eventFilter 没被 safe_event_filter 包住"

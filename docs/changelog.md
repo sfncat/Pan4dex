@@ -19,6 +19,65 @@
 
 ## 更新记录
 
+### v1.9.014 — 2026-09-17（开发分支 dev/shell-behavior-smb-perf）
+
+> 第一节在真机上跑 Linux：用户给了 linux230（Ubuntu 24.04，两个已挂的 CIFS 共享）。目标不是
+> 「把 Linux 测一遍」，而是把之前所有记作 ❓ 待真机 的推断逐条换成实测结论。
+> 结果：**Linux 单进程全量 572 passed / 6 skipped**（定序 1 次 + 随机序 3 次），与 Windows 的
+> 575+3 总数吻合；第一轮摸上来的 6 个失败全部定性，只有 1 个是产品错。
+
+#### 🐛 缺陷修复：Linux 的「打开方式」会被内置候选刷满
+- `_list_linux` **无条件**在末尾追加内置候选（gedit / mousepad / kate …），而 Windows 的
+  `_list_windows` 是「候选太少才补」（`len(apps) < 5`）。在 `.desktop` 丰富的桌面上，
+  一个 `.txt` 的菜单会被系统真候选 + 一整串不相干的内置名字一起刷满
+- 抽成两端共用的**一道门**：`FALLBACK_TOPUP_BELOW = 5` + `needs_builtin_topup(count)`，
+  Windows 与 Linux 两个调用点都改用它 —— 这类「两端同一规则」的差异靠约定保不住，只能共一份
+
+#### 🛡️ 稳定性：事件过滤器不准把异常丢进 C++ 派发栈
+- 新增 `core/lifecycle.py: safe_event_filter`，三个 `eventFilter`（`Pane` / `MainWindow` /
+  `FilterBar`）全部包上：`bool QObject::eventFilter()` 的返回值是 C++ 侧的 `bool`，Python 抛
+  异常时 sip 不给它赋值，Qt 就在一个未定义的值上继续派发。拆子树时的「对象一半已死」是常态
+  而不是 bug，所以一律按“没过滤”放行，同一类异常只报一次 WARNING
+- **但不声称它治好了崩**：崩率 12/12 → 11/12，因果假设当场被真机推翻（见下）
+
+#### 🧪 测试：拖了很久的随机段错误定性为「用例泄漏全局态」
+- `test_m4_theme` 在 Linux 上单跑必崩（基线 8/10 → 本轮 12/12），栈落在 `Pane.init_ui` /
+  `_setup_model`，而且**崩点会漂** —— 同一件事在 Windows 上就是那个一直没能定位的偶发 AV
+- 五组 A/B 定住真相：换发布用的 PyQt 6.9.1 照样 12/12（不是旧 Qt 的 bug）；窗格改同步创建
+  **0/12**；延迟改 0ms（仍走定时器）12/12 —— 载体是「从定时器回调里建控件树」；最后
+  真正的引信是 **`TestThemeManager.test_apply_theme` 把 qdarkstyle `setStyleSheet` 到
+  `QApplication` 上从不还原**，之后的用例全在「样式表缓存挂着已销毁控件」的状态下建树
+- `tests/conftest.py` 的 `_reap_top_level_widgets` 现在在每个用例边界**还原 app 级
+  stylesheet / font**（它本来就在收拢顶层窗口与后台线程，同一类问题同一处修）；
+  崩率降到 host 1/12、release Qt 3/12，**整场全量 4 次 0 崩**；残余数据记在
+  `docs/gotchas.md` 第 44 条继续观察，不再占用主线
+- 产品的 250ms 延迟建窗格**保留不改**：真机 `python main.py` offscreen 跑 10s × 3 次全部
+  正常（日志里 `延迟创建 pane2-4: 476.3ms`）—— 先确认产品在真实环境里是否真坏，再决定改不改
+- 新增 `tests/test_lifecycle.py` 事件过滤器一节 4 项（异常→`is False`、返回值语义不变、
+  同类异常只 WARNING 一次、**结构守卫**「三个过滤器必须已包装」）+ 1 项 Linux 专属
+  `open_with` 门控用例 + 1 项收藏夹反斜杠姓名用例
+
+#### 🧪 测试：把写死在用例里的 Windows 假设拿掉（真机报出来的 4 条）
+- `same_volume` 的跳卷用例用 `tmp_path` + 假 `st_dev` 重建：旧写法拿 `E:\` 当“另一个设备”，
+  而 POSIX 上 `dirname(abspath())` 会把 `E:` 当前缀抹掉；旧版只在 stat 失败时巧合地绿
+- 收藏夹姓名用例：POSIX 上 `\` 不是路径分隔符，`a\b` 是一个完整文件名；新增专测钉住
+  （不在这里拆 Windows 的规则，只拆“两端共用”的假设）
+- `_check_app_exists` 探针改找 `cmd` / `sh`（Ubuntu 24.04 只有 `python3`，没有 `python`）；
+  `_NoWindow` 测试替身补 `_is_appimage` / `_run_executable`（`or` 短路在 Linux 上必求
+  `_is_appimage`，替身不完整会把真 `Pane` 的启动路径读进测试）；两个 SyntaxWarning
+  （docstring 里的 `\` / `\m`）改 `r"""`
+
+#### 📝 文档
+- `docs/gotchas.md` 第 44 条：app 级全局态泄漏伪装成产品随机崩溃（含完整 A/B 表与四条
+  可复用教训：Linux-only 用例必须真机跑、先拿崩率再下因果结论、`--capture=fd` 吞探针输出、
+  观测工具本身改变复现率）
+- `docs/linux-gap.md`：§5.1 「摸底盘」从待办改为已执行并记录实测结果；§4 的四行「本机 0 次 /
+  根本没被选中」逐条换成真机结论；§2.1 / §2.4 两行的 ❓ 降级为 offscreen 已验（桌面会话仍待 L12）
+- `docs/architecture.md`：`lifecycle.py` 行补 `safe_event_filter`（含“包上不保证不崩”的边界）、
+  `open_with.py` 行补两端共用兜底门
+
+---
+
 ### v1.9.013 — 2026-09-17（开发分支 dev/shell-behavior-smb-perf）
 
 #### 🐛 缺陷修复：网络/慢盘保护在 Linux 上被整体关掉（`docs/linux-gap.md` 第二批）

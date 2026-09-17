@@ -189,10 +189,15 @@ class TestFileAssociations:
         assert result is False
     
     def test_check_app_exists(self):
-        """测试检查应用是否存在"""
-        # python 应该存在
-        assert self.associations._check_app_exists("python") is True
-        
+        """测试检查应用是否存在
+
+        探针对象不能写死 `python`：Ubuntu 24.04 上只有 `python3`（`python` 要么
+        没装、要么是个不可执行的 Microsoft Store 别名），真机上直接报 False。
+        改用两边必然存在的 Shell 解释器。
+        """
+        probe = "cmd" if os.name == "nt" else "sh"
+        assert self.associations._check_app_exists(probe) is True
+
         # 不存在的不存在
         assert self.associations._check_app_exists("nonexistent_app_xyz") is False
 

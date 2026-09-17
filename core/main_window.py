@@ -47,7 +47,7 @@ class CollapsibleTabBar(QTabBar):
         return super().minimumSizeHint()
 
 from core.pane import Pane
-from core.lifecycle import call_later
+from core.lifecycle import call_later, safe_event_filter
 from widgets.preview_panel import PreviewPanel
 from widgets.bookmark_sidebar import BookmarkSidebar
 from widgets.tree_sidebar import TreeSidebar
@@ -916,8 +916,9 @@ class MainWindow(QMainWindow):
         """Ctrl+Shift+Tab：上一个标签页"""
         self._cycle_tab(-1)
     
+    @safe_event_filter
     def eventFilter(self, obj, event):
-        """事件过滤器：检测标签栏空白区域双击"""
+        """事件过滤器：检测标签栏空白区域双击（异常不准逃进 C++ 派发栈）"""
         if obj == self.tab_widget and event.type() == event.Type.MouseButtonDblClick:
             tab_bar = self.tab_widget.tabBar()
             pos = event.position().toPoint()

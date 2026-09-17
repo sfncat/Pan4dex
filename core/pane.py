@@ -24,7 +24,7 @@ from core.file_operations import (
     describe_removal, move_target_inside_sources, same_volume, decide_drop_action)
 from core.file_op_runner import FileOpRunner
 from core import archive_ops
-from core.lifecycle import call_later
+from core.lifecycle import call_later, safe_event_filter
 
 
 # 共享剪贴板：所有窗格（含四窗格/双窗格）共用一份，
@@ -277,8 +277,14 @@ class Pane(QWidget):
         self.activated.emit(self)
         super().focusInEvent(a0)
     
+    @safe_event_filter
     def eventFilter(self, obj, event):
-        """事件过滤器"""
+        """事件过滤器
+
+        拆窗时的中间态（子控件已删、窗格本体还在）会在这里碰到 RuntimeError，
+        所以整个函数被 `safe_event_filter` 兜住：那个返回值是 C++ 侧的 `bool`，
+        异常逃出去时 sip 不会给它赋值，Qt 就在一个未定义的值上继续派发。
+        """
         # 只记录有意义的事件，过滤掉高频的 paint/move/resize 等
         et = event.type()
         

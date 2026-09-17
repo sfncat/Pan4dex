@@ -390,19 +390,34 @@ class TestNoUseBeforeLocalImport:
         import core.pane as pane_mod
 
         opened = []
+        launched = []
         if sys.platform == "win32":
             monkeypatch.setattr(pane_mod.os, "startfile", lambda p: opened.append(p))
         monkeypatch.setattr(shutil, "which", lambda name: None)   # 不真的去起 xdg-open/gio
 
         class _NoWindow:
+            """只带 `open_file` 真的会碰到的成员（Linux 真机上补出来的两个）
+
+            平台判断那一行在 Linux 上是 `os.access(X_OK) or self._is_appimage(...)`，
+            `or` 左边为假时**一定会**求右边，所以代理对象缺 `_is_appimage` 就会
+            AttributeError —— 漏了这个成员等于在测一条不存在的入口。
+            """
             def window(self):
                 return None            # 没有主窗口 → 跳过文件关联分支
+
+            _is_appimage = staticmethod(pane_mod.Pane._is_appimage)
+
+            def _run_executable(self, path):
+                launched.append(path)
+                return True
 
         f = tmp_path / "doc.txt"
         f.write_text("x", encoding="utf-8")
         pane_mod.Pane.open_file(_NoWindow(), str(f))    # 修复前：UnboundLocalError: sys
         if sys.platform == "win32":
             assert opened == [str(f)]
+        # 普通文本文件（无执行位）不得被当成程序直接运行 —— 两端都适用
+        assert launched == []
 
     def test_no_function_uses_a_name_before_its_local_import(self):
         """全仓静态检查：函数内在 local import 之前使用了与模块级同名的名字"""

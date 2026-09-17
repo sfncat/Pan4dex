@@ -34,7 +34,8 @@ def qapp():
 
 @pytest.fixture(autouse=True)
 def _reap_top_level_widgets(qapp):
-    """每个测试结束后立即销毁残留的顶层窗口（含 MainWindow），并收拢后台线程。
+    """每个测试结束后立即销毁残留的顶层窗口（含 MainWindow）、还原 app 级全局
+    状态、并收拢后台线程。
 
     测试里创建的窗口如果不显式销毁，C++ 对象会一直活到后面的测试，删除时机由
     GC 决定；而 `QApplication.setStyleSheet`（应用主题，MainWindow 的 0ms 延迟
@@ -45,6 +46,8 @@ def _reap_top_level_widgets(qapp):
     未派发的投递带着 Python 对象残留到下个测试（甚至残留到进程退出），实测会偶发
     fast-fail / AV；在每个测试边界上把它们排空，就不留竞态窗口。
     """
+    sheet_before = qapp.styleSheet()
+    font_before = qapp.font()
     yield
     import gc
     from PyQt6 import sip
@@ -58,6 +61,15 @@ def _reap_top_level_widgets(qapp):
             sip.delete(w)
         except RuntimeError:
             pass
+    # app 级 stylesheet / font 也是跨用例泄漏的全局状态。Linux 实测：
+    # `TestThemeManager.test_apply_theme` 把 qdarkstyle 设上就不管了，之后窗口在
+    # “样式表缓存里还挂着已销毁控件”的状态下建树 —— 窗格改成定时器创建后 12/12
+    # 段错误（构造函数里同步建则 0/12）。放在拆窗之后、派发事件之前：
+    # `setStyleSheet` 会 polish 全部存活控件，那时窗口已收干净。
+    if qapp.styleSheet() != sheet_before:
+        qapp.setStyleSheet(sheet_before)
+    if qapp.font() != font_before:
+        qapp.setFont(font_before)
     drain_background_pool()
     QCoreApplication.processEvents()
     # 把“由循环 GC 决定时机的 Qt 对象销毁”集中到这个安全点：业务对象之间有

@@ -56,8 +56,15 @@ def test_argv_for_strips_placeholders_and_appends_path_last():
 
 
 def test_exe_stem_falls_back_to_input_when_no_filename():
-    assert open_with._exe_stem(r"C:\Windows\System32\notepad.exe") == "notepad"
+    # 路径用 `/` 分隔：`ntpath` 与 `posixpath` 都认，同一份断言两端能跑
+    # （写死 `C:\Windows\...` 在 Linux 上会得到整串 —— `\` 不是 POSIX 分隔符）
+    assert open_with._exe_stem("/opt/bin/notepad.exe") == "notepad"
     assert open_with._exe_stem("") == ""
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="只有 Windows 用反斜杠路径")
+def test_exe_stem_on_a_windows_path():
+    assert open_with._exe_stem(r"C:\Windows\System32\notepad.exe") == "notepad"
 
 
 def test_windows_fallback_is_type_aware():
@@ -91,6 +98,18 @@ def test_mime_matches_supports_exact_and_wildcard():
 def test_desktop_exec_argv_strips_field_codes_and_separator():
     assert open_with._desktop_exec_argv("editor --lang en -- %f") == [
         "editor", "--lang", "en"]
+
+
+def test_builtin_topup_gate_is_one_rule_for_both_platforms():
+    """「候选太少才补内置常用程序」这道门两端共用一份
+
+    Windows 上早就有这道门（写死在 `_list_windows` 里），Linux 上原来是
+    无条件追加；抽成 `needs_builtin_topup` 后两边不可能各自漂移。
+    """
+    assert open_with.needs_builtin_topup(0) is True
+    assert open_with.needs_builtin_topup(open_with.FALLBACK_TOPUP_BELOW - 1) is True
+    assert open_with.needs_builtin_topup(open_with.FALLBACK_TOPUP_BELOW) is False
+    assert open_with.needs_builtin_topup(open_with.MAX_ENTRIES) is False
 
 
 # ---------------------------------------------------------------- list_apps 护栏
@@ -139,6 +158,7 @@ def test_list_apps_swallows_enumeration_failure(monkeypatch):
 
 # ---------------------------------------------------------------- Linux 集成
 
+
 def test_linux_lists_desktop_entries_matching_mime(tmp_path, monkeypatch):
     apps_dir = tmp_path / "share" / "applications"
     apps_dir.mkdir(parents=True)
@@ -158,8 +178,55 @@ def test_linux_lists_desktop_entries_matching_mime(tmp_path, monkeypatch):
 
     monkeypatch.setattr(open_with, "_linux_data_dirs",
                         lambda: [str(tmp_path / "share")])
+    # 内置兜底候选在真机上是命中的（gnome-text-editor / mousepad 确实装了），
+    # 这条用例要盯的是 `.desktop` 的筛选，把兜底清空再说
+    monkeypatch.setattr("config.file_associations._LINUX_APP_CANDIDATES", {})
     names = [a.name for a in open_with._list_linux(".txt", "note.txt")]
     assert names == ["文本编辑器"], "只列 MIME 匹配且可见的项"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="走的是 Linux 的 .desktop 枚举分支")
+def test_linux_skips_builtin_topup_once_desktop_entries_are_enough(tmp_path, monkeypatch):
+    """`.desktop` 已给出足够候选时不再补内置项（Linux 真机跑出来的差异）
+
+    一台富桌面上 `text/plain` 能匹配到一堆 `.desktop`，旧代码还在后面接着追
+    gedit/mousepad/kate …；这些程序的本机名字只有内置列表知道，列出来就是一屏
+    不相干项。Windows 上不会这样，所以这道门得两端共用。
+    """
+    apps_dir = tmp_path / "share" / "applications"
+    apps_dir.mkdir(parents=True)
+    exe = tmp_path / "e.bin"
+    exe.write_text("#!/bin/sh\n")
+    exe.chmod(0o755)
+
+    def write_entries(n):
+        for old in apps_dir.glob("*.desktop"):
+            old.unlink()
+        for i in range(n):
+            (apps_dir / f"e{i}.desktop").write_text(
+                f"[Desktop Entry]\nType=Application\nName=编辑器{i}\n"
+                f"Exec={exe}\nMimeType=text/plain;\n", encoding="utf-8")
+
+    def fake_which(name, *a, **k):
+        if name == "builtin-editor":
+            return str(exe)
+        return name if os.path.isabs(name) and os.path.exists(name) else None
+
+    monkeypatch.setattr(open_with, "_linux_data_dirs",
+                        lambda: [str(tmp_path / "share")])
+    monkeypatch.setattr(open_with.shutil, "which", fake_which)
+    monkeypatch.setattr("config.file_associations._LINUX_APP_CANDIDATES",
+                        {".txt": ["builtin-editor"]})
+
+    write_entries(open_with.FALLBACK_TOPUP_BELOW)
+    sources = [a.source for a in open_with._list_linux(".txt", "note.txt")]
+    assert sources == ["desktop"] * open_with.FALLBACK_TOPUP_BELOW, "够数了还补内置项"
+
+    # 删到门槛以下：没装桌面集成时仍然要有东西可选，兜底必须回来
+    write_entries(open_with.FALLBACK_TOPUP_BELOW - 1)
+    sources = [a.source for a in open_with._list_linux(".txt", "note.txt")]
+    assert sources == ["desktop"] * (open_with.FALLBACK_TOPUP_BELOW - 1) + ["builtin"], \
+        "候选不足时兜底没回来（或回来后顺序变了）"
 
 
 # ---------------------------------------------------------------- Windows 真注册表冒烟

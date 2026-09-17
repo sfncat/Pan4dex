@@ -70,7 +70,7 @@
 |---|---|---|---|---|---|---|
 | 6.1 | 文件类型-应用映射 | P1 | 🟢 | 关联表 JSON 读写（无独立设置界面；改默认走 6.3 的「并设为默认」或系统对话框） | JSON 配置 | file_associations.py |
 | 6.2 | 默认打开行为 | P1 | 🟢 | 双击文件按配置打开，未配置用 xdg-open | subprocess + xdg-open | file_associations.py open_file() |
-| 6.3 | 右键打开方式 | P2 | 🟢 | 单选文件右键列出本机可开的程序，选一项只打开这一次；默认项带「（默认）」标记 | `core/open_with.py` 枚举本机注册信息（win 注册表 / Linux `.desktop` / macOS `Info.plist`）+ TTL 缓存，候选延迟到 `aboutToShow` 才枚举；Windows 额外提供系统「打开方式」对话框 | open_with.py + pane._add_open_with_submenu() / _fill_open_with_menu()；tests/test_open_with.py（24 项） |
+| 6.3 | 右键打开方式 | P2 | 🟢 | 单选文件右键列出本机可开的程序，选一项只打开这一次；默认项带「（默认）」标记 | `core/open_with.py` 枚举本机注册信息（win 注册表 / Linux `.desktop` / macOS `Info.plist`）+ TTL 缓存，候选延迟到 `aboutToShow` 才枚举；“候选太少才补内置常用程序”为两端共用的一道门（`needs_builtin_topup()`，v1.9.014）；Windows 额外提供系统「打开方式」对话框 | open_with.py + pane._add_open_with_submenu() / _fill_open_with_menu()；tests/test_open_with.py（27 项，含 3 项 Linux 专属 —— 只能在真机上算测到） |
 | 6.4 | 配置持久化 | P1 | 🟢 | 配置保存到 ~/.config/pan4dex/ | QSettings + JSON | file_associations.py |
 
 ## 7. 终端集成
@@ -270,6 +270,7 @@
 | 2026-09-16 | 20.3（搜索结果批量操作）实现并转 🟢：抽出 `core/file_op_runner.py`（后台线程 + 进度框 + 冲突询问 + 取消，窗格与搜索共用一份），结果列表加多选/右键菜单/键位与复制到、移动到、删除；新增 12.19（结果列表键位）与 20.5 🟡（搜索窗口仍为模态）。顺带修两个读代码发现的真 bug：进度对话框从未弹起（`Qt.TextInteractionFlags` 不存在的 AttributeError 被 `except` + `debug` 静默咽掉）、首次同名冲突的用户决策被静默丢弃（`invokeMethod` 拿不到槽返回值） | - |
 | 2026-09-16 | **补记**：v1.9.012（2.11 拖放默认动作对齐资源管理器）当时只加了 2.11 行、漏写本表记录。改动是 `file_operations.same_volume()` / `decide_drop_action()` 一份判据供窗格与 `move()` 共用，Ctrl/Shift 强制 > 同目录树内拖动 > `possibleActions` 硬约束 > 同卷移动/跨卷复制 | - |
 | 2026-09-17 | Linux 第二批「判据去 `nt` 化」：新增 `core/mounts.py` 作为全仓唯一的「是不是慢位置」判据（POSIX 挂载表 + 最长前缀 + fstype），删掉两份 `if os.name != 'nt': return False` 的短路 —— 网络/慢盘的保守策略（不挂 watcher、重复导航强制重扫、删除文案说「永久删除」）在 Linux 上**第一次真的生效**；新增 3.5（判据）与 8.5（首启动默认收藏读 XDG `user-dirs.dirs`）；2.4 / 12.10 的文案分类改为两端都算。顺带修一个测试套件的假红：`test_date_presets` 的时刻写在 `parametrize` 参数表里（收集期求值），跨午夜跑必红 | - |
+| 2026-09-17 | v1.9.014：**第一节在 Linux 真机（linux230 / Ubuntu 24.04）跑全量** —— 单进程 572 passed / 6 skipped（定序 1 + 随机 3），与 Windows 575+3 总数吻合。修一条产品错：`_list_linux` 无条件追加内置候选，与 Windows 的「太少才补」不一致 → 抽成两端共用的 `needs_builtin_topup()`（6.3 实现情况已补）；其余 5 个失败都是用例里写死的 Windows 假设（`E:\` 当异设备、`\` 当分隔符、找 `python` 而不是 `python3`、测试替身不完整）。那个拖很久的随机段错误定性为**用例泄漏 app 级 `stylesheet`**（`tests/conftest.py` 现在每个边界还原全局态），崩率 12/12 → 1/12，整场 0 崩；产品的 250ms 延迟建窗格经真机确认无误，保留 | - |
 
 ---
 

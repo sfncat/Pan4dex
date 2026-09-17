@@ -69,7 +69,7 @@
 
 | 能力 | Windows 现状 | Linux 现状 | 判定 | 证据 |
 |---|---|---|---|---|
-| 启动、四窗格、主题、快捷键 | 正常 | 同一套代码 | 🟡 未真机 | 全仓平台分支不影响这些路径 |
+| 启动、四窗格、主题、快捷键 | 正常 | 同一套代码 | 🟡 offscreen 真机已跑通（v1.9.014：全量 572 passed、`main.py` 能起），**桌面会话待 L12** | 全仓平台分支不影响这些路径；§5.1 |
 | 崩溃日志 / faulthandler | 有（+ MessageBoxW 弹窗） | 有（写 `~/.config/pan4dex/logs`） | 🟢 | `main.py:24-50`、`main.py:100-190` |
 | 释放控制台 | `FreeConsole()` | 直接 return（本来就无台） | 🟢 | `main.py:369-382` |
 | 应用菜单注册 | 不适用 | `--install-menu` + `scripts/install-linux.sh` 两条路 | 🟡 未真机 | `main.py:265-366` |
@@ -129,7 +129,7 @@
 | 校验和 / 批量改名 / 文件比较 / 目录同步 / 分割合并 / 时间戳 | 纯 Python | 平台无关 | 🟢 | `widgets/*.py`（这些文件里平台分支数 = 0） |
 | 内嵌终端 | `pywinpty`（winpty 层，历史上脆弱） | `pty` + `fcntl` + `termios` 真 PTY；zsh 补齐噪声用临时 `ZDOTDIR` 关掉 | 🟢 **Linux 路径更正** | `widgets/terminal_panel.py:143-245,341-362` |
 | 终端内自动切英文输入法 | IMM/TSF 双路径 | 无（IBus/fcitx 不管） | 🟡 可接受降级 | `widgets/terminal_panel.py:37-127,684-707` |
-| 右键「打开方式」列表 | 注册表 ProgID / OpenWithList MRU | `freedesktop .desktop` 解析 + mime 匹配 + Exec 字段码剥离 | 🟡 **本机零覆盖**（见 §4） | `core/open_with.py:393-493`（`_list_linux` 在 `:432-484`） |
+| 右键「打开方式」列表 | 注册表 ProgID / OpenWithList MRU | `freedesktop .desktop` 解析 + mime 匹配 + Exec 字段码剥离；内置兜底改为**与 Windows 共用一道门**（v1.9.014） | 🟡 枚举逻辑真机已测满（`test_open_with` 23 passed），界面里的观感仍待 L5 | `core/open_with.py`（`needs_builtin_topup()` / `_list_linux`）|
 | 系统「打开方式」对话框 | `ShellExecute` 系统对话框 | 无对应 API，只能用自研列表 | 🟡 设计如此 | `core/open_with.py:114-121` |
 | 「设为默认应用」 | 只写我们自己的 `associations.json` | 同（不碰 `xdg-mime default`） | 🟢 两端一致 | `core/pane.py:1155-1200` |
 
@@ -170,17 +170,17 @@
 | 事实 | 数字 | 影响 |
 |---|---|---|
 | 在 Linux 上会被 `skipif` 跳过的用例 | 6 项（回收站文案 2、注册表 2、Windows 命令行规则 1、Windows `Preferred DropEffect` 1） | 这些本来就是 Windows 专属，合理 |
-| 在 Windows 上被跳过的 Linux 专属用例 | **0 项** | Linux 代码不是「测了但跳过」，而是**根本没被选中** |
-| `core/open_with.py` 的 Linux 枚举 `_list_linux`（`:432-484`，约 50 行 + 3 个纯函数辅助） | 本机执行 0 次：`tests/test_open_with.py:33-35` 按宿主平台决定替换哪个函数，只有 `_parse_desktop_file` / `_mime_matches` / `_desktop_exec_argv` 三个纯函数在 Windows 上被直接测到 | 真实桌面环境里的目录优先级、`Exec` 里的 `%f/%U`、mime-info 缓存路径都没验过 |
-| `PtyBackend` 的 Linux 分支（`pty`/`fcntl`/`termios`） | 本机 0 次（Windows 走 winpty） | 终端在 Linux 上「代码看着最正」，但完全没有自动化证据 |
-| `same_volume()` 的正向跨挂载点判定 | 本机只验过「同卷/UNC/stat 失败」三种，Linux 的挂载点边界没验 | 拖放动作决策在 Linux 上的正确性靠推断 |
+| 在 Windows 上被跳过的 Linux 专属用例 | 3 项（v1.9.014 新增） | Windows 开 **575 passed / 3 skipped**，Linux 开 **572 / 6**，总数 578 吻合 —— 但这三项用例在 Windows 上**从未执行过**，只能在真机上算测到 |
+| `core/open_with.py` 的 Linux 枚举 `_list_linux` | ✅ v1.9.014 起在 linux230 真机上测满（`test_open_with` 23 passed），并在真机上抓出它与 Windows 不一致的兜底门控 | 真实桌面环境里的目录优先级、`Exec` 里的 `%f/%U`、mime-info 缓存路径都验过了；剩下的是界面里的观感（L5） |
+| `PtyBackend` 的 Linux 分支（`pty`/`fcntl`/`termios`） | 本机 0 次（Windows 走 winpty）；真机上 `test_terminal_lifecycle` 13 passed | 终端在 Linux 上“代码看着最正”已有自动化证据，但 vim/htop 这类全屏程序的实测仍在 L6 |
+| `same_volume()` 的正向跨挂载点判定 | ✅ v1.9.014：真机（两个 CIFS 挂载 + 一堆系统挂载）上 `test_m2_file_operations` 38 passed；用例不再写死 `E:\` | 拖放动作决策在 Linux 上的正确性不再靠推断；真挂载上的耗时仍在 L2/L4 |
 | 「慢位置」判定的 Linux 矩阵 | ✅ v1.9.013 起在 Windows 主机上测满（`tests/test_mounts.py`，82 项：喂真实 `/proc/mounts` 文本验解析/匹配/类型三段） | 这类判据拆成纯函数后，“Linux 专属”不等于“必须 Linux 才能测”；剩下要真机的只有「挂载表本身长什么样」 |
 
 ---
 
 ## 5. 需要 Linux 真机才能定论的问题（验收清单）
 
-### 5.1 一条命令先摸底盘
+### 5.1 一条命令先摸底盘 —— ✅ v1.9.014 已在真机跑完（linux230 / Ubuntu 24.04）
 
 ```bash
 # 仓库根目录
@@ -188,8 +188,19 @@ python3 -m venv .venv && .venv/bin/pip install -e . pytest pytest-qt pytest-rand
     pillow-heif    # ← 后两个 pyproject 里有，但 Docker 镜像缺，先补齐再测
 QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest -q --tb=short 2>&1 | tail -30
 ```
-要记录：红/跳各多少、有没有 `Linux` 上特有的失败（尤其 `test_open_with.py`、
-`test_pane_dir_store.py` 的 watcher 用例、`test_terminal_lifecycle.py`）。
+
+**实测结果**（宿主 `~/venv-pan4dex`，发布用的 PyQt 6.9.1 / Qt 6.9.2）：单进程全量
+**572 passed / 6 skipped**，定序 1 次 + 随机序 3 次全部 exit 0（与 Windows 的
+575+3 总数相等，差异全是 `skipif` 的平台门控）。`python main.py` 在 offscreen 下
+能起，日志里 `延迟创建 pane2-4: 476.3ms` 正常完成。
+
+第一轮摸上来的 6 个失败已全部定性（4 条是用例写死了 Windows 假设、1 条是
+`_list_linux` 的内置兜底与 Windows 不一致、1 条是测试替身不完整），另有一条
+`test_m4_theme` 段错误被证实是**用例之间泄漏 app 级 stylesheet** 造成的（非产品缺陷，
+见 `docs/gotchas.md` 第 44 条）。单跑该模块仍有 1-3/12 的残余崩率（整场跑不复现），
+继续观察。
+
+要记的永远不止红/跳：红的那些**是不是产品错**，只有真机能回答（本轮 6 条里只有 1 条是）。
 
 ### 5.2 手工 GUI 验收（按风险从高到低）
 

@@ -140,12 +140,29 @@ def test_v1_becomes_v2_only_after_an_edit(cfg):
 
 
 def test_entries_without_a_name_fall_back_instead_of_vanishing(cfg):
-    write_raw(cfg, [{"path": r"C:\a\b"}, {"type": "group", "children": []}])
+    # 路径按本机分隔符造：兜底名走的是 `os.path.basename`，在 POSIX 上
+    # `C:\a\b` 是一个**合法的文件名**（反斜杠不是分隔符），拿 Windows 路径来断言
+    # 会得到整串 —— Linux 真机上实测就是这条差异（不是产品错，是用例假设错）
+    tail = "b"
+    path = rf"C:\a\{tail}" if os.name == "nt" else f"/srv/data/{tail}"
+    write_raw(cfg, [{"path": path}, {"type": "group", "children": []}])
 
     st = BookmarkStore(config_dir=cfg)
 
     assert [(n["type"], n["name"]) for n in st.root["children"]] == [
-        ("link", "b"), ("group", "未命名分组")]
+        ("link", tail), ("group", "未命名分组")]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX 上反斜杠是普通文件名字符")
+def test_posix_does_not_split_a_name_on_backslashes(cfg):
+    r"""记录一条刻意的取舍：POSIX 上不把 `\` 当分隔符
+
+    就算收藏夹里躺着 Windows 形状的路径（导出后跨系统导入会出现），也按本机规则
+    取名字，不做「顺手兼容反斜杠」—— 那会把 Linux 上真叫 `a\b` 的目录切错。
+    """
+    write_raw(cfg, [{"path": r"C:\a\b"}])
+
+    assert BookmarkStore(config_dir=cfg).root["children"][0]["name"] == r"C:\a\b"
 
 
 def test_one_bad_record_does_not_take_the_rest(cfg):
