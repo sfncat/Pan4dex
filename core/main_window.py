@@ -5,7 +5,8 @@ import logging
 from PyQt6.QtWidgets import (
     QMainWindow, QTabWidget, QSplitter, QWidget, 
     QVBoxLayout, QStatusBar, QMenuBar, QTabBar,
-    QToolBar, QLabel, QApplication, QMenu, QDialog
+    QToolBar, QLabel, QApplication, QMenu, QDialog,
+    QLineEdit, QPlainTextEdit, QTextEdit, QComboBox
 )
 from PyQt6.QtCore import Qt, QSettings, QSize, QPoint, pyqtSignal
 from PyQt6.QtGui import QAction, QKeySequence, QCursor
@@ -1013,13 +1014,17 @@ class MainWindow(QMainWindow):
             pane.delete_selected()
 
     def on_rename(self):
-        """重命名操作"""
+        """重命名操作（F2）"""
+        if self._focus_is_text_input():
+            return
         pane = self.target_pane()
         if pane:
             pane.rename_selected()
 
     def on_filter_current_dir(self):
         """唤出当前窗格的筛选栏（Ctrl+F）：只筛当前目录，全盘搜索走「高级搜索」"""
+        if self._focus_is_text_input():
+            return        # 正在路径栏/终端里打字：Ctrl+F 不该被抢走
         pane = self.target_pane()
         try:
             if pane is not None and hasattr(pane, "show_filter_bar"):
@@ -1043,7 +1048,9 @@ class MainWindow(QMainWindow):
             pane.tree_view.selectAll()
 
     def on_refresh(self):
-        """刷新操作"""
+        """刷新操作（F5）"""
+        if self._focus_is_text_input():
+            return
         pane = self.target_pane()
         if pane:
             pane.refresh_current()
@@ -1070,12 +1077,16 @@ class MainWindow(QMainWindow):
 
     def on_new_folder(self):
         """新建文件夹"""
+        if self._focus_is_text_input():
+            return
         pane = self.target_pane()
         if pane:
             pane.new_folder()
 
     def on_new_file(self):
         """新建文件"""
+        if self._focus_is_text_input():
+            return
         pane = self.target_pane()
         if pane:
             pane.new_file()
@@ -1105,6 +1116,32 @@ class MainWindow(QMainWindow):
                 # 拿不到 sip、或握着的不像 QObject（测试替身）：按旧行为用它，别把快捷键卡死
                 return pane
         return self.current_pane()
+
+    def _focus_is_text_input(self) -> bool:
+        """焦点是否在「可输入文本」的控件里（路径栏、内嵌终端、筛选栏…）
+
+        菜单 QAction 的 `shortcutContext` 默认是 `WindowShortcut`：只要焦点在本窗口内，
+        快捷键就**先于**焦点控件触发，除非控件用 `ShortcutOverride` 把键抢回来。Qt 的编辑
+        控件只抢标准编辑键，实测（v1.9.017 在本机量了一轮）：
+
+        - `Delete` / `Ctrl+A` / `Ctrl+L` 安全（路径栏自己吃了，不会打到文件上）
+        - **`F2` / `F5` / `F7` / `F8` / `Ctrl+F` 会被抢走** —— 在路径栏里打字按 F7 就当场
+          建一个文件夹；在内嵌终端里按 F2 会重命名窗格里选中的文件（而 vim/htop 真的用
+          功能键）。所以这几个入口先问一句“焦点在不在文本框里”
+
+        不用 `setShortcutContext(WidgetWithChildrenShortcut)`：那些动作的宿主是整个主窗口，
+        窗格里的文件列表也得能触发它们。
+
+        注意 `focusWidget()` 对**可编辑 QComboBox** 报的是 combo 本身而不是它的 `lineEdit()`
+        （路径栏就是这个结构：`lineEdit().focusProxy()` 反指回 combo），所以必须单独认一档
+        `isEditable()` —— 只看 QLineEdit 的话，路径栏这道门形同虚设。
+        """
+        widget = QApplication.focusWidget()
+        if isinstance(widget, (QLineEdit, QPlainTextEdit, QTextEdit)):
+            return True
+        if isinstance(widget, QComboBox):
+            return widget.isEditable()   # 只读下拉框不是在打字，别顺手废掉快捷键
+        return False
 
     def _target_pane_path(self):
         """收藏夹「添加到当前目录」取的路径：跟随 `target_pane()`，窗格没了返 None"""

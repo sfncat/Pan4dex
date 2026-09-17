@@ -148,6 +148,7 @@
 | 12.18 | F7/F8、F4、Ctrl+B、Ctrl+Shift+T、Ctrl+Q | P2 | 🟢 | 新建文件夹/新建文件、终端面板、收藏夹、目录树、退出 | 菜单 QAction | main_window.py |
 | 12.19 | 搜索结果列表键位 | P2 | 🟢 | Enter 打开、Ctrl+Shift+Enter 打开所在文件夹、Del 回收站、Shift+Del 永久删除、Ctrl+C 复制**路径文本** | 在 `QTreeWidget.keyPressEvent` 里接（不接 Enter 会被对话框的“自动默认按钮”抢走 → 变成关闭对话框） | widgets/advanced_search.py `SearchResultTree`；tests/test_search_results.py |
 | 12.20 | 快捷键与侧边栏点击的**落点** | P1 | 🟢 | 启动后**一次都还没点过窗格**时，Ctrl+L / Delete / F2 / F5 / Ctrl+C·X·V / Ctrl+A / 导航 / 新建 / 目录树与收藏夹点击仍作用于当前页默认窗格；焦点跑到预览面板、终端、侧边栏上时仍归**最后激活那个窗格**（与资源管理器一致） | `MainWindow.target_pane()` 一份规则，16 个入口 + 收藏夹 `current_dir_provider` 全部走它。旧写法直接判 `if self._active_pane:`（只在窗格真拿到焦点时才有值）→ Linux/X11 上初始焦点不在窗格，那批快捷键全部静默失灵；Windows 首屏焦点正好在 pane1 所以多年看不出来（v1.9.016 真机才发现，见 gotchas 第 47 条） | core/main_window.py `target_pane()`；tests/test_pane_target.py 8 项 |
+| 12.21 | 快捷键的**作用面**（焦点在文本控件里时不动文件系统） | P1 | 🟢 | 焦点在路径栏 / 内嵌终端 / 筛选栏时，F2（重命名）、F5（刷新）、F7（新建文件夹）、F8（新建文件）、Ctrl+F（筛选）**不作用于窗格**；焦点在文件列表时这些键照常工作 | `MainWindow._focus_is_text_input()` 守卫五个入口。菜单 QAction 默认 `shortcutContext = WindowShortcut`，抢在焦点控件之前；Qt 的编辑控件只抢标准编辑键（所以 `Delete` / `Ctrl+A` / `Ctrl+L` 安全，未给 `on_delete` 加门，但有用例钉住这个前提）。可编辑 `QComboBox` 的 `focusWidget()` 是 combo 本身而不是 `lineEdit()`，所以单独认一档 `isEditable()`（gotchas 第 49 条）| core/main_window.py `_focus_is_text_input()`、`on_path_entered()` 回焦；tests/test_shortcut_focus_scope.py 20 项 |
 
 ## 13. 右键菜单
 

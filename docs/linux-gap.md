@@ -39,6 +39,12 @@
    落点只认 `_active_pane`、`StartupWMClass` 与 `WM_CLASS` 对不上）—— 两条的共同点是
    **只有在 X11 桌面上真的跑一次才能发现**，Windows 上的首屏焦点与 `AppUserModelID` 把它们
    各自掩盖了很多年。L5/L13/L15 已过，L11 拿到硬证据，L2/L3/L4/L9/L10/L12 仍未定论。
+8. **v1.9.017：第二轮验收又撞出两条，但同一类：“焦点去哪了”**。Ctrl+L 导航后焦点卡在路径栏，
+   于是后续方向键 / `Menu` / Delete 全打在输入框上 —— 它一次拦住了三轮自动化验收，而每轮的
+   第一反应都是“xdotool 没送到”（四段截图**字节数完全相同**看起来就是“按键丢了”而不是
+   “程序里什么也没发生”）；同时量出一个产品级缺陷：**`WindowShortcut` 会把 F2/F5/F7/F8/Ctrl+F
+   从文本控件（包括内嵌终端）手里抢走**。L8 本轮已闭环，L3/L5/L10 仍待第三轮（p41），
+   但现在已知“不是工具问题”，阻塞源已消除。见 gotchas 第 49 条。
 
 ---
 
@@ -79,7 +85,7 @@
 | 启动、四窗格、主题、快捷键 | 正常 | 同一套代码 | 🟡 offscreen 真机已跑通（v1.9.014：全量 572 passed、`main.py` 能起），**桌面会话待 L12** | 全仓平台分支不影响这些路径；§5.1 |
 | 崩溃日志 / faulthandler | 有（+ MessageBoxW 弹窗） | 有（写 `~/.config/pan4dex/logs`） | 🟢 | `main.py:24-50`、`main.py:100-190` |
 | 释放控制台 | `FreeConsole()` | 直接 return（本来就无台） | 🟢 | `main.py:369-382` |
-| 应用菜单注册 | 不适用 | `--install-menu` + `scripts/install-linux.sh` 两条路 | 🟢 **v1.9.016 真机验通**（`--install-menu` 生成的 `.desktop` 已装到 `~/.local/share/applications/`，`update-desktop-database` 无报错）；两条路的字段现由用例钉住一致 | `main.py:_desktop_entry_text`；`tests/test_desktop_entry.py` 7 项 |
+| 应用菜单注册 | 不适用 | `--install-menu` + `scripts/install-linux.sh` 两条路 | 🟢 **v1.9.016 真机验通**（p38 第 7 段）：`--install-menu` 生成的 `.desktop` 里 `Exec` 指向正在跑的产物、`Icon=pan4dex`、`StartupWMClass=Pan4dex`，与窗口 `WM_CLASS = "pan4dex-1.9.016-linux", "Pan4dex"` 的**第二项完全一致**，文件无 CR；两条路的字段由用例钉住一致 | `main.py:_desktop_entry_text`；`tests/test_desktop_entry.py` 6 项 |
 | 任务栏分组 / 图标归属 | `AppUserModelID` | ~~`StartupWMClass=pan4dex` 与 WM_CLASS 对不上~~ → **v1.9.016 修**：Qt 在 X11 写 `(argv[0] basename, applicationName())`，匹配键只能取 `APP_NAME`（`Pan4dex`，区分大小写，不能取每版都变的产物名）；仍**未调 `setDesktopFileName`**（GNOME 上按启动器归类还差这一步） | 🟡 匹配键已对齐（真机 `xprop` 比对过），“图标真的分组了”仍待肉眼确认 | `main.py:_desktop_entry_text`、`packaging/pan4dex.desktop`；见 gotchas 第 48 条 |
 | 原生图标兜底 | `WM_SETICON` | 同一个函数在 Linux 抛异常被 `except` 吞掉 → 每次启动 2 条 `Native icon apply failed` warning | ⚠️ 小坑（该加平台守卫） | `main.py:64-97`、`main.py:533-600` |
 | 中文输入 | — | 启动时探测 fcitx5/ibus 设 `QT_IM_MODULE`；但 **Qt6 wheel 不带输入法插件**，需外部提供 `platforminputcontexts` 插件 | 🟡 依赖打包 | `main.py:511-520`、`scripts/build-linux-docker.sh:59-62` |
@@ -184,7 +190,7 @@
 | 事实 | 数字 | 影响 |
 |---|---|---|
 | 在 Linux 上会被 `skipif` 跳过的用例 | 6 项（回收站文案 2、注册表 2、Windows 命令行规则 1、Windows `Preferred DropEffect` 1） | 这些本来就是 Windows 专属，合理 |
-| 在 Windows 上被跳过的 Linux 专属用例 | 4 项（v1.9.014 新增 3 项 + v1.9.015 的只读安装目录复刻 1 项） | Windows 开 **585 passed / 4 skipped**，Linux（已提交状态、定序与随机各一次）**583 / 6**，总数 589 吻合 —— 但 Linux 专属那几项在 Windows 上**从未执行过**，只能在真机上算测到。v1.9.016 再加 15 项（落点 8 + `.desktop` 7）后 Windows 为 **599 / 4**，Linux 侧待推码后复测 |
+| 在 Windows 上被跳过的 Linux 专属用例 | 4 项（v1.9.014 新增 3 项 + v1.9.015 的只读安装目录复刻 1 项） | Windows 开 **585 passed / 4 skipped**，Linux（已提交状态、定序与随机各一次）**583 / 6**，总数 589 吻合 —— 但 Linux 专属那几项在 Windows 上**从未执行过**，只能在真机上算测到。v1.9.016 再加 14 项（落点 8 + `.desktop` 6）后 Windows 为 **599 / 4**，Linux（已提交状态 72de75a，定序与随机各一次）**597 / 6**（差 2 项 = Windows 专属的 skipif 门控，新用例本身两端全绿）。v1.9.017 再加 20 项（快捷键作用面）后 Windows 为 **619 / 4**，Linux 侧待推码后复测 |
 | `core/open_with.py` 的 Linux 枚举 `_list_linux` | ✅ v1.9.014 起在 linux230 真机上测满（`test_open_with` 23 passed），并在真机上抓出它与 Windows 不一致的兜底门控 | 真实桌面环境里的目录优先级、`Exec` 里的 `%f/%U`、mime-info 缓存路径都验过了；剩下的是界面里的观感（L5） |
 | `PtyBackend` 的 Linux 分支（`pty`/`fcntl`/`termios`） | 本机 0 次（Windows 走 winpty）；真机上 `test_terminal_lifecycle` 13 passed | 终端在 Linux 上“代码看着最正”已有自动化证据，但 vim/htop 这类全屏程序的实测仍在 L6 |
 | `same_volume()` 的正向跨挂载点判定 | ✅ v1.9.014：真机（两个 CIFS 挂载 + 一堆系统挂载）上 `test_m2_file_operations` 38 passed；用例不再写死 `E:\` | 拖放动作决策在 Linux 上的正确性不再靠推断；真挂载上的耗时仍在 L2/L4 |
@@ -229,19 +235,28 @@ offscreen 下能起，日志里 `延迟创建 pane2-4: 189.2ms` 正常完成。
 >
 > 还翻案了一条：终端 dock 关掉后 shell 不退**是有意设计**（`TerminalPanel.closeEvent` 只隐藏、
 > `shutdown()` 才杀），读 docstring 才知道 —— 真问题被改写为“Ctrl+Q 退出后 shell 是否退”。
+>
+> **v1.9.017 第二轮（p38）**：先用“不再点窗格、只靠 Ctrl+L 导航”自证了落点修复（shot 71：
+> pane1 真到了 `/home/kali/pics`），然后第 2/3/5/6 段**全部无动作** —— 四段截图字节数完全相同。
+> 个中原因不是 `xdotool`，而是**导航后焦点留在路径栏输入框**（shot 71 里看得见文本光标），
+> 后续按键全打在输入框上；顺手量出了 `WindowShortcut` 抢走 F2/F5/F7/F8/Ctrl+F 这个真缺陷。
+> 两条均已在 v1.9.017 修（gotchas 第 49 条），**L3/L5/L10 本身仍待第三轮（p41）**，
+> 但阻塞源已消除 —— 下一轮不能再拿“工具问题”当结论。L6/L8 本轮已定论（见下表）。
+> 附带发现：上一轮误关的「修改日期」列**跨重启仍在**（列状态持久化，本身不是缺陷，
+> 但它是验收里的干扰项）。
 
 | # | 验什么 | 判定标准 | 状态（最新一轮） |
 |---|---|---|---|
 | L1 | 能不能构建出来 | 不再需要手工造 `resources/tools/*`，干净检出能直接出包；产物 `--version`/`--info` 正常、能常驻 | ✅ **v1.9.015 已过**：3.10 与 3.11 两个镜像都验过，offscreen 下能常驻 |
 | L2 | 挂 SMB（gvfs 或 CIFS）后浏览 | 打开 1 万个条目的共享目录：不闪、能取消、切走窗格不继续扫；**当前必然表现为按本地目录处理**（§2.4 ⚠️） | ❓ **未做**：230 上两个 CIFS 共享都太小（photos 13 项 / backupSpaceInJKJ 2 项），而**不在用户 NAS 上造 1 万个文件**；要么用 `big100k` 当本地基线 + 在真挂载上只验“判据命中”（ln6） |
-| L3 | 回收站 | 本地删除进 Trash；gvfs 上删除的**文案**是否骗人（说「移到回收站」实则失败） | ❓ **待复跑**：p36 那一轮删除按键被模态搜索对话框吞了，回收站当时根本不存在；p38 第 5/6 段重做（CIFS 只看文案不确认 + 本地真删） |
+| L3 | 回收站 | 本地删除进 Trash；gvfs 上删除的**文案**是否骗人（说「移到回收站」实则失败） | ❓ **仍未拿到证据，但阻塞源已查明**：p38 第 5/6 段 Delete 没弹确认框、`~/.local/share/Trash/files/` 根本不存在 —— 因为**导航后焦点卡在路径栏**（v1.9.017 已修），不是删除坏了。第三轮（p41）重做：CIFS 只看文案不确认 + 本地真删 |
 | L4 | 拖放 | 从 Nautilus/Dolphin 拖入：同分区应移动、跨分区应复制；源端不允许 move 时不得删源 | ❓ **未做**：跨程序拖拽需要真鼠标轨迹（`xdotool` 能做但极不稳），放到有人在现场的那一轮 |
-| L5 | 打开方式 | 右键 → 打开方式：候选列表是否来自 `.desktop`、mime 匹配是否正确、`%f/%U` 是否被剥掉 | 🟡 **v1.9.016 部分过**：真机右键菜单 13 项齐全（含「打开方式▶」，子菜单能展开）；候选内容是否真来自 `.desktop` 且能启动成功待第二轮（`Menu` 键 + 方向键进子菜单，已写进 p38） |
-| L6 | 内嵌终端 | `$SHELL`、vim/htop 全屏程序、resize、关闭窗口后 shell 是否真退 | 🟡 **v1.9.016 查清一半**：起的确实是 `/usr/bin/zsh`；“关 dock 后 shell 不退”经读 `closeEvent` docstring 确认是**有意设计**（不是缺陷），剩下的是「Ctrl+Q 退出后残留多少 shell」与 vim/resize |
+| L5 | 打开方式 | 右键 → 打开方式：候选列表是否来自 `.desktop`、mime 匹配是否正确、`%f/%U` 是否被剥掉 | 🟡 **v1.9.016 部分过**：真机右键菜单 13 项齐全（含「打开方式▶」，子菜单能展开）；候选内容是否真来自 `.desktop` 且能启动成功待第三轮（p38 第 2/3 段因焦点卡在路径栏，`Menu` 键根本没弹菜单 —— v1.9.017 已修）|
+| L6 | 内嵌终端 | `$SHELL`、vim/htop 全屏程序、resize、关闭窗口后 shell 是否真退 | 🟡 **v1.9.016 查清一半，本轮补上后半**：起的确实是 `/usr/bin/zsh`；“关 dock 后 shell 不退”经读 `closeEvent` docstring 确认是**有意设计**；Ctrl+Q 后应用进程归 0，退出前 shell 子进程 1 个，`pgrep -u kali -x zsh` 的 4 个残留 etime 均为 01:29:54（**早于本次测试的会话 shell**，不是泄漏）。剩下：vim/htop 与 resize（注意：v1.9.017 之前 F2/F5/F7/F8 会被窗口抢走，这一类用例必须在新版上跑）|
 | L7 | 图标与缩略图 | 确认「所有文件同图标」的实际观感；SVG/PNG/HEIC 缩略图是否出得来（qsvg 插件、pillow-heif） | 🟡 **v1.9.016 前半已确认**：非目录文件确实共用同一个通用图标（观感与 Windows 一致地差，属第三批的 `QFileIconProvider` 范围）；缩略图与 HEIC 未试（造 HEIC 靶子需要 `pillow_heif`，230 宿主 venv 里没有） |
-| L8 | 桌面集成 | `--install-menu` 后应用菜单出现图标；GNOME 任务栏分组/窗口图标是否正确（WM_CLASS 那条） | 🔴→🟡 **v1.9.016 修了匹配键**：真机 `xprop` 给出 `WM_CLASS = "pan4dex-1.9.015-linux", "Pan4dex"`，而已装启动器写 `StartupWMClass=pan4dex`（`Exec` 还指着 0.9.645）→ 两项全错。现在 `StartupWMClass={APP_NAME}` 并被用例钉住不随产物名变；“图标真的分组了”仍待在桌面上肉眼看 |
+| L8 | 桌面集成 | `--install-menu` 后应用菜单出现图标；GNOME 任务栏分组/窗口图标是否正确（WM_CLASS 那条） | ✅ **v1.9.016 修匹配键 + 本轮真机闭环**：`--install-menu` 生成的 `StartupWMClass=Pan4dex` 与运行窗口的 `WM_CLASS = "pan4dex-1.9.016-linux", "Pan4dex"` **第二项完全一致**，`Exec` 指着正跑的产物、文件无 CR。仍待的只剩 GNOME 上“图标真的分组了”的目视确认（230 是 Xfce，且未调 `setDesktopFileName`）|
 | L9 | 全盘搜索 | 搜 `/` 或 `/home`：`/proc`、`/sys` 是否被扫、耗时、能否中途取消 | ❓ **未做**：p36 只验到“空搜索模式不给搜”的告警（对话框模态，后续按键全被吞）；搜索本身能不能中途停止仍未看 |
-| L10 | 权限 | 右键「加运行权限」后从界面能否看出生效了（现在看不出，因为没有权限列） | ❓ **待复跑**：p37 那次没命中菜单项（`stat -c %A` 前后都是 `-rw-rw-r--`）；p38 第 3 段改用 `Menu` 键 + 方向键，并补上“界面看不出”本身就是结论（第三批补权限列） |
+| L10 | 权限 | 右键「加运行权限」后从界面能否看出生效了（现在看不出，因为没有权限列） | ❓ **本轮未命中（根因已定位）**：p38 第 3 段用 `Menu` 键 + 方向键，但菜单根本没弹 —— 焦点卡在路径栏（v1.9.017 已修），chmod 前后 4 个文件都是 `-rw-rw-r--`。「界面看不出变化」本身就是已下定的结论（第三批补权限列）；第三轮（p41）重做 |
 | L11 | 中文输入 | ✅ v1.9.015 查清一半：PyQt6 wheel **自带的就是 `libibusplatforminputcontextplugin.so` + compose**，且它们确实进了 onefile 包（运行时解包目录里可见）→ ibus 桌面预期可用。fcitx5 的 Qt6 插件不在 wheel 里（只在系统的 `qt6/plugins/platforminputcontexts/`），而冻结后的查找路径只认包内 —— 这正是 `resources/tools/qt6-im-plugins` 该装的东西，而它仍不在仓库。剩下：ibus/fcitx5 两种桌面上真打一次字。<br>🟡 **v1.9.016 再加一条硬证据**：跑着的冻结产物 `/proc/<pid>/maps` 里**没有任何** fcitx/ibus/platforminputcontext 模块（系统里确实有 `libfcitx5platforminputcontextplugin.so`）→ 与上面的推断吻合。注意：ssh 起的进程环境里根本没有 `QT_IM_MODULE`（桌面会话才有），所以“真打一次字”必须在 `:10` 会话内做 |
 | L12 | Wayland vs X11 | 两种会话下都跑一遍：高 DPI、拖拽、`QT_QPA_PLATFORM` 自动选择 | ❓ **只剩 Wayland 半边**：230 上没有 Wayland 会话（`XDG_SESSION_TYPE=x11`），本轮只覆盖了 X11 + xrdp；高 DPI 在 96dpi 下也没得验 |
 | L13 | 大目录内存/CPU | 10 万条目目录（Linux 上 ext4/xfs 很常见）下列表与排序 | ✅ **v1.9.016 已过**：自造 `/home/kali/big100k`（10 万项，枚举本身 9.7s）后子进程 RSS ≈ 105MB、%CPU 6.0，列表能出、界面能继续操作（Down×30 不卡）。另 1 万项目录 0.6s 建完，导航无感 |

@@ -1011,12 +1011,17 @@ class Pane(QWidget):
             self.path_bar.set_tabs_button_checked(True)
 
     def on_path_entered(self, path: str):
-        """路径栏输入处理"""
+        """路径栏输入处理（回车与从下拉里选一项都走这里）"""
         import os
         if os.path.isdir(path):
             self.navigate_to(path)
+            # 导航完把焦点交回文件列表（资源管理器就是这个行为）。留在路径栏里时，
+            # 接下来的方向键 / Delete / F2 / Ctrl+A 全部打在输入框上 —— 用户必须先拿
+            # 鼠标点一下列表才能继续，而“看起来焦点就在窗口里”让人完全猜不到。
+            # Linux 真机 GUI 验收里这个坑拦住了三轮自动化验收（按键送不到列表）。
+            self.tree_view.setFocus()
         else:
-            # 路径无效，恢复原路径
+            # 路径无效，恢复原路径（焦点留在路径栏，方便接着改）
             self.path_bar.set_path(self.current_path)
     
     def _on_item_activated(self, index):

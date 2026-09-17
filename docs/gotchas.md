@@ -983,6 +983,44 @@ Qt 在 X11 上写的 `WM_CLASS` 是 `(argv[0] 的 basename, applicationName())`�
 - 模态对话框（`dialog.exec()`）会吞掉之后**所有**按键 —— 验收脚本每一步都要显式 Escape/关闭
   再确认界面回到了预期状态，否则后面的结论全是假的
 
+### 49. `WindowShortcut` 会抢走文本控件的功能键，而 `focusWidget()` 对可编辑 combo 报的是 combo
+
+两件事合在一起，花了三轮验收才拆开（v1.9.017）：
+
+**一、菜单 QAction 的快捷键默认 `shortcutContext = WindowShortcut`**：只要焦点在本窗口内，
+快捷键就**先于**焦点控件触发，除非控件自己用 `ShortcutOverride` 把键抢回去。Qt 的编辑控件
+只抢标准编辑键，实测边界（Windows / Qt 6.11，写探针量的，不是推的）：
+
+- 安全：`Delete`、`Ctrl+A`、`Ctrl+L`（`QLineEdit` 自己吃了：删字符 / 全选文本）
+- **被抢走**：`F2`（重命名）、`F5`（刷新）、`F7`（新建文件夹）、`F8`（新建文件）、`Ctrl+F`（筛选）
+
+内嵌终端 `TerminalView` 是 `QPlainTextEdit`，同一批键在终端里也会打到窗格上 —— 而 vim / htop /
+micro 真的用功能键。所以症状不是“删错文件”（那个反而显眼），而是**在路径栏里打字时顺手改了
+文件系统**，普通用户根本说不清是怎么发生的。修法是在入口前加一道 `_focus_is_text_input()`，
+而不是改 `shortcutContext`：那些动作的宿主是整个主窗口，窗格里的列表也得能触发。
+
+不能只看“按了没反应”就判“Qt 不抢”：要钉这件事，得监听 **`QAction.triggered`**（与处理函数
+无关），它能证明“键确实被窗口拿走了”；否则守卫看起来就是凭空多出来的。
+
+**二、`QApplication.focusWidget()` 对可编辑 `QComboBox` 报的是 combo 本身**，不是它的
+`lineEdit()`（路径栏就是这个结构），而且 `lineEdit().focusProxy()` 还反指回 combo：
+
+```
+line.hasFocus()               = True     ← 键盘输入真的归 lineEdit
+QApplication.focusWidget()    = QComboBox
+lineEdit().focusProxy()       = QComboBox   ← 两者分叉，不是“焦点控件就是它”
+```
+
+所以 `isinstance(focusWidget(), (QLineEdit, QPlainTextEdit, QTextEdit))` 在路径栏上**静默返
+False**，而测试的前提断言 `line.hasFocus()` 仍是 True —— 全红方向不会告诉你原因，只能专门
+打一次 `type(QApplication.focusWidget())`。这类“两个 API 对焦点的说法不一致”的地方，
+判据必须包含 combo（认 `isEditable()`，只读下拉框不是在打字）。
+
+**三、同一个现场背后的第三条**：Ctrl+L 打完路径回车后焦点留在输入框（`on_return_pressed` 只
+emit、`on_path_entered` 不动焦点），于是接下来的方向键 / `Menu` / Delete 全部打在输入框上。
+自动化验收里它表现为“四段截图字节数完全相同”，极易误判为“按键没送进来”（真的误判了两轮）。
+区别办法：看截图里**输入框有没有文本光标**；或先按一次 `Tab`/点一下列表再重跑，现象消失就是它。
+
 
 ---
 

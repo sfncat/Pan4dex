@@ -19,6 +19,70 @@
 
 ## 更新记录
 
+### v1.9.017 — 2026-09-17（开发分支 dev/shell-behavior-smb-perf）
+
+> 真机 GUI 验收第二轮（p38）。这一轮的目的是把上一轮的变量消掉：v1.9.016 修好落点后，
+> 验收脚本不再需要「先点一下窗格」才能继续。落点问题确实自证修好了 —— 而剩下的段
+> 全挂在了另一个同样只在 X11 上才暴露的地方：**焦点去哪了**。
+
+#### 🐛 缺陷修复：Ctrl+L 导航后焦点卡在路径栏，后续按键全部送不到文件列表
+- **真机表现**：p38 第 2/3/5/6 段（方向键选中、`Menu` 开上下文菜单、Delete、加运行权限）
+  **全部无动作** —— 四段截图字节数完全相同（320204），chmod 前后 4 个文件都还是
+  `-rw-rw-r--`，`~/.local/share/Trash/` 干脆不存在。第一反应还是「xdotool 没送到」，
+  直到看 71 号截图才发现路径栏末尾有**文本光标**
+- **根因**：`PathBar.on_return_pressed` 只 emit 信号、`Pane.on_path_entered` 导航完不动焦点，
+  所以回车之后焦点还在输入框里 —— 接着按的方向键 / Delete / `Menu` 全打在输入框上。
+  Windows 上同样存在，只是没人会先按 Ctrl+L 再去操作列表，所以一直藏着
+- **修法**：`on_path_entered` 导航成功后 `tree_view.setFocus()`（资源管理器就是这个行为）。
+  **路径无效时不抢焦点** —— 那时用户要接着改输入框里的字
+
+#### 🐛 缺陷修复：打字时功能键被窗口快捷键抢走，会当场改动文件系统
+量「哪些键真的被抢」（两个一次性探针，Windows offscreen / Qt 6.11）后得到的边界：
+
+| 焦点在路径栏输入框 / 内嵌终端时 | 结果 |
+|---|---|
+| `Delete` / `Ctrl+A` / `Ctrl+L` | 安全：`QLineEdit` 自己用 `ShortcutOverride` 抢回去了 |
+| `F2` / `F5` / `F7` / `F8` / `Ctrl+F` | **被窗口快捷键抢走** —— 打字时按 F7 当场建一个文件夹 |
+
+内嵌终端 `TerminalView` 是 `QPlainTextEdit`，所以同一批键在终端里也会打到窗格上，
+而 vim / htop / micro 真的用功能键 —— 表面现象是「终端里功能键没送进 shell」。
+- **修法**：`MainWindow._focus_is_text_input()` 一道门，加在 `on_rename` / `on_refresh` /
+  `on_new_folder` / `on_new_file` / `on_filter_current_dir` 五个入口开头。`on_delete` **不加**
+  （实测安全），但用例里写明「哪天 Qt 不抢了这里必须补上同一道门」
+- 不用 `setShortcutContext(WidgetWithChildrenShortcut)`：那些动作的宿主是整个主窗口，
+  窗格里的文件列表也得能触发
+- **过程中撞到的测试坑**（写进 gotchas 第 49 条）：第一版判定只认 `QLineEdit`，5 条用例
+  全红 —— 因为 `QApplication.focusWidget()` 对**可编辑 `QComboBox`** 报的是 combo 本身而不是
+  它的 `lineEdit()`（`lineEdit().focusProxy()` 反指回 combo），而前提断言 `line.hasFocus()`
+  仍是 True，光看现象完全猜不到。现在单独认一档 `isEditable()`（只读下拉框不是在打字，
+  不能顺手废掉快捷键）
+- 新增 `tests/test_shortcut_focus_scope.py` 20 项（判定本身 5 + 「打字时跳过」5 + 反向半
+  「焦点在列表时快捷键照常工作」5 + 「键确实被窗口抢走」3 + 导航后回焦 2）。
+  四条变异验证全部被抓住：守卫整个取消 → 10 红；
+  退回「只认 QLineEdit」的写法 → 7 红；守卫反向（永远拦死）→ 7 红；撤掉回焦 → 1 红
+- Windows 全量两轮（定序 + 随机）**619 passed / 4 skipped**：v1.9.016 的 599 + 本次 20，
+  总数吻合；Linux 侧待推码后在 230 上复测
+
+#### ✅ 真机第二轮补上的证据
+- **落点修复自证**：shot 71 里 pane1 已导航到 `/home/kali/pics`（4 个文件、状态栏「0 个
+  目录, 4 个文件」），全程**一次都没点过窗格** → `target_pane()` 在真机生效
+- **L8 闭环**：`--install-menu` 生成 `Exec=.../pan4dex-1.9.016-linux`、`Icon=pan4dex`、
+  `StartupWMClass=Pan4dex`，正在跑的窗口 `WM_CLASS = "pan4dex-1.9.016-linux", "Pan4dex"`
+  → **第二项完全一致**，且文件里无 CR。状态从 🟡 升 🟢
+- **L6 后半**：Ctrl+Q 后应用进程 0（正常退出），退出前 shell 子进程 1 个；`pgrep -u kali -x zsh`
+  的 4 个残留 etime 均为 01:29:54（**本次测试之前就有的会话 shell**，不是泄漏）
+- **附带发现（未处理）**：pane1 只剩 名称/大小/类型 三列 —— 上一轮 p37 误关的「修改日期」列
+  **跨重启持久化**了。列状态存盘本身是对的，但真机验收里它是个干扰项，记进待办
+- 崩溃日志分段标记 7 条，无新增崩溃
+
+#### 📝 文档
+- `docs/gotchas.md` 新增第 49 条（`WindowShortcut` 抢走文本控件的 F 系键 + `focusWidget()`
+  对可编辑 combo 报的是 combo）
+- `docs/feature-checklist.md` 新增 12.21（快捷键的作用面）
+- `docs/linux-gap.md` §0 新增第 8 条，§5.2 的 L3 / L5 / L8 / L10 换成本轮结论（L8 → ✅）
+
+---
+
 ### v1.9.016 — 2026-09-17（开发分支 dev/shell-behavior-smb-perf）
 
 > Linux 真机 GUI 验收第一轮（`docs/linux-gap.md` §5.2 的 L1–L15，在 linux230 的 xrdp
@@ -53,7 +117,7 @@
   `packaging/pan4dex.desktop` 模板同步改为 `Pan4dex`
 - `scripts/install-linux.sh` 生成启动器时加一道 `tr -d '\r'`：从 Windows 工作树或 zip 带来的
   副本常是 CRLF，而 `.desktop` 的值会连着 `\r` 一起被解析（`StartupWMClass` 因此匹配不上）
-- 新增 `tests/test_desktop_entry.py` 7 项，钉住「与 `APP_NAME` 同源」「不随产物名变」「两条
+- 新增 `tests/test_desktop_entry.py` 6 项，钉住「与 `APP_NAME` 同源」「不随产物名变」「两条
   安装路（`--install-menu` 与模板）字段一致」。其中一条中途写坏过：断“工作树文件无 CR”
   测的是 checkout 方式（Windows `core.autocrlf` 下必红），改成断「剔 CR 后各键仍与生成串一致」
 
