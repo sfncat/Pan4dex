@@ -147,6 +147,7 @@
 | 12.17 | Alt+Left / Alt+Right / Alt+Up | P1 | 🟢 | 后退 / 前进 / 返回上级 | 编辑菜单 QAction | main_window.py `on_nav_back/forward/up()` |
 | 12.18 | F7/F8、F4、Ctrl+B、Ctrl+Shift+T、Ctrl+Q | P2 | 🟢 | 新建文件夹/新建文件、终端面板、收藏夹、目录树、退出 | 菜单 QAction | main_window.py |
 | 12.19 | 搜索结果列表键位 | P2 | 🟢 | Enter 打开、Ctrl+Shift+Enter 打开所在文件夹、Del 回收站、Shift+Del 永久删除、Ctrl+C 复制**路径文本** | 在 `QTreeWidget.keyPressEvent` 里接（不接 Enter 会被对话框的“自动默认按钮”抢走 → 变成关闭对话框） | widgets/advanced_search.py `SearchResultTree`；tests/test_search_results.py |
+| 12.20 | 快捷键与侧边栏点击的**落点** | P1 | 🟢 | 启动后**一次都还没点过窗格**时，Ctrl+L / Delete / F2 / F5 / Ctrl+C·X·V / Ctrl+A / 导航 / 新建 / 目录树与收藏夹点击仍作用于当前页默认窗格；焦点跑到预览面板、终端、侧边栏上时仍归**最后激活那个窗格**（与资源管理器一致） | `MainWindow.target_pane()` 一份规则，16 个入口 + 收藏夹 `current_dir_provider` 全部走它。旧写法直接判 `if self._active_pane:`（只在窗格真拿到焦点时才有值）→ Linux/X11 上初始焦点不在窗格，那批快捷键全部静默失灵；Windows 首屏焦点正好在 pane1 所以多年看不出来（v1.9.016 真机才发现，见 gotchas 第 47 条） | core/main_window.py `target_pane()`；tests/test_pane_target.py 8 项 |
 
 ## 13. 右键菜单
 
@@ -272,6 +273,7 @@
 | 2026-09-17 | Linux 第二批「判据去 `nt` 化」：新增 `core/mounts.py` 作为全仓唯一的「是不是慢位置」判据（POSIX 挂载表 + 最长前缀 + fstype），删掉两份 `if os.name != 'nt': return False` 的短路 —— 网络/慢盘的保守策略（不挂 watcher、重复导航强制重扫、删除文案说「永久删除」）在 Linux 上**第一次真的生效**；新增 3.5（判据）与 8.5（首启动默认收藏读 XDG `user-dirs.dirs`）；2.4 / 12.10 的文案分类改为两端都算。顺带修一个测试套件的假红：`test_date_presets` 的时刻写在 `parametrize` 参数表里（收集期求值），跨午夜跑必红 | - |
 | 2026-09-17 | v1.9.014：**第一节在 Linux 真机（linux230 / Ubuntu 24.04）跑全量** —— 单进程 572 passed / 6 skipped（定序 1 + 随机 3），与 Windows 575+3 总数吻合。修一条产品错：`_list_linux` 无条件追加内置候选，与 Windows 的「太少才补」不一致 → 抽成两端共用的 `needs_builtin_topup()`（6.3 实现情况已补）；其余 5 个失败都是用例里写死的 Windows 假设（`E:\` 当异设备、`\` 当分隔符、找 `python` 而不是 `python3`、测试替身不完整）。那个拖很久的随机段错误定性为**用例泄漏 app 级 `stylesheet`**（`tests/conftest.py` 现在每个边界还原全局态），崩率 12/12 → 1/12，整场 0 崩；产品的 250ms 延迟建窗格经真机确认无误，保留 | - |
 | 2026-09-17 | v1.9.015：**Linux 发布链路第一批（linux-gap §6）四条全部落地并在真机出包验通**。`build-linux-docker.sh` 的 `--add-data` 改为“存在才带”（`resources/icons` 缺了仍算硬错）→ 干净克隆不再必失败；Dockerfile 补 `pillow-heif`、删 `cairosvg`、镜像升 3.11（产物里现在真含 `_pillow_heif…so` + `libheif`）；Linux 构建入口收敛为 `build-linux-docker.sh` 一条（`scripts/build.sh` 改为转发，文档同步）；`apply_windows_native_icon` 加平台守卫（并**推翻**了“每次启动白抛两次”的旧结论——调用点早已门控）。真机额外拓出三个产品/工层 bug：崩溃日志不可写导致**只读安装目录下启动即死**（已修，见 4.6/45 条）、`$DATA_ARGS` 在宿主侧展开吞掉 `main.py`、bullseye LTS 结束后镜像不可重建（已改 archive.debian.org）。L1 已过，L11 查清一半（wheel 只带 ibus/compose，fcitx5 仍待带） | - |
+| 2026-09-17 | v1.9.016：**Linux 真机 GUI 验收第一轮（linux-gap §5.2 L1–L15）** —— 在 230 的 xrdp `:10` Xfce 会话上跑冻结产物、把全屏截图拉回本机亲眼看。撞出两条只有真机才暴露的缺陷并修复：（1）快捷键与侧边栏点击的落点只认 `_active_pane`（只在窗格真拿到焦点时才有值）→ Linux/X11 上“没点过窗格”期间一批快捷键静默失灵，新增 `target_pane()` 统一落点（12.20）；（2）X11 下 `StartupWMClass=pan4dex` 与 `WM_CLASS` 两项都对不上（res_class 是 `Pan4dex`、res_name 是带版本号的产物名），现改为与 `APP_NAME` 同源并把 `.desktop` 内容抽成纯函数（`--install-menu` 从 🟡 转 🟢）。验收本身拿到 L5（菜单 13 项齐全、打开方式子菜单能展开）/ L7 前半 / L11（产物 maps 里无任何输入法插件模块）/ L13（10 万条目 RSS≈105MB、CPU 6%）/ L15（多开 2 窗 4 进程、无锁）五条事实；L6 的“关面板后 shell 不退”经查是**有意设计**（不是缺陷），真问题改写为 Ctrl+Q 后是否退 | - |
 
 ---
 

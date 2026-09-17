@@ -295,8 +295,7 @@ class MainWindow(QMainWindow):
         """创建收藏夹侧边栏"""
         self.bookmark_sidebar = BookmarkSidebar(
             self, store=self.bookmark_store,
-            current_dir_provider=lambda: (self._active_pane
-                                         and self._active_pane.current_path))
+            current_dir_provider=self._target_pane_path)
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.bookmark_sidebar)
         self.bookmark_sidebar.setVisible(False)
         
@@ -327,13 +326,15 @@ class MainWindow(QMainWindow):
     
     def on_tree_folder_clicked(self, path: str):
         """目录树文件夹点击 - 导航到当前活动窗格"""
-        if self._active_pane:
-            self._active_pane.navigate_to(path)
+        pane = self.target_pane()
+        if pane:
+            pane.navigate_to(path)
     
     def on_bookmark_clicked(self, path: str):
         """收藏夹点击 - 导航到当前活动窗格"""
-        if self._active_pane:
-            self._active_pane.navigate_to(path)
+        pane = self.target_pane()
+        if pane:
+            pane.navigate_to(path)
     
     def on_preview_visibility_changed(self, visible):
         """预览面板可见性变化"""
@@ -989,41 +990,46 @@ class MainWindow(QMainWindow):
     
     def on_copy(self):
         """复制操作"""
-        if self._active_pane:
-            self._active_pane.copy_selected()
+        pane = self.target_pane()
+        if pane:
+            pane.copy_selected()
 
     def on_cut(self):
         """剪切操作"""
-        if self._active_pane:
-            self._active_pane.cut_selected()
+        pane = self.target_pane()
+        if pane:
+            pane.cut_selected()
 
     def on_paste(self):
         """粘贴操作"""
-        if self._active_pane:
-            self._active_pane.paste()
+        pane = self.target_pane()
+        if pane:
+            pane.paste()
 
     def on_delete(self):
         """删除操作"""
-        if self._active_pane:
-            self._active_pane.delete_selected()
+        pane = self.target_pane()
+        if pane:
+            pane.delete_selected()
 
     def on_rename(self):
         """重命名操作"""
-        if self._active_pane:
-            self._active_pane.rename_selected()
+        pane = self.target_pane()
+        if pane:
+            pane.rename_selected()
 
     def on_filter_current_dir(self):
         """唤出当前窗格的筛选栏（Ctrl+F）：只筛当前目录，全盘搜索走「高级搜索」"""
-        pane = self._active_pane
+        pane = self.target_pane()
         try:
             if pane is not None and hasattr(pane, "show_filter_bar"):
                 pane.show_filter_bar()
         except RuntimeError:
-            pass        # 窗格已销毁（`_active_pane` 可能握着死包装器）：没东西可筛
+            pass        # 窗格已销毁（握着的是死包装器）：没东西可筛
 
     def on_focus_path_bar(self):
         """Ctrl+L：聚焦当前窗格的路径栏并全选现有路径"""
-        pane = self._active_pane
+        pane = self.target_pane()
         try:
             if pane is not None and hasattr(pane, "path_bar"):
                 pane.path_bar.focus_for_input()
@@ -1032,27 +1038,31 @@ class MainWindow(QMainWindow):
 
     def on_select_all(self):
         """全选操作"""
-        if self._active_pane:
-            self._active_pane.tree_view.selectAll()
+        pane = self.target_pane()
+        if pane:
+            pane.tree_view.selectAll()
 
     def on_refresh(self):
         """刷新操作"""
-        if self._active_pane:
-            self._active_pane.refresh_current()
+        pane = self.target_pane()
+        if pane:
+            pane.refresh_current()
 
     def on_nav_back(self):
         """后退（活动窗格导航历史）"""
-        if self._active_pane:
-            self._active_pane.go_back()
+        pane = self.target_pane()
+        if pane:
+            pane.go_back()
 
     def on_nav_forward(self):
         """前进（活动窗格导航历史）"""
-        if self._active_pane:
-            self._active_pane.go_forward()
+        pane = self.target_pane()
+        if pane:
+            pane.go_forward()
 
     def on_nav_up(self):
         """返回上级目录"""
-        pane = self._active_pane
+        pane = self.target_pane()
         if pane and pane.current_path:
             parent = os.path.dirname(os.path.normpath(pane.current_path))
             if parent and parent != pane.current_path:
@@ -1060,17 +1070,49 @@ class MainWindow(QMainWindow):
 
     def on_new_folder(self):
         """新建文件夹"""
-        if self._active_pane:
-            self._active_pane.new_folder()
+        pane = self.target_pane()
+        if pane:
+            pane.new_folder()
 
     def on_new_file(self):
         """新建文件"""
-        if self._active_pane:
-            self._active_pane.new_file()
+        pane = self.target_pane()
+        if pane:
+            pane.new_file()
 
     def on_pane_activated(self, pane):
         """窗格被激活（获得焦点）"""
         self._active_pane = pane
+
+    def target_pane(self):
+        """快捷键、菜单项、侧边栏点击应当作用在**哪个窗格**
+
+        优先**最后激活的**窗格：焦点跑到预览面板、终端、侧边栏上时，删除/复制仍归原来
+        那个窗格（与资源管理器一致）。从未激活过时退回当前标签页的默认窗格（pane1）。
+
+        旧写法在各处直接判 `if self._active_pane:`，于是「启动后一次都还没点过窗格」这段
+        时间里 Ctrl+L / Delete / F2 / F5 / 目录树与收藏夹点击全部静默失灵。Windows 上首屏
+        焦点正好落在 pane1，所以多年看不出来；Linux/X11 上初始焦点不在窗格里，`_active_pane`
+        一上来就是 None —— 真机 GUI 验收第一次浏览目录就撞上了（v1.9.016）。
+        """
+        pane = self._active_pane
+        if pane is not None:
+            try:
+                from PyQt6 import sip
+                if not sip.isdeleted(pane):
+                    return pane
+            except (ImportError, RuntimeError, TypeError):
+                # 拿不到 sip、或握着的不像 QObject（测试替身）：按旧行为用它，别把快捷键卡死
+                return pane
+        return self.current_pane()
+
+    def _target_pane_path(self):
+        """收藏夹「添加到当前目录」取的路径：跟随 `target_pane()`，窗格没了返 None"""
+        try:
+            pane = self.target_pane()
+            return pane.current_path if pane is not None else None
+        except RuntimeError:
+            return None
 
     def current_pane(self):
         """当前标签页里应该接收操作的窗格（搜索对话框等外部宿主借它开文件/进目录）

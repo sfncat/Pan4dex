@@ -32,7 +32,7 @@
 
 | 模块 | 职责 |
 |---|---|
-| `main_window.py` | 主窗口管理、标签页、布局切换、菜单栏、状态栏 |
+| `main_window.py` | 主窗口管理、标签页、布局切换、菜单栏、状态栏。**快捷键与侧边栏点击的落点只认 `target_pane()`**：优先最后激活且未销毁的窗格，从未激活过时退回当前页默认窗格（不能直接用 `_active_pane` —— 它只在窗格真拿到焦点时才有值，Linux/X11 上初始焦点不在窗格里，见 gotchas 第 47 条）；`current_pane()` 是它给外部宿主（搜索对话框）的同源入口 |
 | `pane.py` | 单个窗格的完整功能：路径栏、文件列表、导航、上下文菜单（单选文件时挂「打开方式」子菜单，候选延迟到 `aboutToShow` 才枚举）；持有 `PaneSortProxyModel`（排序 + 筛选同一个代理）与 `FilterBar`（Ctrl+F 唤出，状态栏显示「筛选后 M / N 项」）。**拖拽没有独立模块**：`dragEnterEvent` / `dropEvent` 与拖拽高亮（`_apply_drag_highlight`，进前快照样式、离开精确还原）都住在 `FileListTreeView`/`Pane` 里，自定义 MIME `application/x-pan4dex-drag` 只携带源窗格与文件列表（动作由接收端算，见 §3.2） |
 | `dir_model.py` | `DirStoreModel`：以目录为单位的异步文件模型（后台枚举走限流专用线程池 `dir_pool()` + TTL 缓存 + 定向失效；只给**当前显示的本地目录**挂 `QFileSystemWatcher` 自动重扫，监视器是全进程唯一的 `_WatchHub`，网络/慢位目录不挂 —— “慢位置”由 `mounts.is_remote_location()` 定，两端同一个判据），文件列表专用 |
 | `lifecycle.py` | `call_later(obj, ms, fn)`：以业务对象为父的延后回调，避免 `QTimer.singleShot` 在对象销毁后回调已删除子对象；`exec_and_drain(app)` / `drain_background_pool()`：退出时排空后台线程，避免未派发的跨线程投递在解释器收尾阶段被释放（退码 0xC0000409）；`safe_event_filter`：事件过滤器装饰器，三个 `eventFilter`（`Pane` / `MainWindow` / `FilterBar`）全部包上 —— Python 侧抛异常时 sip 不会给 C++ 的 `bool` 返回值赋值，Qt 就在一个未定义的值上继续派发（包上不保证不崩，只是为了不让异常未定义地进 C++；有结构守卫用例钉住“不得新增没包的过滤器”，见 `docs/gotchas.md` 44） |

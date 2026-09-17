@@ -45,7 +45,10 @@ echo "[2/3] 图标已安装: ~/.local/share/icons/hicolor/{256,512}x{256,512}/ap
 DESKTOP_SRC="$PROJECT_ROOT/packaging/pan4dex.desktop"
 DESKTOP_DEST="$HOME/.local/share/applications/pan4dex.desktop"
 mkdir -p "$(dirname "$DESKTOP_DEST")"
-sed "s|__EXEC_PATH__|$APP_EXEC|g" "$DESKTOP_SRC" > "$DESKTOP_DEST"
+# 顺手剔掉 CR：仓库里存的是 LF，但从 Windows 工作树拷过来 / 用 zip 带过来的副本
+# 常带 CRLF，而 `.desktop` 的值会连着 `\r` 一起被解析（StartupWMClass 匹配不上、
+# 部分桌面环境直接拒收这个文件）
+sed "s|__EXEC_PATH__|$APP_EXEC|g" "$DESKTOP_SRC" | tr -d '\r' > "$DESKTOP_DEST"
 chmod +x "$DESKTOP_DEST"
 echo "[3/3] 启动器已安装: $DESKTOP_DEST"
 

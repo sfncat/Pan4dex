@@ -354,6 +354,32 @@ def _cli_output():
     print(output, flush=True)
 
 
+def _desktop_entry_text(exec_path: str) -> str:
+    """生成 `.desktop` 启动器内容（纯函数，便于用例钉住字段）
+
+    `StartupWMClass` 必须等于 Qt 在 X11 上写进 WM_CLASS 第二项（res_class）的那个值：
+    Qt 用的是 `applicationName()`，也就是 `APP_NAME`（“Pan4dex”，**区分大小写**）。
+    以前写的是小写 `pan4dex`，而 res_name 是 argv[0] 的 basename（冻结产物叫
+    `pan4dex-1.9.015-linux`，每个版本都变），两项都对不上 —— 桌面环境因此无法把窗口
+    归到启动器（图标/分组失效）。v1.9.016 在 230 真机上用 xprop 比对才发现。
+    """
+    return (
+        "[Desktop Entry]\n"
+        "Type=Application\n"
+        f"Name={APP_NAME} {APP_NAME_CN}\n"
+        f"Name[en]={APP_NAME}\n"
+        "GenericName=File Manager\n"
+        "Comment=跨平台四窗格文件管理器\n"
+        "Comment[en]=Cross-platform quad-pane file manager\n"
+        f"Exec={exec_path}\n"
+        "Icon=pan4dex\n"
+        "Terminal=false\n"
+        "Categories=Utility;FileManager;System;\n"
+        "Keywords=file;manager;pane;quad;browser;\n"
+        f"StartupWMClass={APP_NAME}\n"
+    )
+
+
 def _install_menu_linux():
     """Linux：把应用注册到开始菜单/应用菜单（安装 .desktop 启动器 + 图标）。
 
@@ -420,21 +446,7 @@ def _install_menu_linux():
         exec_path = os.path.abspath(sys.executable)
     else:
         exec_path = f"{sys.executable} {os.path.join(BASE_DIR, 'main.py')}"
-    desktop = (
-        "[Desktop Entry]\n"
-        "Type=Application\n"
-        f"Name={APP_NAME} {APP_NAME_CN}\n"
-        f"Name[en]={APP_NAME}\n"
-        "GenericName=File Manager\n"
-        "Comment=跨平台四窗格文件管理器\n"
-        "Comment[en]=Cross-platform quad-pane file manager\n"
-        f"Exec={exec_path}\n"
-        "Icon=pan4dex\n"
-        "Terminal=false\n"
-        "Categories=Utility;FileManager;System;\n"
-        "Keywords=file;manager;pane;quad;browser;\n"
-        "StartupWMClass=pan4dex\n"
-    )
+    desktop = _desktop_entry_text(exec_path)
     os.makedirs(apps_dir, exist_ok=True)
     desktop_path = os.path.join(apps_dir, "pan4dex.desktop")
     with open(desktop_path, "w", encoding="utf-8") as f:

@@ -939,6 +939,50 @@ GUI 就 exit 1，栈在 `main.py: install_signal_handlers`：
 正好把这个坏状态藏住了 —— 只要不主动 `docker rmi`，没人会知道它早就建不出来了。
 所以验证发布链路必须至少跑一次 `docker build`（或者显式打个新 tag）。
 
+### 47. 快捷键的落点不能只认 `_active_pane`：Windows 的首屏焦点把它掩盖了很多年
+
+`MainWindow._active_pane` 由 `on_pane_activated()`（窗格**真的拿到焦点**）写入，不是「当前
+该操作哪个窗格」。于是 `if self._active_pane:` 这种写法把十几个入口（Ctrl+L / Delete / F2 /
+F5 / Ctrl+C·X·V / Ctrl+A / 后退·前进·上级 / 新建 / 目录树与收藏夹点击）全挂在了一个**只在
+特定时机才非空**的变量上：程序刚起来、用户一次都还没点过窗格的那段时间里，这些快捷键
+一个都不起作用 —— 而且**无提示、无日志**，看上去和“根本没绑快捷键”一模一样。
+
+- **为什么 Windows 上多年看不出来**：首屏焦点正好落在 pane1 里，`_active_pane` 一启动就有值。
+  Linux/X11（至少 xrdp + Xfce 这套）初始焦点不在窗格里，一上来就是 None —— v1.9.016 真机
+  GUI 验收第一次浏览目录就撞上了，当时第一反应是“xdotool 没把按键送进来”，直到发现 11–15 号
+  截图与基线**字节数完全相同**才意识到程序里真没发生任何事
+- **落点规则只有一份**：`target_pane()` = 优先**最后激活且未销毁**的窗格，否则退回当前标签页
+  默认窗格。两个方向不能翻：先默认后激活的话，焦点在预览面板/终端上按 Delete 会删错窗格
+- 同一个坑已经踩过一次：`current_pane()` 的 docstring 写的就是这件事，但只有搜索对话框用了它。
+  **一个已经写下来的规则，如果没有入口强制大家走它，就等于没有** —— 新代码继续抄旧写法
+- 测这类“默认落点”必须把「从未激活过」当成一个独立用例（直接构造 `MainWindow`、不点任何东西
+  就调 `on_xxx()`），只测“激活 pane2 后作用于 pane2”是抓不到的
+
+### 48. X11 下窗口归类只认 `StartupWMClass`，而它等于 `applicationName()`、不是产物名
+
+Qt 在 X11 上写的 `WM_CLASS` 是 `(argv[0] 的 basename, applicationName())`，桌面环境拿
+`.desktop` 的 `StartupWMClass` 去比**第二项**（`res_class`）。于是两条约定同时成立：
+
+1. 匹配键**区分大小写**，必须与 `APP_NAME` 同源（写小写 `pan4dex` 而应用名是 `Pan4dex` → 永远对不上）
+2. 拿产物名当匹配键每发布一次就失效（冻结产物叫 `pan4dex-1.9.016-linux`）；也不能靠 `res_name`，
+   那是第一条里变的项
+
+不匹配的后果很安静：图标不分组、点应用菜单又起一个实例，没有任何报错。取证只要两条命令：
+`xprop -id <win> WM_CLASS` 与 `grep StartupWMClass ~/.local/share/applications/pan4dex.desktop`，
+**亲眼对一下**（本仓长期“以为这条已验证”）。
+
+附带的 `.desktop` 坑：仓库里存 LF，但从 Windows 工作树拷过去的副本带 CRLF，解析时 `\r` 会连在
+值上（`StartupWMClass` 匹配不上、部分桌面环境直接拒收文件）；安装脚本里加 `tr -d '\r'`。反过来，
+**测试不能断“工作树文件无 CR”**（那测的是 checkout 方式，`core.autocrlf` 下必红）。
+
+真机驱动 GUI 的两条取证经验（同属这类“不亲自跑就不知道”）：
+
+- `xdotool getwindowgeometry` 对 reparented 窗口给的是**相对父框架**的坐标，不能用来推绝对
+  落点；窗口每次启动位置又不同。开上下文菜单用 `key Menu`（坐标无关）、菜单项用方向键 +
+  Return，比像素点击可靠得多
+- 模态对话框（`dialog.exec()`）会吞掉之后**所有**按键 —— 验收脚本每一步都要显式 Escape/关闭
+  再确认界面回到了预期状态，否则后面的结论全是假的
+
 
 ---
 

@@ -19,6 +19,69 @@
 
 ## 更新记录
 
+### v1.9.016 — 2026-09-17（开发分支 dev/shell-behavior-smb-perf）
+
+> Linux 真机 GUI 验收第一轮（`docs/linux-gap.md` §5.2 的 L1–L15，在 linux230 的 xrdp
+> `:10` Xfce 会话上跑冻结产物、把全屏截图拉回本机**亲眼看**）。第一轮就撞出两条
+> 缺陷，而且两条都属于同一类：读代码看不出、Windows 上也复现不出来，因为它们的成立
+> 前提分别是「X11 的初始焦点不在窗格里」和「WM_CLASS 由 argv[0] 决定」。
+
+#### 🐛 缺陷修复：快捷键与侧边栏点击的落点不能只认 `_active_pane`
+- **症状**：产物起来后**一次都还没点过窗格**时，Ctrl+L / Delete / F2 / F5 / Ctrl+C·X·V /
+  Ctrl+A / 后退·前进·上级 / 新建文件夹·文件 / 目录树点击 / 收藏夹点击**全部静默失灵**
+  —— 没有提示、没有日志，看起来像“快捷键没绑上”。先在窗格里点一下再按就一切正常
+- **根因**：十几个处理函数都写 `if self._active_pane:`，而 `_active_pane` 只在窗格真的
+  收到过焦点时才被赋值。`current_pane()` 的 docstring 里早就写明了这个坑，但只有
+  搜索对话框走了它
+- **为什么 Windows 多年看不出来**：首屏焦点正好落在 pane1，`_active_pane` 一启动就有值；
+  Linux/X11 上初始焦点不在窗格里，它一上来就是 None
+- **修法**：新增 `MainWindow.target_pane()` —— 优先**最后激活且未销毁**的窗格（焦点跑到
+  预览面板、终端、侧边栏上时，删除/复制仍归原来那个窗格，与资源管理器一致），从未
+  激活过时退回当前标签页的默认窗格。顺序不能反过来（先默认再激活），否则焦点在预览
+  面板上按 Delete 会删错窗格。16 个处理入口 + 收藏夹的 `current_dir_provider` 全部改走它
+- 新增 `tests/test_pane_target.py` 8 项。两轮变异验证：把兜底改成 `return None` → 7 红；
+  把「优先最后激活」改成永远不优先 → **恰好 1 红**（那条正是钉住优先级的用例）
+
+#### 🐛 缺陷修复：`.desktop` 的 `StartupWMClass` 与窗口的 WM_CLASS 从来对不上
+- 真机 `xprop`：`WM_CLASS = "pan4dex-1.9.015-linux", "Pan4dex"`，而已安装的启动器写的是
+  `StartupWMClass=pan4dex`（且 `Exec` 还指着 0.9.645 的旧路径）—— **两项都对不上**，
+  桌面环境因此无法把窗口归到启动器（任务栏不分组、点应用图标又起一个实例）
+- Qt 在 X11 上写的是 `(argv[0] 的 basename, applicationName())`：前者是冻结产物名
+  （`pan4dex-1.9.016-linux`，**每发布一版就变**），所以匹配键只能取 `APP_NAME`，且区分大小写
+- `main.py` 把 `.desktop` 内容抽成纯函数 `_desktop_entry_text(exec_path)`（原来这 15 行字面量
+  埋在 `--install-menu` 里，用例根本进不去），`StartupWMClass={APP_NAME}` 与 Qt 同源；
+  `packaging/pan4dex.desktop` 模板同步改为 `Pan4dex`
+- `scripts/install-linux.sh` 生成启动器时加一道 `tr -d '\r'`：从 Windows 工作树或 zip 带来的
+  副本常是 CRLF，而 `.desktop` 的值会连着 `\r` 一起被解析（`StartupWMClass` 因此匹配不上）
+- 新增 `tests/test_desktop_entry.py` 7 项，钉住「与 `APP_NAME` 同源」「不随产物名变」「两条
+  安装路（`--install-menu` 与模板）字段一致」。其中一条中途写坏过：断“工作树文件无 CR”
+  测的是 checkout 方式（Windows `core.autocrlf` 下必红），改成断「剔 CR 后各键仍与生成串一致」
+
+#### ✅ 真机 GUI 验收第一轮拿到的证据（Xfce 2560x1440 @96dpi，冻结产物）
+- **L5**：右键菜单 13 项齐全（打开 / **打开方式▶** / 压缩文件目录 / 加运行权限(X) / 复制 /
+  剪切 / 粘贴 / 删除 / 重命名 / 复制文件地址 / 在文件管理器中显示 / 在内置终端中打开 /
+  打开终端），子菜单能展开
+- **L8**：见上面第二条（已修）
+- **L11**：冻结产物的 `/proc/<pid>/maps` 里**没有任何** fcitx/ibus/platforminputcontext 模块，
+  而系统 `qt6/plugins/platforminputcontexts/` 里确实有 `libfcitx5platforminputcontextplugin.so`
+  → 印证 §5.2 的判断「fcitx5 桌面上打不了中文」。另注：ssh 起的进程环境里根本没有
+  `QT_IM_MODULE`，这一条要在桌面会话内复测才算最终结论
+- **L13**：10 万条目目录（`big100k`，枚举本身 9.7s）下子进程 RSS ≈ 105MB、%CPU 6.0，
+  界面仍可继续操作
+- **L15**：从终端起两次 = 2 个主窗口 / 4 个进程，无单实例锁（记录事实，符合预期）
+- **L7 前半**：非目录文件确实共用同一个通用图标（「所有文件同图标」在真机成立）
+- **L6 前半**：终端起的是 `/usr/bin/zsh`；关掉 dock 后 shell 不退**是有意设计**
+  （`TerminalPanel.closeEvent` 的 docstring：只隐藏、`shutdown()` 才杀），所以真问题被改写为
+  「Ctrl+Q 退出后 shell 是否退」（第二轮验收第 8 段）
+- 仍未拿到证据的：L2 / L3 / L4 / L9 / L10 / L12 / L14（L12 是 230 上没有 Wayland 会话）
+
+#### 📝 文档
+- `docs/gotchas.md` 新增第 47 条（快捷键落点只认 `_active_pane`）与第 48 条（X11 窗口归类与
+  `.desktop` 真机取证法）；`docs/architecture.md` 的 `main_window.py` 行补上 `target_pane()` 的
+  职责；`docs/feature-checklist.md` 新增 12.20；`docs/linux-gap.md` §5.2 逐条改为真机结论
+
+---
+
 ### v1.9.015 — 2026-09-17（开发分支 dev/shell-behavior-smb-perf）
 
 > Linux 发布链路第一批（`docs/linux-gap.md` §6）四条，目标只有一个：**让新克隆的仓库能真的
