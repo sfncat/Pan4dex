@@ -96,6 +96,11 @@
 - 产物实测（linux230）：`python 3.11.13 / PyQt 6.9.1 / Qt 6.9.0`，包内确认含
   `_pillow_heif.cpython-311…so` + `libheif-*.so`、`resources/icons/{ico,jpg,png}`、
   `platforminputcontexts/{libibus,libcompose}…so`、`imageformats` 含 qsvg（与 3.10 产物 70MB 对比 79MB）
+- **已提交状态在 230 上复验**（从 bundle `reset --hard` 到 01fdd33 后重跑）：Linux 全量
+  定序与随机各一次均 **583 passed / 6 skipped**（exit 0；与 Windows 585+4 同为 589），
+  `test_crash_log_path` 11 项在 Linux 上全跑（含那条只读目录复刻）；重新出包 exit 0；
+  只读 `/opt` 连跑两次都 124（活着），退路日志里正好两行分段标记 —— **退路与追加两端都成立**；
+  `/opt` 下只剩那个二进制，没留下任何写入物
 
 ### v1.9.014 — 2026-09-17（开发分支 dev/shell-behavior-smb-perf）
 

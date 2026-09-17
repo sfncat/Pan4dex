@@ -180,7 +180,7 @@
 | 事实 | 数字 | 影响 |
 |---|---|---|
 | 在 Linux 上会被 `skipif` 跳过的用例 | 6 项（回收站文案 2、注册表 2、Windows 命令行规则 1、Windows `Preferred DropEffect` 1） | 这些本来就是 Windows 专属，合理 |
-| 在 Windows 上被跳过的 Linux 专属用例 | 3 项（v1.9.014 新增） | Windows 开 **575 passed / 3 skipped**，Linux 开 **572 / 6**，总数 578 吻合 —— 但这三项用例在 Windows 上**从未执行过**，只能在真机上算测到 |
+| 在 Windows 上被跳过的 Linux 专属用例 | 4 项（v1.9.014 新增 3 项 + v1.9.015 的只读安装目录复刻 1 项） | Windows 开 **585 passed / 4 skipped**，Linux（已提交状态、定序与随机各一次）**583 / 6**，总数 589 吻合 —— 但 Linux 专属那几项在 Windows 上**从未执行过**，只能在真机上算测到 |
 | `core/open_with.py` 的 Linux 枚举 `_list_linux` | ✅ v1.9.014 起在 linux230 真机上测满（`test_open_with` 23 passed），并在真机上抓出它与 Windows 不一致的兜底门控 | 真实桌面环境里的目录优先级、`Exec` 里的 `%f/%U`、mime-info 缓存路径都验过了；剩下的是界面里的观感（L5） |
 | `PtyBackend` 的 Linux 分支（`pty`/`fcntl`/`termios`） | 本机 0 次（Windows 走 winpty）；真机上 `test_terminal_lifecycle` 13 passed | 终端在 Linux 上“代码看着最正”已有自动化证据，但 vim/htop 这类全屏程序的实测仍在 L6 |
 | `same_volume()` 的正向跨挂载点判定 | ✅ v1.9.014：真机（两个 CIFS 挂载 + 一堆系统挂载）上 `test_m2_file_operations` 38 passed；用例不再写死 `E:\` | 拖放动作决策在 Linux 上的正确性不再靠推断；真挂载上的耗时仍在 L2/L4 |
@@ -200,9 +200,9 @@ QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest -q --tb=short 2>&1 | tail -
 ```
 
 **实测结果**（宿主 `~/venv-pan4dex`，发布用的 PyQt 6.9.1 / Qt 6.9.2）：单进程全量
-**572 passed / 6 skipped**，定序 1 次 + 随机序 3 次全部 exit 0（与 Windows 的
-575+3 总数相等，差异全是 `skipif` 的平台门控）。`python main.py` 在 offscreen 下
-能起，日志里 `延迟创建 pane2-4: 476.3ms` 正常完成。
+**583 passed / 6 skipped**（v1.9.015、已提交状态、定序与随机各一次），v1.9.014 时为
+572 / 6，与 Windows 的 585+4 总数相等（差异全是 `skipif` 的平台门控）。`python main.py` 在
+offscreen 下能起，日志里 `延迟创建 pane2-4: 189.2ms` 正常完成。
 
 第一轮摸上来的 6 个失败已全部定性（4 条是用例写死了 Windows 假设、1 条是
 `_list_linux` 的内置兜底与 Windows 不一致、1 条是测试替身不完整），另有一条
