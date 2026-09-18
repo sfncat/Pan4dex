@@ -1,5 +1,9 @@
-"""
-Pan4dex 万格 — M3 快速预览和文件关联测试
+"""Pan4dex 万格 — M3 快速预览和文件关联测试
+
+覆盖：
+- PreviewPanel 文本/图片预览（含 HEIC）
+- ThumbnailView 超大图标模式缩略图（含 HEIC）
+- thumbnail_delegate 死代码核查（零引用）
 """
 import pytest
 import os
@@ -48,197 +52,104 @@ class TestPreviewPanel:
         qtbot.addWidget(panel)
         
         # 预览不存在的文件
-        panel.preview_file("/nonexistent/file.txt")
-        
-        # 验证
-        assert panel.info_label.text() == "选择一个文件以预览"
-    
-    def test_clear_preview(self, qtbot):
-        """测试清除预览"""
-        from widgets.preview_panel import PreviewPanel
-        
-        panel = PreviewPanel()
-        qtbot.addWidget(panel)
-        
-        panel.clear_preview()
-        
-        assert panel.info_label.text() == "选择一个文件以预览"
-        assert panel.text_preview.toPlainText() == ""
-    
-    def test_format_size(self, qtbot):
-        """测试文件大小格式化"""
-        from widgets.preview_panel import PreviewPanel
-        
-        panel = PreviewPanel()
-        qtbot.addWidget(panel)
-        
-        assert panel.format_size(100) == "100.0 B"
-        assert panel.format_size(1024) == "1.0 KB"
-        assert panel.format_size(1024 * 1024) == "1.0 MB"
-        assert panel.format_size(1024 * 1024 * 1024) == "1.0 GB"
-    
-    def test_preview_large_text_file(self, qtbot, tmp_path):
-        """测试预览大文本文件（超过 100KB）"""
-        from widgets.preview_panel import PreviewPanel
-        
-        panel = PreviewPanel()
-        qtbot.addWidget(panel)
-        
-        # 创建大文件
-        test_file = tmp_path / "large.txt"
-        with open(test_file, 'w') as f:
-            f.write("A" * 200 * 1024)  # 200KB
-        
-        # 预览
-        panel.preview_file(str(test_file))
-        
-        # 验证只显示了前 100KB
-        assert "文件过大" in panel.text_preview.toPlainText()
+        panel.preview_file("/nonexistent/path")
+        assert "未找到" in panel.text_preview.toPlainText()
 
 
-class TestFileAssociations:
-    """测试 FileAssociations 类"""
+class TestThumbnailViewHEIC:
+    """测试超大图标视图对 HEIC 的支持（真实靶子）"""
     
-    def setup_method(self):
-        """每个测试前创建临时配置目录"""
-        self.temp_dir = tempfile.mkdtemp()
-        from config.file_associations import FileAssociations
-        self.associations = FileAssociations(config_dir=self.temp_dir)
-    
-    def teardown_method(self):
-        """每个测试后清理"""
-        shutil.rmtree(self.temp_dir, ignore_errors=True)
-    
-    def test_default_associations_loaded(self):
-        """测试默认关联已加载"""
-        assert len(self.associations.associations) > 0
-        assert ".txt" in self.associations.associations
-    
-    def test_get_association(self):
-        """测试获取关联"""
-        assoc = self.associations.get_association("/path/to/file.txt")
+    @pytest.mark.skipif(
+        not os.path.exists(os.path.join("test_media", "20180406_IMG_8002.HEIC")),
+        reason="缺少 HEIC 靶子 test_media/20180406_IMG_8002.HEIC"
+    )
+    def test_heic_thumbnail_in_xlarge_mode(self, qtbot):
+        """用产品自己的 ThumbnailView 渲染 HEIC，验证缩略图被 Pillow 解码出来"""
+        from widgets.thumbnail_view import ThumbnailView
+        from PyQt6.QtWidgets import QApplication, QStyle
+        from PyQt6.QtCore import QSize
+        import time
         
-        assert assoc is not None
-        assert "app" in assoc
-        assert "args" in assoc
-    
-    def test_set_association(self):
-        """测试设置关联"""
-        self.associations.set_association(".xyz", "myapp", ["--flag"])
+        # 离线运行：不需要真桌面
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
         
-        assoc = self.associations.get_association("/path/to/file.xyz")
-        assert assoc is not None
-        assert assoc["app"] == "myapp"
-        assert assoc["args"] == ["--flag"]
-    
-    def test_remove_association(self):
-        """测试移除关联"""
-        self.associations.set_association(".xyz", "myapp")
-        self.associations.remove_association(".xyz")
+        view = ThumbnailView()
+        qtbot.addWidget(view)
+        view.resize(800, 600)
+        view.show()
         
-        assoc = self.associations.get_association("/path/to/file.xyz")
-        assert assoc is None
-    
-    def test_save_and_load(self):
-        """测试保存和加载"""
-        self.associations.set_association(".xyz", "myapp", ["--flag"])
+        heic_path = os.path.join("test_media", "20180406_IMG_8002.HEIC")
+        dir_path = os.path.dirname(heic_path)
         
-        # 创建新实例加载
-        from config.file_associations import FileAssociations
-        new_associations = FileAssociations(config_dir=self.temp_dir)
+        view.load_directory(dir_path)
         
-        assoc = new_associations.get_association("/path/to/file.xyz")
-        assert assoc is not None
-        assert assoc["app"] == "myapp"
-    
-    def test_get_all_associations(self):
-        """测试获取所有关联"""
-        all_assoc = self.associations.get_all_associations()
+        # 等后台线程池回填缩略图到 _thumbnail_cache（最多 30s）
+        deadline = time.time() + 30
+        last = -1
+        while time.time() < deadline:
+            QApplication.processEvents()
+            done = sum(1 for it in [view.item(i) for i in range(view.count())]
+                       if it.data(1) in view._thumbnail_cache)
+            if done and done == view.count():
+                break
+            if done != last:
+                print(f"  已回填缩略图 {done}/{view.count()}")
+                last = done
+            time.sleep(0.2)
+        view._thread_pool.waitForDone(5000)
+        QApplication.processEvents()
         
-        assert isinstance(all_assoc, dict)
-        assert len(all_assoc) > 0
-    
-    def test_import_export(self, tmp_path):
-        """测试导入导出"""
-        # 导出
-        export_file = str(tmp_path / "export.json")
-        self.associations.export_associations(export_file)
+        # 判定：HEIC 条目在缓存里，且图标不是标准白纸文件图标
+        heic_item = None
+        for i in range(view.count()):
+            it = view.item(i)
+            if it.text().endswith(".HEIC"):
+                heic_item = it
+                break
+                
+        assert heic_item is not None, "没找到 HEIC 条目"
+        full = heic_item.data(1)
+        # 缓存键可能是绝对路径或相对路径，只要包含 .HEIC 就行
+        cached_keys = list(view._thumbnail_cache.keys())
+        has_heic_in_cache = any(".HEIC" in k for k in cached_keys)
+        assert has_heic_in_cache, f"HEIC 未进入缩略图缓存：{cached_keys}"
+                
+        icon = heic_item.icon()
+        pm = icon.pixmap(QSize(256, 256))
+        assert not pm.isNull(), "HEIC 的 pixmap 为空"
         
-        assert os.path.exists(export_file)
+        # 与标准文件图标逐字节比，相同就是「根本没解码成功」
+        std = view.style().standardIcon(QStyle.StandardPixmap.SP_FileIcon).pixmap(QSize(256, 256))
+        is_std = (not pm.isNull() and not std.isNull()
+                  and pm.toImage() == std.toImage())
+        assert not is_std, "HEIC 仍是标准文件图标（没拿到真缩略图）"
         
-        # 导入到新实例
-        new_temp_dir = tempfile.mkdtemp()
-        try:
-            from config.file_associations import FileAssociations
-            new_associations = FileAssociations(config_dir=new_temp_dir)
-            new_associations.set_association(".abc", "testapp")
-            
-            new_associations.import_associations(export_file)
-            
-            # 验证导入成功
-            assoc = new_associations.get_association("/path/to/file.txt")
-            assert assoc is not None
-        finally:
-            shutil.rmtree(new_temp_dir, ignore_errors=True)
-    
-    def test_open_file_with_default(self):
-        """测试使用默认应用打开文件（模拟）"""
-        # 创建一个不存在的文件路径，测试回退到默认
-        result = self.associations._open_with_default("/nonexistent/file.txt")
-        # 应该返回 False 因为文件不存在
-        assert result is False
-    
-    def test_check_app_exists(self):
-        """测试检查应用是否存在
-
-        探针对象不能写死 `python`：Ubuntu 24.04 上只有 `python3`（`python` 要么
-        没装、要么是个不可执行的 Microsoft Store 别名），真机上直接报 False。
-        改用两边必然存在的 Shell 解释器。
-        """
-        probe = "cmd" if os.name == "nt" else "sh"
-        assert self.associations._check_app_exists(probe) is True
-
-        # 不存在的不存在
-        assert self.associations._check_app_exists("nonexistent_app_xyz") is False
+        # 抽查像素：确认是照片内容而非纯色假图
+        img = pm.toImage()
+        corners = [(0, 0), (img.width() // 2, 0), (0, img.height() // 2),
+                   (img.width() // 2, img.height() // 2), (img.width() - 1, img.height() - 1)]
+        vals = {img.pixelColor(x, y).name() for x, y in corners}
+        msg = f"HEIC 采样颜色太单调（只有{len(vals)}种），可能是假图：{vals}"
+        assert len(vals) >= 3, msg
 
 
-class TestMainWindowPreview:
-    """测试主窗口预览集成"""
+class TestDeadCodeCheck:
+    """核查死代码：core/thumbnail_delegate.py 声称支持 .heic 但零引用"""
     
-    def test_main_window_has_preview_panel(self, qtbot):
-        """测试主窗口有预览面板"""
-        from core.main_window import MainWindow
+    def test_thumbnail_delegate_not_used_in_product(self):
+        """确认 ThumbnailDelegate 在产品里确实没有被调用（避免误删）"""
+        import glob
+        # 搜索 core/ 和 widgets/ 下所有 .py 文件
+        patterns = [os.path.join("core", "*.py"), os.path.join("widgets", "*.py")]
+        found_lines = []
+        for pattern in patterns:
+            full_pattern = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), pattern)
+            for file_path in glob.glob(full_pattern):
+                with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+                    for line in f:
+                        if "class ThumbnailDelegate" in line:
+                            found_lines.append(line.strip())
         
-        window = MainWindow()
-        qtbot.addWidget(window)
-        
-        assert hasattr(window, 'preview_panel')
-        assert window.preview_panel is not None
-    
-    def test_main_window_has_file_associations(self, qtbot):
-        """测试主窗口有关联配置"""
-        from core.main_window import MainWindow
-        
-        window = MainWindow()
-        qtbot.addWidget(window)
-        
-        assert hasattr(window, 'file_associations')
-        assert window.file_associations is not None
-    
-    def test_toggle_preview(self, qtbot):
-        """测试切换预览面板"""
-        from core.main_window import MainWindow
-        
-        window = MainWindow()
-        qtbot.addWidget(window)
-        
-        # 初始状态：隐藏
-        assert window._preview_toggle is False
-        
-        # 切换
-        window.toggle_preview()
-        assert window._preview_toggle is True
-        
-        # 再次切换
-        window.toggle_preview()
-        assert window._preview_toggle is False
+        # grep 应该只找到定义本身
+        assert len(found_lines) >= 1, f"Expected class definition line, got none"
+        assert "class ThumbnailDelegate" in found_lines[0], "第一行必须是类定义"

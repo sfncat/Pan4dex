@@ -106,6 +106,7 @@ class PreviewPanel(QDockWidget):
         """预览文件"""
         if not os.path.exists(file_path):
             self.clear_preview()
+            self.text_preview.setPlainText("未找到该文件")
             return
         
         # 更新文件信息
