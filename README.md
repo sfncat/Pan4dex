@@ -87,7 +87,21 @@ bash scripts/build-linux-docker.sh
 python scripts/build_windows.py
 ```
 
+**详细构建指南**: [`docs/build-guide.md`](docs/build-guide.md)（含 230 Kali Docker 构建详解、后台构建、验证清单）
+
 两条命令的版本号都缺省取自 `config/app_config.py`。`pyinstaller packaging/pan4dex.spec` 是手动/降级路线，只在 Docker 不可用时应急（不带输入法插件与内置 exiftool/7zz），差异见 `docs/development-guide.md` §5.2。
+
+---
+
+## 📚 文档导航
+
+| 文档 | 说明 |
+|------|------|
+| [`QUICKSTART.md`](QUICKSTART.md) | **快速开始**（一键构建、常用命令） |
+| [`docs/build-guide.md`](docs/build-guide.md) | **构建指南**（Linux/Windows 构建、230 Docker 详解） |
+| [`docs/development-guide.md`](docs/development-guide.md) | 开发指南（测试、打包、代码规范） |
+| [`docs/feature-checklist.md`](docs/feature-checklist.md) | 功能清单与实现状态 |
+| [`docs/gotchas.md`](docs/gotchas.md) | 踩坑记录与注意事项 |
 
 ---
 
