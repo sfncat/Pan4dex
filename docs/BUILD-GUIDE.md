@@ -24,27 +24,27 @@
    - macOS: Docker Desktop  
    - Linux: `docker.io` + `docker-compose`
 
-2. **Kali Linux 230 远程访问**（可选）:
+2. **Kali Linux 230（linux230，主构建机）**:
    ```bash
-   # SSH 连接到 230
-   ssh kali@192.168.x.x  # 替换为实际 IP
-   
+   # 本机 ~/.ssh/config 已配好别名，直接连
+   ssh linux230            # = kali@192.168.5.230，密钥 ~/.ssh/linux230_ed25519
+
    # 或使用 xrdp 图形界面
-   xfreerdp /v:192.168.x.x /u:kali
+   xfreerdp /v:192.168.5.230 /u:kali
    ```
 
 #### 构建步骤
 
-##### A. 在本地 Docker 构建（推荐）
+##### A. 在本地 Docker 构建（任何有 Docker 的环境；正式发版仍推荐 230 路线 B）
 
 ```bash
-# 1. 克隆项目
-cd /home/kali/workspace/pan4dex
+# 1. 进入项目目录
+cd pan4dex
 
 # 2. 确保脚本可执行
 chmod +x scripts/build-linux-docker.sh
 
-# 3. 运行构建（自动推送镜像到 230）
+# 3. 运行构建（首次会自动 docker build 镜像，约 15~20 分钟）
 bash scripts/build-linux-docker.sh
 
 # 或指定版本号
@@ -53,40 +53,58 @@ bash scripts/build-linux-docker.sh 1.9.021
 
 **产物位置**: `releases/pan4dex-<版本>-linux`（在构建机本地）
 
-##### B. 在 230 上直接构建
+##### B. 在 230 上构建（v1.9.x 标准路线，已验证）
+
+关键事实：
+- 构建目录是 **`/home/kali/workspace/pan4dex-dev`**（旧目录 `/home/kali/workspace/pan4dex` 停在 0.9.68x，不要用它）
+- Docker 镜像 `pan4dex-builder-linux`（另有 `:py311`）已在机上，**不需要重建、也不需要另写构建脚本**，直接跑仓内唯一的 `scripts/build-linux-docker.sh`
+- 230 的 origin 不是 GitHub，是本机打过去的 git bundle（`/home/kali/probe/pan4dex-dev.bundle`）
+
+源码同步 + 构建完整流程（从 Windows 本机发起）：
+
+```powershell
+# 1. 本机打 bundle（在 c:\workspace\Pan4dex）
+git bundle create build\pan4dex-dev.bundle dev/shell-behavior-smb-perf
+
+# 2. 传到 230，覆盖旧 bundle
+scp build\pan4dex-dev.bundle linux230:/home/kali/probe/pan4dex-dev.bundle
+```
 
 ```bash
-# 1. SSH 登录 230
-ssh kali@192.168.x.x
+# 3. 在 230 上同步源码（脏 diff 多为 CRLF 噪音，reset --hard 安全）
+ssh linux230
+cd /home/kali/workspace/pan4dex-dev
+git fetch origin dev/shell-behavior-smb-perf
+git reset --hard FETCH_HEAD
 
-# 2. 进入项目目录
-cd /home/kali/workspace/pan4dex
+# 4. 构建（长任务，后台跑；日志统一放 tmp，不污染 /home/kali）
+mkdir -p /home/kali/workspace/pan4dex/tmp
+nohup bash scripts/build-linux-docker.sh > /home/kali/workspace/pan4dex/tmp/build-<版本>.log 2>&1 &
+tail -f /home/kali/workspace/pan4dex/tmp/build-<版本>.log
 
-# 3. 拉取最新代码（如需要）
-git pull origin main
+# 5. 验证产物（offscreen 下跑 --version）
+QT_QPA_PLATFORM=offscreen ./releases/pan4dex-<版本>-linux --version
+```
 
-# 4. 运行构建脚本
-bash scripts/build-linux-docker.sh
-
-# 5. 查看产物
-ls -lh releases/pan4dex-*-linux
+```powershell
+# 6. 拉回本机 releases/
+scp linux230:/home/kali/workspace/pan4dex-dev/releases/pan4dex-<版本>-linux releases\
 ```
 
 #### Docker 镜像细节
 
-- **基础镜像**: `python:3.11-bullseye` (glibc 2.31)
-- **构建层**: `docker/Dockerfile-linux`
+- **镜像**: `pan4dex-builder-linux:latest`（实测 Python 3.10.18 / glibc 2.31），另有 `:py311` 变体用于 A/B
+- **构建层**: `packaging/Dockerfile-linux`
 - **关键依赖**:
-  - `pillow-heif` (HEIC 解码)
-  - `exiftool` (元数据提取)
-  - `7zz` (压缩工具)
-  - Qt6 输入法插件
+  - `pillow-heif` (HEIC 解码，已实测随产物捆绑)
+  - Qt6 imageformats 插件
+- **注意**: `resources/tools/` 下的 exiftool / 7zz / Qt6 输入法插件不入库，镜像里没有时构建会明确提示“本包不含”并继续（目标系统自装则功能可用）
 
 #### 构建输出
 
 ```bash
 releases/
-└── pan4dex-1.9.020-linux    # onefile 可执行文件 (约 82MB)
+└── pan4dex-1.9.020-linux    # onefile 可执行文件 (约 70MB)
 ```
 
 ---
@@ -173,75 +191,52 @@ releases/
 3. **输入法验证**: 可测试 fcitx5/ibus 输入行为
 4. **Wayland/X11**: 可验证不同桌面环境兼容性
 
-### 在 230 上构建的完整流程
+### 在 230 上构建的补充说明
 
-#### 1. 环境准备
+> 完整流程见上文「方式一 · B」，不重复。这里只补监控/清理的碎片。
+
+#### 1. 环境检查
 
 ```bash
-# SSH 登录 230
-ssh kali@192.168.x.x
+# SSH 登录 230（本机 ~/.ssh/config 已配别名）
+ssh linux230
 
-# 检查 Docker
-docker --version
-docker compose version
+# 检查 Docker 与镜像
+docker images | grep pan4dex
 
-# 确认项目目录
-cd /home/kali/workspace/pan4dex
-git status
+# 确认构建目录（注意是 pan4dex-dev）
+cd /home/kali/workspace/pan4dex-dev
+git log --oneline -1
 ```
 
 #### 2. 清理旧产物
 
 ```bash
-# 清理构建缓存
-rm -rf build/ build_onefile/ dist/ dist_onefile/
-
 # 清理旧发布包（保留最近 3 个）
 ls -lt releases/pan4dex-*-linux | tail -n +4 | awk '{print $NF}' | xargs rm
 ```
 
-#### 3. 执行构建
+#### 3. 执行构建（后台，日志放 tmp）
 
 ```bash
-# 方式 A: 后台构建（推荐，避免 SSH 断开）
-screen -S pan4dex-build
-bash scripts/build-linux-docker.sh
-# Ctrl+A D 脱离 screen
-
-# 方式 B: tmux 构建
-tmux new -s pan4dex-build
-bash scripts/build-linux-docker.sh
-# Ctrl+B D 脱离 tmux
-
-# 方式 C: nohup 构建
-nohup bash scripts/build-linux-docker.sh > build.log 2>&1 &
+mkdir -p /home/kali/workspace/pan4dex/tmp
+nohup bash scripts/build-linux-docker.sh > /home/kali/workspace/pan4dex/tmp/build-<版本>.log 2>&1 &
 ```
 
 #### 4. 监控构建进度
 
 ```bash
-# 查看日志
-tail -f build.log
-
-# 或重新 attach screen/tmux
-screen -r pan4dex-build
-tmux attach -t pan4dex-build
+tail -f /home/kali/workspace/pan4dex/tmp/build-<版本>.log
 ```
 
 #### 5. 验证产物
 
 ```bash
-# 文件大小
-ls -lh releases/pan4dex-*-linux
-
 # 文件类型
 file releases/pan4dex-*-linux
 
-# 动态库依赖（不应有未找到）
-ldd releases/pan4dex-*-linux | grep "not found"
-
-# 启动测试（临时）
-./releases/pan4dex-1.9.020-linux --help
+# 启动测试（无头模式验版本号，GUI 真机验收另见 docs/linux-gap.md）
+QT_QPA_PLATFORM=offscreen ./releases/pan4dex-<版本>-linux --version
 ```
 
 #### 6. 上传到发布目录
@@ -257,8 +252,8 @@ cp releases/pan4dex-*-linux ~/pan4dex-releases/$(date +%Y%m%d)/
 cd ~/pan4dex-releases/$(date +%Y%m%d)
 sha256sum pan4dex-*-linux > checksums.txt
 
-# 传输回本机（可选）
-scp -r ~/pan4dex-releases/ kali@192.168.x.x:/home/kali/workspace/pan4dex/releases/
+# 传回 Windows 本机（在 Windows 上执行）
+# scp linux230:/home/kali/workspace/pan4dex-dev/releases/pan4dex-<版本>-linux releases\
 ```
 
 ---
@@ -325,28 +320,23 @@ python -c "import struct; print(struct.calcsize('P') * 8)"
 
 ### Q3: 产物缺少 HEIC 支持
 
-**A**: 确认 pillow-heif 已正确安装
+**A**: 确认镜像里装了 pillow-heif
 
 ```bash
-# Docker 内检查
-docker run --rm pan4dex-build python -c "import pillow_heif; print(pillow_heif.__version__)"
+# 镜像内检查（镜像名是 pan4dex-builder-linux，不是新建的）
+docker run --rm pan4dex-builder-linux python -c "import pillow_heif; print(pillow_heif.__version__)"
 
-# 或在 230 上重建镜像
-docker system prune -a
-bash scripts/build-linux-docker.sh
+# 确实缺了（改了 packaging/Dockerfile-linux）才重建镜像：先删旧 tag，下次构建会自动重建
+# docker rmi pan4dex-builder-linux && bash scripts/build-linux-docker.sh
 ```
 
 ### Q4: 230 上构建速度慢
 
-**A**: 使用镜像缓存和后台构建
+**A**: 镜像已在机上（脚本检测到已存在会直接复用，不会重新 build），慢主要在 PyInstaller 打包阶段，正常 5~10 分钟；后台跑即可：
 
 ```bash
-# 先拉取基础镜像
-docker pull python:3.11-bullseye
-
-# 使用 screen/tmux 后台构建
-screen -S build && bash scripts/build-linux-docker.sh
-# 脱离后继续构建，SSH 断开也不影响
+nohup bash scripts/build-linux-docker.sh > /home/kali/workspace/pan4dex/tmp/build-<版本>.log 2>&1 &
+# SSH 断开不影响，回来 tail 日志看结果
 ```
 
 ---
