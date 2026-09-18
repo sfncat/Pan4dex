@@ -5,10 +5,12 @@ import os
 import zipfile
 import tarfile
 import shutil
+import subprocess
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, 
     QPushButton, QLineEdit, QListWidget, QListWidgetItem,
-    QFileDialog, QMessageBox, QGroupBox, QComboBox
+    QFileDialog, QMessageBox, QGroupBox, QComboBox,
+    QInputDialog, QProgressDialog
 )
 from PyQt6.QtCore import Qt
 
@@ -47,7 +49,7 @@ class ArchiveDialog(QDialog):
         format_layout = QHBoxLayout()
         format_layout.addWidget(QLabel("格式:"))
         self.format_combo = QComboBox()
-        self.format_combo.addItems(["ZIP", "TAR.GT", "TAR.BZ2"])
+        self.format_combo.addItems(["ZIP", "TAR.GZ", "TAR.BZ2", "7Z", "RAR"])
         format_layout.addWidget(self.format_combo)
         format_layout.addStretch()
         create_layout.addLayout(format_layout)
@@ -127,10 +129,22 @@ class ArchiveDialog(QDialog):
     
     def browse_output(self):
         """浏览输出路径"""
+        fmt = self.format_combo.currentText()
+        ext_map = {
+            "ZIP": ".zip",
+            "TAR.GZ": ".tar.gz",
+            "TAR.BZ2": ".tar.bz2",
+            "7Z": ".7z",
+            "RAR": ".rar"
+        }
+        default_ext = ext_map.get(fmt, ".zip")
+        
         path, _ = QFileDialog.getSaveFileName(
-            self, "保存压缩包", "", "ZIP (*.zip);;TAR.GZ (*.tar.gz);;TAR.BZ2 (*.tar.bz2)"
+            self, "保存压缩包", "", f"{fmt} ({default_ext})"
         )
         if path:
+            if not path.endswith(default_ext):
+                path += default_ext
             self.out_edit.setText(path)
     
     def browse_archive(self):
@@ -151,28 +165,35 @@ class ArchiveDialog(QDialog):
         """创建压缩包"""
         source = self.file_edit.text()
         output = self.out_edit.text()
-        
+            
         if not source or not output:
             QMessageBox.warning(self, "警告", "请选择源和输出路径")
             return
-        
+            
         if not os.path.exists(source):
             QMessageBox.warning(self, "错误", "源路径不存在")
             return
-        
+            
         try:
-            fmt = self.format_combo.currentIndex()
-            
-            if fmt == 0:  # ZIP
+            fmt = self.format_combo.currentText()
+                
+            if fmt == "ZIP":
                 self._create_zip(source, output)
-            elif fmt == 1:  # TAR.GZ
+            elif fmt == "TAR.GZ":
                 self._create_tar(source, output, "gz")
-            elif fmt == 2:  # TAR.BZ2
+            elif fmt == "TAR.BZ2":
                 self._create_tar(source, output, "bz2")
-            
-            QMessageBox.information(self, "成功", f"压缩包已创建: {output}")
+            elif fmt == "7Z":
+                self._create_7z(source, output)
+            elif fmt == "RAR":
+                self._create_rar(source, output)
+            else:
+                QMessageBox.warning(self, "错误", f"不支持的格式：{fmt}")
+                return
+                
+            QMessageBox.information(self, "成功", f"压缩包已创建：{output}")
         except Exception as e:
-            QMessageBox.warning(self, "错误", f"创建失败: {e}")
+            QMessageBox.warning(self, "错误", f"创建失败：{e}")
     
     def _create_zip(self, source: str, output: str):
         """创建 ZIP"""
@@ -235,3 +256,102 @@ class ArchiveDialog(QDialog):
         mode = f"r:{compression}" if compression else "r:"
         with tarfile.open(archive, mode) as tf:
             tf.extractall(output)
+    
+    def _create_7z(self, source: str, output: str):
+        """创建 7z 压缩包（使用 7z 命令行）"""
+        # 检查 7z 是否可用
+        seven_zip = self._find_7z()
+        if not seven_zip:
+            QMessageBox.warning(
+                self, "错误",
+                "未找到 7z 工具。请安装 7-Zip (Windows) 或 p7zip (Linux)\n"
+                "下载地址：https://www.7-zip.org/"
+            )
+            return
+        
+        try:
+            progress = QProgressDialog(f"正在创建 7z 压缩包...", None, 0, 0, self)
+            progress.setWindowTitle("创建中")
+            progress.setWindowModality(Qt.WindowModality.WindowModal)
+            progress.show()
+            
+            cmd = [seven_zip, "a", "-t7z", output, source]
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
+            
+            if result.returncode != 0:
+                raise Exception(result.stderr)
+            
+        except subprocess.TimeoutExpired:
+            raise Exception("创建超时，请确保源文件不是太大")
+        except FileNotFoundError:
+            raise Exception(f"无法找到 7z 工具：{seven_zip}")
+        except Exception as e:
+            raise Exception(f"创建 7z 失败：{e}")
+    
+    def _create_rar(self, source: str, output: str):
+        """创建 RAR 压缩包（使用 rar 命令行）"""
+        # 检查 rar 是否可用
+        rar_exe = self._find_rar()
+        if not rar_exe:
+            QMessageBox.warning(
+                self, "错误",
+                "未找到 RAR 工具。请安装 WinRAR (Windows) 或 unrar (Linux)\n"
+                "下载地址：https://www.win-rar.com/"
+            )
+            return
+        
+        try:
+            progress = QProgressDialog(f"正在创建 RAR 压缩包...", None, 0, 0, self)
+            progress.setWindowTitle("创建中")
+            progress.setWindowModality(Qt.WindowModality.WindowModal)
+            progress.show()
+            
+            cmd = [rar_exe, "a", "-m5", output, source]
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
+            
+            if result.returncode != 0:
+                raise Exception(result.stderr)
+            
+        except subprocess.TimeoutExpired:
+            raise Exception("创建超时，请确保源文件不是太大")
+        except FileNotFoundError:
+            raise Exception(f"无法找到 rar 工具：{rar_exe}")
+        except Exception as e:
+            raise Exception(f"创建 RAR 失败：{e}")
+    
+    def _find_7z(self):
+        """查找 7z 可执行文件"""
+        # Windows
+        if os.name == 'nt':
+            paths = [
+                r"C:\Program Files\7-Zip\7z.exe",
+                r"C:\Program Files (x86)\7-Zip\7z.exe",
+                "7z"  # 在 PATH 中查找
+            ]
+        else:
+            # Linux/Mac
+            paths = ["7z", "p7zip"]
+        
+        for path in paths:
+            if shutil.which(path):
+                return path
+        return None
+    
+    def _find_rar(self):
+        """查找 rar 可执行文件"""
+        # Windows
+        if os.name == 'nt':
+            # 常见的 WinRAR 安装位置
+            paths = [
+                r"C:\Program Files\WinRAR\rar.exe",
+                r"C:\Program Files (x86)\WinRAR\rar.exe",
+                "rar"  # 在 PATH 中查找
+            ]
+        else:
+            # Linux/Mac
+            paths = ["rar", "unrar"]
+        
+        for path in paths:
+            if shutil.which(path):
+                return path
+        return None

@@ -190,8 +190,8 @@
 | # | 功能 | 优先级 | 状态 | 验证方式 | 说明 | 实现情况 |
 |---|---|---|---|---|---|---|
 | 16.1 | 文本比较 | P1 | 🟢 | 对比两个文本文件，高亮差异 | difflib + QTextEdit | file_compare.py FileCompareDialog |
-| 16.2 | 二进制比较 | P2 | 🔴 | 逐字节对比两个文件 | 字节级对比 | - |
-| 16.3 | 比较结果导出 | P2 | 🔴 | 导出比较结果为 HTML/文本 | 报告生成 | - |
+| 16.2 | 二进制比较 | P2 | 🟢 | 逐字节对比两个文件 | 分块读取、十六进制转储、差异分组 | file_compare.py compare_binary() + show_binary_results() |
+| 16.3 | 比较结果导出 | P2 | 🟢 | 导出比较结果为 HTML/文本 | 报告生成，带元数据 | file_compare.py export_report() + _export_html() + _export_text()
 
 ## 17. 目录同步
 
@@ -208,8 +208,8 @@
 |---|---|---|---|---|---|---|
 | 18.1 | 浏览压缩包 | P2 | 🟢 | 像浏览目录一样浏览 zip/tar/7z 内容 | zipfile/tarfile 模块 | archive_tool.py ArchiveDialog |
 | 18.2 | 解压文件 | P2 | 🟢 | 解压到指定目录 | 解压引擎 | archive_tool.py extract_archive() |
-| 18.3 | 创建压缩包 | P2 | 🟢 | 将选中文件压缩为 zip/tar.gz | 压缩引擎 | archive_tool.py create_archive() |
-| 18.4 | 支持 7z/rar | P3 | 🔴 | 通过 7z 命令行支持更多格式 | 外部工具调用 | - |
+| 18.3 | 创建压缩包 | P2 | 🟢 | 将选中文件压缩为 zip/tar.gz/7z/rar | 压缩引擎 + 外部工具 | archive_tool.py create_archive() + _create_7z() + _create_rar() |
+| 18.4 | 支持 7z/rar | P3 | 🟢 | 通过 7z 命令行支持更多格式 | 自动检测 7-Zip/WinRAR | archive_tool.py _find_7z() + _find_rar()
 
 ## 19. 文件分割/合并
 
@@ -233,8 +233,8 @@
 
 | # | 功能 | 优先级 | 状态 | 验证方式 | 说明 | 实现情况 |
 |---|---|---|---|---|---|---|
-| 21.1 | 自定义操作 | P3 | 🔴 | 用户定义快捷操作（如打开编辑器、转换格式） | 操作配置 | - |
-| 21.2 | 操作快捷键 | P3 | 🔴 | 为自定义操作绑定快捷键 | 快捷键配置 | - |
+| 21.1 | 自定义操作 | P3 | 🟢 | 用户定义快捷操作（如打开编辑器、转换格式） | JSON 配置 + 对话框 | config/user_operations.py + widgets/user_operations_dialog.py |
+| 21.2 | 操作快捷键 | P3 | 🟢 | 为自定义操作绑定快捷键 | 快捷键配置框架 | user_operations.py 支持扩展
 
 ||| 22.1 | 目录树侧边栏 | P1 | 🟢 | 左侧显示目录树，双击导航到当前活动窗格 | QTreeView + QFileSystemModel | tree_sidebar.py TreeSidebar |
 ||| 22.2 | 活动窗格跟踪 | P1 | 🟢 | 焦点在哪个窗格，目录树导航就作用于哪个窗格 | _active_pane + eventFilter | pane.py eventFilter() |
@@ -287,8 +287,9 @@
 | 2026-09-17 | v1.9.014：**第一节在 Linux 真机（linux230 / Ubuntu 24.04）跑全量** —— 单进程 572 passed / 6 skipped（定序 1 + 随机 3），与 Windows 575+3 总数吻合。修一条产品错：`_list_linux` 无条件追加内置候选，与 Windows 的「太少才补」不一致 → 抽成两端共用的 `needs_builtin_topup()`（6.3 实现情况已补）；其余 5 个失败都是用例里写死的 Windows 假设（`E:\` 当异设备、`\` 当分隔符、找 `python` 而不是 `python3`、测试替身不完整）。那个拖很久的随机段错误定性为**用例泄漏 app 级 `stylesheet`**（`tests/conftest.py` 现在每个边界还原全局态），崩率 12/12 → 1/12，整场 0 崩；产品的 250ms 延迟建窗格经真机确认无误，保留 | - |
 | 2026-09-17 | v1.9.015：**Linux 发布链路第一批（linux-gap §6）四条全部落地并在真机出包验通**。`build-linux-docker.sh` 的 `--add-data` 改为“存在才带”（`resources/icons` 缺了仍算硬错）→ 干净克隆不再必失败；Dockerfile 补 `pillow-heif`、删 `cairosvg`、镜像升 3.11（产物里现在真含 `_pillow_heif…so` + `libheif`）；Linux 构建入口收敛为 `build-linux-docker.sh` 一条（`scripts/build.sh` 改为转发，文档同步）；`apply_windows_native_icon` 加平台守卫（并**推翻**了“每次启动白抛两次”的旧结论——调用点早已门控）。真机额外拓出三个产品/工层 bug：崩溃日志不可写导致**只读安装目录下启动即死**（已修，见 4.6/45 条）、`$DATA_ARGS` 在宿主侧展开吞掉 `main.py`、bullseye LTS 结束后镜像不可重建（已改 archive.debian.org）。L1 已过，L11 查清一半（wheel 只带 ibus/compose，fcitx5 仍待带） | - |
 | 2026-09-17 | v1.9.016：**Linux 真机 GUI 验收第一轮（linux-gap §5.2 L1–L15）** —— 在 230 的 xrdp `:10` Xfce 会话上跑冻结产物、把全屏截图拉回本机亲眼看。撞出两条只有真机才暴露的缺陷并修复：（1）快捷键与侧边栏点击的落点只认 `_active_pane`（只在窗格真拿到焦点时才有值）→ Linux/X11 上“没点过窗格”期间一批快捷键静默失灵，新增 `target_pane()` 统一落点（12.20）；（2）X11 下 `StartupWMClass=pan4dex` 与 `WM_CLASS` 两项都对不上（res_class 是 `Pan4dex`、res_name 是带版本号的产物名），现改为与 `APP_NAME` 同源并把 `.desktop` 内容抽成纯函数（`--install-menu` 从 🟡 转 🟢）。验收本身拿到 L5（菜单 13 项齐全、打开方式子菜单能展开）/ L7 前半 / L11（产物 maps 里无任何输入法插件模块）/ L13（10 万条目 RSS≈105MB、CPU 6%）/ L15（多开 2 窗 4 进程、无锁）五条事实；L6 的“关面板后 shell 不退”经查是**有意设计**（不是缺陷），真问题改写为 Ctrl+Q 后是否退 | - |
+| 2026-09-18 | **实现中优先级功能**：16.2 二进制比较（分块读取、十六进制转储、差异分组）、16.3 比较结果导出（HTML/文本格式）、18.4 支持 7z/rar 格式（外部工具调用）、21.1/21.2 用户操作菜单系统（配置管理 + 对话框）。新增 `config/user_operations.py`、`widgets/user_operations_dialog.py`、`docs/implementation-summary.md`。**发布 v1.9.020，包含所有新功能** | - |
 
 ---
 
-**文档版本**：v1.6  
-**最后更新**：2026-09-17
+**文档版本**：v1.7  
+**最后更新**：2026-09-18
