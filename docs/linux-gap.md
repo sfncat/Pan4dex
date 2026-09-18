@@ -203,7 +203,7 @@
 | 在 Linux 上会被 `skipif` 跳过的用例 | 6 项（回收站文案 2、注册表 2、Windows 命令行规则 1、Windows `Preferred DropEffect` 1） | 这些本来就是 Windows 专属，合理 |
 | 在 Windows 上被跳过的 Linux 专属用例 | 4 项（v1.9.014 新增 3 项 + v1.9.015 的只读安装目录复刻 1 项） | Windows 开 **585 passed / 4 skipped**，Linux（已提交状态、定序与随机各一次）**583 / 6**，总数 589 吻合 —— 但 Linux 专属那几项在 Windows 上**从未执行过**，只能在真机上算测到。v1.9.016 再加 14 项（落点 8 + `.desktop` 6）后 Windows 为 **599 / 4**，Linux（已提交状态 72de75a，定序与随机各一次）**597 / 6**（差 2 项 = Windows 专属的 skipif 门控，新用例本身两端全绿）。v1.9.017 再加 20 项（快捷键作用面）后 Windows 为 **619 / 4**，Linux 侧 **617 / 6**（总数 623 吻合）。v1.9.018 再加 6 项（回收站只给本地位置）后 Windows **624 / 5**（多的那 1 项跳过是系统剪贴板被占用，环境性飘移），Linux（已提交状态 `4ad6dd1`，定序与随机各一次）**623 / 6**，总数 629 吻合。v1.9.019 再加 37 项（pyte 私有序列容错）后 Windows **662 / 4**（定序 + 随机文件序各一次），Linux（同一份改动，定序与随机各一次）**660 / 6**，总数 666 吻合 |
 | `core/open_with.py` 的 Linux 枚举 `_list_linux` | ✅ v1.9.014 起在 linux230 真机上测满（`test_open_with` 23 passed），并在真机上抓出它与 Windows 不一致的兜底门控 | 真实桌面环境里的目录优先级、`Exec` 里的 `%f/%U`、mime-info 缓存路径都验过了；剩下的是界面里的观感（L5） |
-| `PtyBackend` 的 Linux 分支（`pty`/`fcntl`/`termios`） | 本机 0 次（Windows 走 winpty）；真机上 `test_terminal_lifecycle` 13 passed | ✅ v1.9.019 真机闭环（L6）：zsh / `$TERM` / `stty size` / 缩放跟随 / htop 正常；vim 那条是本轮修掉的（pyte 私有序列） |
+| `PtyBackend` 的 Linux 分支（`pty`/`fcntl`/`termios`） | 本机 0 次（Windows 走 winpty）；真机上 `test_terminal_lifecycle` 13 passed | ✅ v1.9.019 真机闭环（L6）：zsh / `$TERM` / `stty size` / 缩放跟随 / htop 首屏正常；vim 那条是本轮修掉的（pyte 私有序列），源码版 p53 与产物版 p54 各复验一次 |
 | `same_volume()` 的正向跨挂载点判定 | ✅ v1.9.014：真机（两个 CIFS 挂载 + 一堆系统挂载）上 `test_m2_file_operations` 38 passed；用例不再写死 `E:\` | 拖放动作决策在 Linux 上的正确性不再靠推断；真挂载上的耗时仍在 L2/L4 |
 | 「慢位置」判定的 Linux 矩阵 | ✅ v1.9.013 起在 Windows 主机上测满（`tests/test_mounts.py`，82 项：喂真实 `/proc/mounts` 文本验解析/匹配/类型三段） | 这类判据拆成纯函数后，“Linux 专属”不等于“必须 Linux 才能测”；剩下要真机的只有「挂载表本身长什么样」 |
 
@@ -291,7 +291,7 @@ offscreen 下能起，日志里 `延迟创建 pane2-4: 189.2ms` 正常完成。
 > `/proc/<pid>/task/<pid>/fd/9`、`/sys/kernel/security/apparmor/revision`）——而 `stop()` 只在
 > 遍历循环里查 `_stop`，卡在系统调用里时它根本没机会查。本段只记录，不改代码。
 >
-> **v1.9.019 第七轮（p50 / p51 / p52b / p53）—— L5 与 L6 闭环**。L5 这次真的把文件交给了
+> **v1.9.019 第七轮（p50 / p51 / p52b / p53 / p54）—— L5 与 L6 闭环**。L5 这次真的把文件交给了
 > 外部程序：子菜单展开后回车，`ristretto` 起来，`cmdline: /usr/bin/ristretto /home/kali/pics/vector.svg`
 > （干净绝对路径、无 `%f` 残留）、3s 后仍存活、窗口标题 `vector.svg - Image Viewer [4/4]`、
 > 日志 0 次 `symbol lookup error` —— 打包出去的产物调外部 GUI 程序这条链是通的。
@@ -302,8 +302,13 @@ offscreen 下能起，日志里 `延迟创建 pane2-4: 189.2ms` 正常完成。
 > 停在 shell 历史行上，2s/4s/6s 三张截图字节完全相同（289540），而同一个 dock 里 htop、less 正常。
 > 定案靠的是**产物自己的 stderr**（`nohup ... > run.log 2>&1`）：整份日志里只有一条 traceback，
 > `_on_output` → `Stream.feed` → `TypeError: Screen.select_graphic_rendition() got an unexpected
-> keyword argument 'private'`（根因与修复见 gotchas 第 52 条）；p53 复验：Traceback 0 次，
-> vim 首屏与状态行 `"~/p53/vimfile.txt" 3L, 12B  1,1 All` 真画出来了，`:wq` 后回到 zsh 提示符。
+> keyword argument 'private'`（根因与修复见 gotchas 第 52 条）；p53 复验（源码版）：Traceback 0 次，
+> vim 首屏与状态行 `"~/p53/vimfile.txt" 3L, 12B  1,1 All` 真画出来了，`:wq` 后回到 zsh 提示符；
+> p54 复验（**v1.9.019 产物版**）：产物 stderr 里 Traceback 也是 0 次，vim 首屏同样画出，
+> 键入的 `UNIQUE-TEXT-9154` 落盘，退出后打出 `3L, 28B written` 并回到提示符，htop 首屏正常。
+> ⚠️ p54 还推了自己的判据：「三张连拍截图不再完全相同」靠不住 —— 产物版得到
+> 272714/272714/272714（脚本报 🟡）而 vim 明明画出来了，因为静止的 vim 屏幕本来就不变；
+> 改前可疑是因为那张定格画面的**内容是 shell 历史行**，不是「帧间无差异」这个形式属性。
 
 | # | 验什么 | 判定标准 | 状态（最新一轮） |
 |---|---|---|---|
@@ -312,7 +317,7 @@ offscreen 下能起，日志里 `延迟创建 pane2-4: 189.2ms` 正常完成。
 | L3 | 回收站 | 本地删除进 Trash；gvfs/CIFS 上**行为**是否与文案一致 | ✅ **v1.9.018 第五轮（p46）三条链全绿（GUI 真点 Yes）**：本地 `Del` → 文件在 `~/.local/share/Trash/files/`；CIFS `Del` → 文件消失且共享根**不再**长 `.Trash-1000/`（就是本版修的那条），并弹「删除完成 / 1 个项目位于网络位置，已永久删除（无法恢复）」；`Shift+Del` → 文件消失且回收站里没有它。断言用对话框标题（确认删除 / 确认永久删除 / 删除完成），不再靠截图字节数（gotchas 第 51 条）。p41 那两段「没落地」已正名：默认按钮 No + `key Return` = 取消<br>⚠️ 待拍：要不要把确认框默认按钮翻成 Yes（资源管理器里回车就是 Yes）|
 | L4 | 拖放 | 从 Nautilus/Dolphin 拖入：同分区应移动、跨分区应复制；源端不允许 move 时不得删源 | ❓ **未做**：跨程序拖拽需要真鼠标轨迹（`xdotool` 能做但极不稳），放到有人在现场的那一轮 |
 | L5 | 打开方式 | 右键 → 打开方式：候选列表是否来自 `.desktop`、mime 匹配是否正确、`%f/%U` 是否被剥掉 | ✅ **v1.9.018 第三轮命中（p41 shot 96）**：对 `photo_2.png` 展开子菜单，候选是 **Image Viewer / ristretto Image Viewer / xdg-open / 选择其它应用并设为默认…**，状态栏显示解析出的 `/usr/bin/eog` —— 确实来自 `.desktop` 枚举且 mime 匹配对了，`Exec` 里的 `%f` 已被剥掉（否则会被当成文件名）。<br>✅ **v1.9.019 第七轮（p50）闭环**：子菜单里回车选中一项后，**ristretto 真把文件打开了** —— `cmdline: /usr/bin/ristretto /home/kali/pics/vector.svg`（绝对路径干净、无 `%f` 残留）、3s 后仍存活、窗口标题 `vector.svg - Image Viewer [4/4]`、截图里图真渲染出来了，日志 0 次 `symbol lookup error`（打包产物调外部 GUI 的环境变量没把子进程弄死）。🟡 本轮两条「断言失败」都不是产品问题，而是取证假设错了：窗格排序是**名称降序**（第一行不是 `photo_0.png`），而 Qt 的 `Right` 展开子菜单时**已经自动高亮第一项**，再 `Down` 一下就到第 2 项 |
-| L6 | 内嵌终端 | `$SHELL`、vim/htop 全屏程序、resize、关窗口后 shell 是否真退 | ✅ **v1.9.019 第七轮（p50/p51/p52b/p53）闭环**：F4 开 dock、起的是 zsh、`$TERM`=xterm-256color、`stty size` 与 dock 尺寸一致；**缩放主窗口 2558x1387 → 1400x780 后 `stty size` 11 316 → 10 171**（PTY winsize 真的跟着改）；关 dock 后 zsh 25→25（会话保活，与 `closeEvent` 设计一致）；htop / less 界面正常；**在真 vim 里按 F7 不弹「新建文件夹」框、窗格目录零变化**（v1.9.017 守卫在跨进程的全屏程序里也拦得住）。本轮修掉的：**vim 完全不显示**（pyte 私有序列 → `Stream.feed` 抛异常 → 整段输出被丢，见 gotchas 第 52 条）。⚠️ 残留一条未修：pyte 不实现备用屏（`\x1b[?1049h/l`），vim 退出后 `~` 与状态行会残留在 shell 屏幕上（真终端里会被还原），不影响输入链，已记进 unsolved-issues |
+| L6 | 内嵌终端 | `$SHELL`、vim/htop 全屏程序、resize、关窗口后 shell 是否真退 | ✅ **v1.9.019 第七轮（p50/p51/p52b/p53/p54）闭环**：F4 开 dock、起的是 zsh、`$TERM`=xterm-256color、`stty size` 与 dock 尺寸一致；**缩放主窗口 2558x1387 → 1400x780 后 `stty size` 11 316 → 10 171**（PTY winsize 真的跟着改）；关 dock 后 zsh 25→25（会话保活，与 `closeEvent` 设计一致）；htop / less 界面正常；**在真 vim 里按 F7 不弹「新建文件夹」框、窗格目录零变化**（v1.9.017 守卫在跨进程的全屏程序里也拦得住）。本轮修掉的：**vim 完全不显示**（pyte 私有序列 → `Stream.feed` 抛异常 → 整段输出被丢，见 gotchas 第 52 条），源码版 p53 与 **v1.9.019 产物版 p54** 各复验一次（两轮都是 Traceback 0 次 + 亲眼核对裁图里 vim 首屏已画出）。⚠️ 残留一条未修：pyte 不实现备用屏（`\x1b[?1049h/l`），vim 退出后 `~` 与状态行会残留在 shell 屏幕上（真终端里会被还原），不影响输入链，已记进 unsolved-issues |
 | L7 | 图标与缩略图 | 确认「所有文件同图标」的实际观感；SVG/PNG/HEIC 缩略图是否出得来（qsvg 插件、pillow-heif） | 🟡 **v1.9.016 前半已确认**：非目录文件确实共用同一个通用图标（观感与 Windows 一致地差，属第三批的 `QFileIconProvider` 范围）；缩略图与 HEIC 未试（造 HEIC 靶子需要 `pillow_heif`，230 宿主 venv 里没有） |
 | L8 | 桌面集成 | `--install-menu` 后应用菜单出现图标；GNOME 任务栏分组/窗口图标是否正确（WM_CLASS 那条） | ✅ **v1.9.016 修匹配键 + 本轮真机闭环**：`--install-menu` 生成的 `StartupWMClass=Pan4dex` 与运行窗口的 `WM_CLASS = "pan4dex-1.9.016-linux", "Pan4dex"` **第二项完全一致**，`Exec` 指着正跑的产物、文件无 CR。仍待的只剩 GNOME 上“图标真的分组了”的目视确认（230 是 Xfce，且未调 `setDesktopFileName`）|
 | L9 | 全盘搜索 | 搜 `/` 或 `/home`：`/proc`、`/sys` 是否被扫、耗时、能否中途取消 | ✅ **v1.9.018 第五/六轮闭环（p46 §4 + p48）**：搜索对话框真跑起来（`/home/kali/pics` + `*` → 「搜索完成，共找到 3 个文件」），上限提示「共 40,944 个，仅显示前 5000 项」、空目录「请输入搜索目录」、目录不存在校验均命中；**中途停止用 A/B 坐实**：同一查询（`/home/kali` + `*.txt`，全盘 130 万文件、纯遍历 57.8s）3s 就点停止 → **503** 项，不点 → **40,944** 项（`find` 数得 40,933，吻合 —— 不点那跑确实跑完了）。⚠️ 两条量出而未改：停止与跑完的状态栏文案**一模一样**（用户看不出这是部分结果）；搜 `/` 的 `/proc`/`/sys`/`/dev` 后果见 §2.5（内容搜索下不可中断）|
