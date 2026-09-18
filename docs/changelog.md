@@ -19,6 +19,70 @@
 
 ## 更新记录
 
+### v1.9.019 — 2026-09-18（开发分支 dev/shell-behavior-smb-perf）
+
+> 真机 GUI 验收第七轮（p50–p53）：L5「打开方式」与 L6「内嵌终端」两条挂账一起闭环，
+> 代价是撞出本轮唯一的真缺陷 —— **Linux 内嵌终端里 vim 完全不显示**。它的难查之处全在
+> 现象里：同一个 dock 里 htop、less 正常，只有 vim 不行；而 vim 的进程起得来、`:q!` 退得掉
+> （输入链与 PTY 全好），坏的只是「屏幕」。
+
+#### 🐛 缺陷修复：pyte 一抛异常就吃掉一整帧，vim 的首屏就此没了
+- **真机现场**（p50/p51，linux230 真产物）：终端里启动 vim，dock 一直停在 shell 的历史行上，
+  2s/4s/6s 三张截图字节完全相同（289540）；同一个 dock 里 htop 与 less 都正常。两条直觉
+  解释（“截图太早”、“备用屏没实现”）都是错的 —— 后者只会让退出后残留，不会让首屏不出现
+- **定案证据只有一行**（产物自己的 stderr，`nohup … > run.log 2>&1`）：整份日志里就一条
+  traceback —— `_on_output` → `Stream.feed` →
+  `TypeError: Screen.select_graphic_rendition() got an unexpected keyword argument 'private'`。
+  它**不进崩溃日志文件**（`pan4dex_crash.log` 里只有「启动于」标记），只出现在 stderr
+- **根因链（三层）**：① vim 发的 `CSI ? … m` 里，pyte 对带私有标记的 CSI 无条件传
+  `private=True`，而它自己 **18/23 个** CSI 处理函数不收这个参数（`report_device_status`
+  即 `CSI ? 6n` 同病）；② `Stream.feed` 抛异常时 pyte 会重置状态机并往上抛，**当前这一整段
+  PTY 输出被丢** —— vim 是「首屏整屏绘制 + 之后只发增量」的程序，丢一段就是永久错位；
+  ③ 产品侧 `_on_output` 没包 try/except，异常从 Qt 槽里逃出去被 excepthook 吞掉，没人知道
+  那一帧没了
+- **修法两层，缺一层都不行**：`TerminalScreen`（`widgets/terminal_panel.py`）按**函数签名**
+  筛出那批处理函数并包一层（写死名单会在 pyte 升级后静默失效），把冷僻序列**剥掉私有
+  标记后照常执行**（参数仍生效，不是整条吞掉）；
+  `_on_output` 给 `feed` 加容错（计数 + 限流日志），一帧解析失败只丢那一帧、不拿整条终端链
+  陪葬，且崩了照样调度重绘
+- **版本矩阵**：pyte **0.8.0 与 0.8.2 都抛**（宿主 venv 与产物各一版，builder 镜像不锁版本），
+  所以容错层与用例都是按签名筛而不是按版本分支；两版对 `CSI ? … $y` 的**渲染**不一致
+  （0.8.0 多画一个 `y`），用例因此分两组：会崩的那组断精确渲染，冷僻那组只断「后续输出还在」
+
+#### 🧪 用例与两端发布
+- 新增 `tests/test_terminal_escape_tolerance.py` 37 项：肇事序列前后的文本都还在、
+  18 个处理函数逐个按 `private=True` 点一遍不抛、按真机抓到的 vim 启动流形状造的整屏
+  blob 仍能画出内容、一帧崩了不逃进 Qt 也照样重绘、`restart()` 重建的是容错屏幕；
+  另有一组「反面自证」（同样的输入给 `pyte.HistoryScreen` 就是要抛，上游修好则转 skip）
+- **变异验证 5 条全被抓住**（`build/mutate_pyte_fix.py`）：清空容错名单 7 failed / 包了壳
+  忘弹 `private` 6 failed / 拆掉 `feed` 容错 3 failed / 崩了不调度重绘 1 failed /
+  `restart` 退回原生屏幕 1 failed
+- 两端全量两轮：Windows **662 passed / 4 skipped**（定序 + 随机文件序）、Linux **660 / 6**
+  （定序 + 随机各一次，exit 0），总数 666 吻合
+
+#### ✅ 真机自证（p53，修完之后跑源码版）
+- 运行日志里 Traceback **0 次**（改前恒为 1）；三张截图不再完全相同
+- **vim 真画出来了**：`aaa/bbb/ccc` + `~` 列 + 状态行 `"~/p53/vimfile.txt" 3L, 12B  1,1 All`；
+  在 vim 里插入一行 `UNIQUE-TEXT-9137` 后 `:wq`，磁盘上的文件内容真的是它；退出后回到
+  zsh 提示符（画面跟随，不是定格）；htop 首屏照常画出（它退出后的残留本轮
+  未专门观察，见问题 14）
+- ⚠️ 修完仍残留一条：pyte 没有备用屏概念（`\x1b[?1049h` 只被记进 `screen.mode` 无人消费），
+  vim 退出后 `~` 行与状态行会残留在 shell 屏幕上 —— 已记 unsolved-issues 问题 14
+
+#### 📐 L5 / L6 本轮结论（ln5 最后两条挂账闭环）
+- **L5 打开方式**：子菜单里回车选中一项后 **ristretto 真把图打开了** ——
+  `cmdline: /usr/bin/ristretto /home/kali/pics/vector.svg`（绝对路径干净、无 `%f` 残留）、
+  3s 后仍存活、窗口标题 `vector.svg - Image Viewer [4/4]`、日志 0 次 `symbol lookup error`。
+  本轮两条「断言失败」都不是产品问题而是取证假设错了：窗格排序是名称**降序**，而 Qt 的
+  `Right` 展开子菜单时已经自动高亮第一项
+- **L6 内嵌终端**：F4 开 dock、起的是 zsh、`$TERM`=xterm-256color、`stty size` 与 dock 尺寸
+  一致；**缩放主窗口 2558x1387 → 1400x780 后 `stty size` 11 316 → 10 171**（PTY winsize
+  真的跟着改）；关 dock 后 zsh 25→25（会话保活，与 `closeEvent` 设计一致）；而且在真 vim 里
+  按 F7 **不弹「新建文件夹」框、窗格目录零变化** —— v1.9.017 那条守卫的作用面在跨进程的
+  全屏程序里也拦得住（这是它唯一能在真机上自证的形式）
+
+---
+
 ### v1.9.018 — 2026-09-17/18（开发分支 dev/shell-behavior-smb-perf）
 
 > 真机 GUI 验收第三到第六轮（p41–p49）。第三轮的收获一半是好消息（回焦与守卫都在真机
