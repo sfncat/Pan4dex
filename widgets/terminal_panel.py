@@ -246,6 +246,60 @@ class PtyBackend:
 
 
 # ---------------------------------------------------------------------------
+# pyte 屏幕：把 pyte 认不出的转义序列「剥掉标记继续走」而不是「炸掉」
+# ---------------------------------------------------------------------------
+def _private_intolerant_csi_handlers():
+    """筛出 pyte CSI 派发表里不接 `private` 关键字参数的处理函数名。
+
+    pyte 的 `Stream._parser_fsm` 碰到带私有标记的序列（`CSI ? … <字母>`）时，
+    会无条件给目标函数传 `private=True`；而它自己的 CSI 表里有十来个函数不收
+    这个参数（实测 0.8.0 / 0.8.2 各 18 个，`select_graphic_rendition` 即 SGR
+    就是其中之一）。按签名筛而不是写死名单，是为了让这份容忍在 pyte 升级、
+    表项增删之后依然成立。
+    """
+    import inspect
+    names = []
+    for attr in sorted(set(pyte.Stream.csi.values())):
+        fn = getattr(pyte.Screen, attr, None)
+        if fn is None or not callable(fn):
+            continue
+        params = inspect.signature(fn).parameters
+        if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()):
+            continue                                   # 有 **kwargs，自己就能吞
+        if "private" in params:
+            continue                                   # 本来就实现了私有标记
+        names.append(attr)
+    return names
+
+
+class TerminalScreen(pyte.HistoryScreen):
+    """`pyte.HistoryScreen` + 对未实现序列的容错。
+
+    与父类的唯一差别：带私有标记而 pyte 没实现的那些 CSI 序列，先剥掉
+    `private` 标记再按普通序列执行（参数仍然生效），而不是抛
+    `TypeError: ... got an unexpected keyword argument 'private'`。真机上这条
+    异常正是「内嵌终端里 vim 完全不显示」的引信（htop/less 不发该序列所以
+    正常），详见 docs/gotchas.md 与 docs/changelog.md v1.9.019。
+    """
+
+
+def _install_private_tolerance():
+    """把上面筛出来的处理函数逐个包一层（模块导入时执行一次）。"""
+    for attr in _private_intolerant_csi_handlers():
+        base = getattr(pyte.HistoryScreen, attr)
+
+        def tolerant(self, *args, _base=base, **kwargs):
+            kwargs.pop("private", None)
+            return _base(self, *args, **kwargs)
+
+        tolerant.__name__ = attr
+        setattr(TerminalScreen, attr, tolerant)
+
+
+_install_private_tolerance()
+
+
+# ---------------------------------------------------------------------------
 # 终端视图
 # ---------------------------------------------------------------------------
 class TerminalView(QPlainTextEdit):
@@ -273,9 +327,10 @@ class TerminalView(QPlainTextEdit):
         self.MAX_RENDER_LINES = 2000  # 渲染文档行数上限（防止超长输出无限增长）
         self._hist_cache = []         # 历史行文本增量缓存
         self._cache_pages = []        # 缓存对应的页快照（用于检测顶部丢页）
-        self._screen = pyte.HistoryScreen(self._cols, self._rows, history=2000)
+        self._screen = TerminalScreen(self._cols, self._rows, history=2000)
         self._stream = pyte.Stream(self._screen)
         self._backend = None
+        self._feed_errors = 0      # 解析失败次数（只用于日志限流）
         self._last_text = ""
         self._user_scrolled_up = False
         self._resize_pending = False
@@ -394,9 +449,10 @@ class TerminalView(QPlainTextEdit):
             self._backend.terminate()
             self._backend = None
         self._reader = None
-        self._screen = pyte.HistoryScreen(self._cols, self._rows, history=2000)
+        self._screen = TerminalScreen(self._cols, self._rows, history=2000)
         self._stream = pyte.Stream(self._screen)
         self._hist_cache = []
+        self._feed_errors = 0
         self._cache_pages = []
         self._last_text = ""
         self._exited_shown = False
@@ -448,7 +504,18 @@ class TerminalView(QPlainTextEdit):
 
     # -- 输出渲染 ----------------------------------------------------------
     def _on_output(self, data: str):
-        self._stream.feed(data)
+        # 解析失败不许带走这一帧，也不许把异常抛回 Qt 事件循环。pyte 一旦在
+        # `feed` 里抛，它会重置状态机并丢掉当前这段 PTY 输出的剩余部分；对 vim
+        # 这种「首屏整屏绘制 + 之后只发增量」的程序，丢一段就等于画面永久错位，
+        # 而调用方（读线程投递的 Qt 槽）根本无从知晓。屏幕能画多少画多少。
+        try:
+            self._stream.feed(data)
+        except Exception as e:
+            self._feed_errors += 1
+            if self._feed_errors <= 3 or self._feed_errors % 200 == 0:
+                logger.warning(
+                    f"终端输出解析失败，已跳过这一段（累计 {self._feed_errors} 次）: "
+                    f"{e!r} 片段起 {data[:40]!r}", exc_info=True)
         # 合并渲染：仅在空闲时调度一次，30ms 内的连续输出合并为一次重绘
         if not self._render_pending:
             self._render_pending = True
