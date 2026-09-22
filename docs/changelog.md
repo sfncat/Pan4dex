@@ -19,6 +19,39 @@
 
 ## 更新记录
 
+### v1.9.020 — 2026-09-22（开发分支 dev/shell-behavior-smb-perf）
+
+> 闭 L2（万条目真共享）查出的两条产品缺口：**枚举不可取消**、**导航离开慢位置后仍把盘扫完并采纳**。
+> 真 NAS 上 big10k 靶子（用户要求先留）还在，赶在删靶前修完并用 SMB / 本地 ext4 同条数 A/B 复测。
+
+#### ⚡ 性能优化 / 🐛 缺陷修复：在飞的目录枚举现在能被中断，不再白扫完一个慢共享
+- `enumerate_dir(path, show_hidden, cancel=None)`：新增取消令牌。扫描主体抽成 `_scan_into`，
+  由 `_Enumerator` 每 `_ENUM_CANCEL_CHECK_EVERY`（256）项探一次令牌；命中抛
+  `_EnumerationAborted`（区别于「空目录」「无权限」），**不拿半截列表回采纳端**
+- `_LoadTask` 自己就是取消令牌（`__call__ = _should_stop`，含 `abandoned` 与 gen 校验）：
+  gen 变了或被放弃就中断，`run()` **不回投条目、只投一个新拆出的 `cancelled(node, gen, task)`**
+  信号，用来复位 `loading`（不回投 = 不在主线程采纳）
+- 导航离开慢位置：`set_directory` 切换后调 `_drop_stale_scans`，**复用 `core/mounts.py` 的
+  慢位置判据**（`_is_network` → `is_remote_location`）只放弃离开那个目录的在飞扫描；本地目录
+  不中断（一次本地扫描最多几百毫秒，跑完不浪费）。另给显式入口 `DirStoreModel.cancel_load(path)`
+- **采纳端两道身份校验**：`_on_entries_loaded` / `_on_load_cancelled` 都校 gen 与「是不是
+  本节点当前跟踪的那次枚举」（`_pending` 按任务身份除名，不按 key 弹），避免 F5 后迟到的旧投递
+  误清当代的 `loading`（同一目录被并发扫两遍）
+- **真机实测**（linux230，`:10` 真 X，SMB big10k vs 本地 ext4 `/home/kali/big10k` 同 10,000 条）：
+  被放弃的枚举在切走后 **0.24s 停扫**、经 `cancelled` 回报未采纳，心跳最大 10.3ms、视图不被
+  1 万条目污染（**旧基线：切走后 23.2s 返回并被采纳、主线程阻塞 1388ms**）。前景「盯着目录」
+  时 1 万条目采纳仍停摆 ~1.2s（SMB 1220ms vs 本地 1209ms），是「行落地」通用代价，另案
+
+#### 🚦 测试
+- `tests/test_dir_model.py` 新增 5 项中断用例：取消令牌中途停扫、被超越的旧扫描自停不伤新请求、
+  离开慢位置停扫且不采纳、离开本地目录不中断、`cancel_load` 停扫后可重扫。本机与 230 均绿；
+  `dir_model`/`mounts`/`filter_bar` 230 复跑 168 passed
+
+#### 📝 文档
+- `feature-checklist.md`：L2 行 🟡 → ✅（两条缺口已闭）；`linux-gap.md` §5.2 第 12 条：修复与复测结果；
+  `gotchas.md` 新增第 54 条：取消令牌谓词的「方向」陷阱（`_still_wanted` 当 `__call__` 会让健康扫描
+  自杀）与「测试替身不能自带一套取消判据」的教训
+
 ### v1.9.019 — 2026-09-18（开发分支 dev/shell-behavior-smb-perf）
 
 > 真机 GUI 验收第七轮（p50–p54）：L5「打开方式」与 L6「内嵌终端」两条挂账一起闭环，

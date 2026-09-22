@@ -17,7 +17,7 @@
 | 1.5 | 窗格底部进度条 | P0 | 🟢 | 文件操作时在窗格底部显示进度条 | QProgressBar 内嵌窗格底部 | pane.py |
 | 1.6 | 拖拽目标高亮 | P0 | 🟢 | 跨窗格拖拽时目标窗格边框高亮（蓝色） | QSS 动态样式 | pane.py dragEnterEvent |
 | 1.7 | 主窗口框架 | P0 | 🟢 | 菜单栏、工具栏、状态栏、QDockWidget 区域 | QMainWindow | main_window.py |
-| 1.8 | 列头排序 | P0 | 🟢 | 点「名称/大小/修改日期」列头切换升降序；**任一方向下目录都排在文件前**；大小按字节数而非“4.0 KB”字符串 | `PaneSortProxyModel.lessThan` 只读条目缓存属性（不 stat、不碰网络） | pane.py |
+| 1.8 | 列头排序 | P0 | 🟢 | 点「名称/大小/修改日期」列头切换升降序；**任一方向下目录都排在文件前**；大小按字节数而非“4.0 KB”字符串。v1.9.020 补上规模证据：真 CIFS 上 10,000 条目**读全表逐条断言单调**（目录块在大小列按名称、文件块按字节不增；降序时同类内部反转），排序期 **0 次文件系统查询**；产物版真鼠标点表头两次画面从 `d00000` 起翻成 `d00199` 起（p59e / p60d，取证坑见 gotchas 53） | `PaneSortProxyModel.lessThan` 只读条目缓存属性（不 stat、不碰网络） | pane.py |
 
 ## 2. 文件操作
 
@@ -249,13 +249,14 @@
 
 | # | 任务 | 优先级 | 状态 | 验证方式 | 说明 |
 |---|---|---|---|---|---|
-| L2 | 万条目真共享（不在用户 NAS 上造 1 万个文件） | P0 | 🔴 | 在真实 SMB/NFS 共享上验证性能与功能 | 需要用户 NAS 环境 |
+| L2 | 万条目真共享（靶子经用户授权后在 NAS 上造，验完删） | P0 | ✅ | 真 CIFS/SMB3.1.1 上的 10,000 条目目录（9,800 文件 + 200 目录）逐条对三判据，源码版（offscreen 探针 p57/p59e/p59f）与 **v1.9.020 产物版（`:10` 真 X + xdotool 真键鼠，p60c–p60e）**各一轮；本地 ext4 同条数目录作 A/B 对照；v1.9.020 修复枚举取消链路后 p59e/p59f 复跑（SMB 与本地 ext4 `/home/kali/big10k` 同条数） | **三条判据原两条不成立，v1.9.020 修复后全部成立（余一项另案）**。✅ 判据命中 26/26（不挂 watcher / 永久删除文案 / 跳服务器判跳卷）；✅ 不闪：主线程最大停摆 1256ms，而本地同条数对照（扫描 0.23s vs 10.08s）**也是 1256ms** → 那是「1 万行落地」的通用代价、与 SMB 无关，产物版状态栏真读得到「200 个目录, 9800 个文件」；✅ 列头排序在 1 万条目上读全表断单调、0 次文件系统查询（1.8 至此才算真验过）。✅ 「能取消」（v1.9.020 修）：`enumerate_dir(cancel=...)` + `_Enumerator` 每 256 项探一次取消令牌（令牌即 `_LoadTask`，`__call__`=「该停了吗」，含 gen 与 abandoned 校验），命中抛 `_EnumerationAborted`、只投 `cancelled` 不回投条目；显式入口 `DirStoreModel.cancel_load(path)`。✅ 「切走窗格不继续扫」（v1.9.020 修）：`set_directory` 切换后 `_drop_stale_scans` 复用慢位置判据（`_is_network`→`mounts.is_remote_location`）放弃离开目录的在飞枚举——复测 p59e [C]：被放弃的枚举在切走后 **0.24s 停扫**、经 `cancelled` 回报未采纳，心跳最大 10.3ms、视图仍是小目录 1 行（对照改前 23.2s 返回并被采纳、主线程阻塞 1388ms）。⏳ 残余（另案）：前景「盯着目录」时 1 万条目采纳仍在主线程停摆 ~1.2s（p59f A/B：SMB 1220ms vs 本地 ext4 1209ms，扫描差 47 倍而停摆同量级）→ 是「行落地」通用代价，需分批插入才压得下，与取消链路无关。另：NAS 靶子本轮借它复测仍未删（用户要求先留），收尾脚本 `tmp/p58z_cleanup_nas_target.py` 带四道安全闸待执行 |
 | L4 | 真鼠标拖拽 | P0 | 🔴 | 在真实设备上测试跨窗格拖拽性能 | 需要有人在现场 |
 | L7 | HEIC 缩略图支持 | P1 | ✅ | Windows/Linux 两端产物 + 本机探针 + 用例 | v1.9.019 已验证，p56 脚本真机截图 |
 | L11 | 桌面真打字 | P2 | 🔴 | 在真实 Wayland/X11 环境下测试输入法 | 需要真实桌面环境 |
 | L12 | Wayland 原生支持 | P2 | 🔴 | 在 Wayland 会话下运行并验证 | 需 Wayland 环境 |
+| T1 | `test_m4_theme` 的 5 条陈旧断言（changelog 早期版本记为「已列入待办」） | P2 | ✅ | 本机 offscreen 单跑 `pytest tests/test_m4_theme.py -q` → **21 passed**；连同 `test_bookmarks` / `test_filter_bar` / `test_pane_dir_store` 合并跑 → **173 passed / 1 skipped**（查跨用例 app 级全局态泄漏，见 gotchas 44 条），2026-09-22 复跑结果一致 | 那 5 条测的是根本不存在的接口（`save_custom_theme`/`delete_custom_theme`/`export_theme`/`import_theme`/`_generate_qss`），已改测真实契约并加反向守卫 `test_no_custom_theme_persistence_api`；本行是把 changelog 里那条「待办」正式闭环，此前它从未进过本表 |
 
-**注**：L7 已完成，状态为 ✅；其他任务标记为待办。
+**注**：L7、T1 已完成，状态为 ✅；L2 本轮逐条实测，原两条能力缺口（枚举不可取消、切走仍扫完）已由 v1.9.020 的枚举取消链路闭合（真 NAS 上 p59e [C] 实测切走后 0.24s 停扫、未被采纳），升为 ✅；前景 1 万条目采纳 ~1.2s 停摆属「行落地」通用代价（本地同条数也一样），另案记在分批插入；L4/L11/L12 仍依赖真实环境或人手，无法在代码层闭环，证据与阻塞原因见 `docs/linux-gap.md` §5.2。
 
 ---
 
@@ -288,8 +289,10 @@
 | 2026-09-17 | v1.9.015：**Linux 发布链路第一批（linux-gap §6）四条全部落地并在真机出包验通**。`build-linux-docker.sh` 的 `--add-data` 改为“存在才带”（`resources/icons` 缺了仍算硬错）→ 干净克隆不再必失败；Dockerfile 补 `pillow-heif`、删 `cairosvg`、镜像升 3.11（产物里现在真含 `_pillow_heif…so` + `libheif`）；Linux 构建入口收敛为 `build-linux-docker.sh` 一条（`scripts/build.sh` 改为转发，文档同步）；`apply_windows_native_icon` 加平台守卫（并**推翻**了“每次启动白抛两次”的旧结论——调用点早已门控）。真机额外拓出三个产品/工层 bug：崩溃日志不可写导致**只读安装目录下启动即死**（已修，见 4.6/45 条）、`$DATA_ARGS` 在宿主侧展开吞掉 `main.py`、bullseye LTS 结束后镜像不可重建（已改 archive.debian.org）。L1 已过，L11 查清一半（wheel 只带 ibus/compose，fcitx5 仍待带） | - |
 | 2026-09-17 | v1.9.016：**Linux 真机 GUI 验收第一轮（linux-gap §5.2 L1–L15）** —— 在 230 的 xrdp `:10` Xfce 会话上跑冻结产物、把全屏截图拉回本机亲眼看。撞出两条只有真机才暴露的缺陷并修复：（1）快捷键与侧边栏点击的落点只认 `_active_pane`（只在窗格真拿到焦点时才有值）→ Linux/X11 上“没点过窗格”期间一批快捷键静默失灵，新增 `target_pane()` 统一落点（12.20）；（2）X11 下 `StartupWMClass=pan4dex` 与 `WM_CLASS` 两项都对不上（res_class 是 `Pan4dex`、res_name 是带版本号的产物名），现改为与 `APP_NAME` 同源并把 `.desktop` 内容抽成纯函数（`--install-menu` 从 🟡 转 🟢）。验收本身拿到 L5（菜单 13 项齐全、打开方式子菜单能展开）/ L7 前半 / L11（产物 maps 里无任何输入法插件模块）/ L13（10 万条目 RSS≈105MB、CPU 6%）/ L15（多开 2 窗 4 进程、无锁）五条事实；L6 的“关面板后 shell 不退”经查是**有意设计**（不是缺陷），真问题改写为 Ctrl+Q 后是否退 | - |
 | 2026-09-18 | **实现中优先级功能**：16.2 二进制比较（分块读取、十六进制转储、差异分组）、16.3 比较结果导出（HTML/文本格式）、18.4 支持 7z/rar 格式（外部工具调用）、21.1/21.2 用户操作菜单系统（配置管理 + 对话框）。新增 `config/user_operations.py`、`widgets/user_operations_dialog.py`、`docs/implementation-summary.md`。**发布 v1.9.020，包含所有新功能** | - |
+| 2026-09-22 | **销账 T1**（`test_m4_theme` 的 5 条陈旧断言）：本机 offscreen 单跑 21/21 绿，连同 `test_bookmarks`/`test_filter_bar`/`test_pane_dir_store` 合并跑 173 passed / 1 skipped（2026-09-22 复跑一致）。查实：那 5 条在较新版本已按 changelog「查实为幻影」条目改测 `ThemeManager` 真实契约，但从未进过第 23 节待办表，所以 changelog 早期版本那句「已列入待办」一直悬空 —— 本轮补 T1 行把它闭环，并澄清两条 changelog 记录按倒序读并不冲突。代码与测试未动，仅回写文档 | - |
+| 2026-09-22 | **L2（万条目真共享）在用户真 NAS 上逐条量完，🔴 → 🟡**：三条判据两条不成立（产品**没有**枚举取消入口 / 切走窗格后仍把盘扫完并在主线程阻塞 1388ms）；「不闪」靠本地 ext4 **同条数** A/B 对照才能归因（两边最大停摆都是 1256ms，与 SMB 无关）；源码版（offscreen 探针）与 v1.9.020 产物版（`:10` 真 X + xdotool 真键鼠）各一轮，1.8 列头排序至此才算在万条目规模上真验过。本轮两次「产品缺陷」误判都是探针取样错（见 gotchas 53） | - |
 
 ---
 
-**文档版本**：v1.7  
-**最后更新**：2026-09-18
+**文档版本**：v1.9  
+**最后更新**：2026-09-22

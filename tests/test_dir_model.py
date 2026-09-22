@@ -12,6 +12,7 @@
 """
 import gc
 import os
+import time
 import threading
 
 import pytest
@@ -357,7 +358,7 @@ def test_in_flight_load_after_model_death_is_dropped(qapp, tmp_path, monkeypatch
     release = threading.Event()
     real = dm.enumerate_dir
 
-    def slow(path, show_hidden=False):
+    def slow(path, show_hidden=False, cancel=None):
         started.set()
         release.wait(10)
         return real(path, show_hidden)
@@ -376,6 +377,268 @@ def test_in_flight_load_after_model_death_is_dropped(qapp, tmp_path, monkeypatch
         drain_background_pool()
     assert errors == [], f"销毁后的投递/emit 报了异常: {errors!r}"
     assert node.loaded is False         # 结果被丢弃，不会再写回一个死模型
+
+
+# ---------- 可中断的枚举（L2：切走窗格不继续扫 / 枚举能取消） ----------
+
+def test_enumerate_dir_cancel_token_stops_mid_scan(tmp_path):
+    """取消令牌置位后，`enumerate_dir` 必须**抛** `_EnumerationAborted` 而不是交回半截列表
+
+    半截列表与「目录本来就这么多项」在采纳端分不开；分不开就会被当成完整快照
+    写进视图，用户在万条目共享上看到的是一个安静的、看不出的截断列表。
+    """
+    from core.dir_model import _EnumerationAborted
+
+    for i in range(600):                # > _ENUM_CANCEL_CHECK_EVERY(256)，能命中中途
+        (tmp_path / f"f{i}.txt").write_text("x")
+
+    hits = []
+
+    def token():
+        hits.append(1)
+        return len(hits) >= 2           # 第二次被问时才是「该停了」
+
+    with pytest.raises(_EnumerationAborted):
+        dm.enumerate_dir(str(tmp_path), True, cancel=token)
+    assert 1 <= len(hits) < 600, f"取消探测没起作用：{len(hits)}"
+
+    # 不传 cancel 时行为与改前完全一致（完整列表、不抛）
+    assert len(dm.enumerate_dir(str(tmp_path), True)) == 600
+
+
+# 替身扫描的控住门，按路径各一扇：一份替身要顶替好几个目录的扫描（切走的与被
+# 切到的），共用手门会让「放行 A」把 B 也放出去、「停 A」也把 B 停掉。
+_gates = {}
+
+
+class _Gate:
+    __slots__ = ("barrier", "release")
+
+    def __init__(self):
+        self.barrier = threading.Event()   # 告知主线程「本目录的扫描真的在飞了」
+        self.release = threading.Event()   # 主线程放行，worker 继续
+
+
+class _ScanHold:
+    """替身扫描的现场：每个目录各扫了几项
+
+    计数**按路径分**：一份替身要顶替好几个目录的扫描（切走的与被切到的），全局计数
+    会把「本地那份不该被中断」答到另一份扫描的数字上。而「该不该停」一律问
+    `check()`（= 产品自己的 `_Enumerator` + `_LoadTask`），替身不自带一套取消判据
+    —— 自己实现一判据就只能测到自己那套（本轮踩过：拿旧任务当全局令牌，把
+    F5 后的新扫描也误判为过期，测出来的是假红）。
+    """
+    __slots__ = ("visited", "by_task")
+
+    def __init__(self):
+        self.visited = {}
+        self.by_task = {}          # (dirkey, id(task)) -> 本任务扫了几项
+
+    def count(self, path):
+        return self.visited.get(_key(path), 0)
+
+    def count_task(self, path, task):
+        return self.by_task.get((_key(path), id(task)), 0)
+
+
+class _FakeSlow:
+    """把若干目录扮成「慢位置」，不碰真挂载表（`_is_network` 在 Linux 上读 /proc/mounts）"""
+
+    def __init__(self, slow_paths):
+        slow = {_key(p) for p in slow_paths}
+
+        def probe(path):
+            return _key(path) in slow
+        self.probe = staticmethod(probe)
+
+
+def _patch_scan(monkeypatch, total=4000, stop_at=100):
+    """把扫描主体换成「逐项 + 可设堵」的替身，不靠 sleep 碰时序。
+
+    只替 `_scan_into`（它不接收 `cancel` 参数），所以 `_Enumerator.check` 的探测与
+    `_EnumerationAborted` 的抛出都在被测路径上：替身**只数项与设堵**，要不要停全由
+    `check()` 决定。worker 扫到 `stop_at` 项时**控住**（置本目录的 `barrier`、等
+    `release`），于是「在飞」成了确定事实 —— 不控住就是拿主线程与 worker 赛跑，
+    一个空转的 4000 项扫描很可能在我们标记之前就扫完了。
+    """
+    hold = _ScanHold()
+
+    def fake(path, entries, show_hidden, check=None, _h=hold, _t=total, _at=stop_at):
+        key = _key(path)
+        gate = _gates.setdefault(key, _Gate())
+        # `check` 是产品的 `_Enumerator.check`（绑定方法）；`check.__self__._cancel` 就是
+        # 本次扫描的取消令牌（= 拥有它的 `_LoadTask`），据此按任务分开计数（同一
+        # 目录被超越的两代扫描不会混到一个数字上）。
+        owner = id(getattr(getattr(check, "__self__", None), "_cancel", None))
+        for i in range(_t):
+            if check is not None:
+                check()                    # 产品的取消判据：该停就抛 `_EnumerationAborted`
+            if _at is not None and i == _at:
+                gate.barrier.set()
+                assert gate.release.wait(10), "主线程未放行，替身扫描卡住了"
+            _h.visited[key] = _h.visited.get(key, 0) + 1
+            _h.by_task[(key, owner)] = _h.by_task.get((key, owner), 0) + 1
+        return None
+
+    _gates.clear()
+    monkeypatch.setattr(dm, "_scan_into", fake)
+    return hold
+
+
+def _navigate_in_flight(m, path, hold=None, timeout=10.0):
+    """导航到 `path` 并等到后台**真的在逐项扫**（控住中），返回在飞的那个任务"""
+    key = _key(str(path))
+    if m._pending.get(key) is None:
+        m.set_directory(str(path))
+    gate = _gates.get(key)
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if gate is not None and gate.barrier.wait(0.05):
+            task = m._pending.get(key)
+            if task is not None:
+                return task
+        time.sleep(0.001)
+        gate = _gates.get(key)
+    pytest.skip("后台枚举未进入在飞状态，测不到中断")
+
+
+def _settle():
+    """放行所有控住的扫描，等在飞任务跑完并把排队投递派发干净
+
+    只能控住在飞的那一份扫描：新发起的扫描若在 `waitForDone` **之后**才跑到门，
+    拿到的已是一个被放行过的门（`release` 是电平信号），不会卡住 —— 需要控住的
+    新扫描请单独 `_navigate_in_flight`，不要指望本函数替它控。
+    """
+    for gate in _gates.values():
+        gate.barrier.set()
+        gate.release.set()
+    assert dir_pool().waitForDone(15000), "后台枚举没跑完：取消逻辑可能把任务锁死了"
+    with qt_exceptions() as errors:
+        drain_background_pool()
+    assert errors == [], f"中断/采纳链路上报了异常: {errors!r}"
+
+
+def test_superseded_scan_is_aborted_and_does_not_hurt_new_request(qapp, tmp_path, monkeypatch):
+    """gen 变了就不再扫、也不回投；而迟到的中断通知不得误清当代请求的 loading
+
+    这是 gotchas 24「别把一次枚举发起两遍」的反面：F5 之后旧扫描得让路，但它那句
+    「我停了」的回报不能把当代请求的 `loading=True` 抹掉 —— 抹掉了同一个目录会被
+    并发扫两遍，而旧快照还可能洗白当代快照。旧扫描不经过 `abandoned` 标志，
+    单靠 gen 自停，这条就是那个分支的回归防护。
+    """
+    a = tmp_path / "a"
+    a.mkdir()
+    hold = _patch_scan(monkeypatch, total=4000, stop_at=600)
+
+    m = DirStoreModel()
+    m.set_directory(str(a))                 # refresh() 只重扫「当前显示」的目录
+    old_task = _navigate_in_flight(m, a, hold)
+    node = m._top_node
+    gen_old = old_task.gen
+
+    m.refresh()                             # 显式重扫：gen+1 并另起一次枚举
+    new_task = m._pending.get(_key(str(a)))
+    assert new_task is not old_task and new_task.gen == gen_old + 1
+    _gates[_key(str(a))].release.set()      # 放行：旧的一放行就早退，新的照常跑完
+
+    _settle()
+
+    # 两代扫同一目录：按任务分计数，才能分清「新的跑完 / 旧的让路」而不被求和掩盖
+    assert hold.count_task(a, new_task) == 4000, "新扫描没跑完"
+    assert hold.count_task(a, old_task) < 4000, "旧扫描没在 gen 变化后早退"
+    assert old_task.abandoned is False     # 它靠 gen 自停，不经过 abandoned 标志
+    assert node.loaded is True and node.loading is False
+    assert node.gen == gen_old + 1
+    assert new_task.abandoned is False     # 迟到的一代没把当代标记成放弃
+    assert m._pending.get(_key(str(a))) is None
+
+
+def test_navigating_away_from_slow_location_stops_the_scan(qapp, tmp_path, monkeypatch):
+    """L2 主案：切走窗格后，慢位置上的在飞枚举要停，且结果不得回投主线程采纳"""
+    slow = tmp_path / "nas_big10k"
+    quiet = tmp_path / "local"
+    slow.mkdir()
+    quiet.mkdir()
+    hold = _patch_scan(monkeypatch, total=4000, stop_at=300)
+    monkeypatch.setattr(DirStoreModel, "_is_network", _FakeSlow([slow]).probe)
+
+    m = DirStoreModel()
+    task = _navigate_in_flight(m, slow, hold)
+
+    m.set_directory(str(quiet))          # 导航离开慢位置
+    assert task.abandoned is True, \
+        "切走的慢位置扫描未被放弃（`_drop_stale_scans` 没认出刚离开的那个节点）"
+
+    _settle()
+
+    assert 0 < hold.count(slow) < 4000, \
+        f"要么一项都没扫（{hold.count(slow)}），要么扫完了全部"
+    node = m._nodes[_key(str(slow))]
+    assert node.loaded is False          # 没被采纳（一次 `beginInsertRows` 也没跑）
+    assert node.entries is None          # 手里那份条目根本没交给模型
+    assert node.loading is False         # 复位了：导航回来能重新发起
+    assert node.abandoned is False       # 结清后回到中性态
+    assert m._pending.get(_key(str(slow))) is None
+
+
+def test_navigating_away_from_local_dir_is_not_interrupted(qapp, tmp_path, monkeypatch):
+    """反向守卫：本地目录不因「切走」而中断 —— 否则本地万条目会被扫两遍
+
+    只中断慢位置是刻意的：本地一次扫描最多几百毫秒，让它跑完不浪费；而一个 SMB
+    共享能扫十几秒（实测 10.08s），白耗那一整段的正是 L2 查出的缺口。
+    """
+    a = tmp_path / "local_a"
+    b = tmp_path / "local_b"
+    a.mkdir()
+    b.mkdir()
+    hold = _patch_scan(monkeypatch, total=200, stop_at=100)
+    monkeypatch.setattr(DirStoreModel, "_is_network", _FakeSlow([]).probe)
+
+    m = DirStoreModel()
+    task = _navigate_in_flight(m, a, hold)
+    _gates[_key(str(b))] = _Gate()       # 预先放行 b 的门：它的扫描可能在
+                                         # `waitForDone` 之后才跑到门，不能让它卡住
+    _settle()                            # 放行并等 a 扫完（本地位 → 不该被标记放弃）
+    assert task.abandoned is False, "本地扫描被无谓中断了（慢位置判据越界）"
+    assert hold.count(a) == 200          # 一跑到黑，结果照常回投
+    assert m._nodes[_key(str(a))].loaded is True
+
+    m.set_directory(str(b))               # b 从未在飞，替身对它无令牌 → 不会早退
+    _settle()
+    assert hold.count(b) == 200, "切到新目录后，本地那份扫描也不该被中断"
+    assert m._nodes[_key(str(a))].loaded is True   # 切走之后也不因迟到通知被改回未加载
+
+
+def test_cancel_load_stops_scan_and_allows_reload(qtbot, tmp_path, monkeypatch):
+    """显式取消入口（L2「能取消」的产品侧答案）：停扫 + 复位 loading + 回来能重扫"""
+    a = tmp_path / "big"
+    a.mkdir()
+    hold = _patch_scan(monkeypatch, total=6000, stop_at=200)
+
+    m = DirStoreModel()
+    node = m._ensure_node(str(a))
+    m._start_load(node)
+    task = _navigate_in_flight(m, a, hold)
+    m.cancel_load(str(a))                # 不分本地/远端，一律停
+    assert task.abandoned is True, \
+        "任务必须留在 `_pending` 里等自己投 cancelled 除名（现在就弹掉则 loading 复位不了）"
+    assert hold.count(a) < 6000, "取消后替身扫描没早退"
+
+    _settle()                            # 放行 worker 正控住的那扇门（旧 gate）：
+                                         # 它一被放行就探到 abandoned → 早退，不回投
+
+    assert node.loaded is False and node.loading is False
+    assert m._pending.get(_key(str(a))) is None
+
+    def no_stop(path, entries, show_hidden, check=None):
+        for i in range(3):
+            entries.append(Entry(f"g{i}.txt", os.path.join(path, f"g{i}.txt"),
+                                 False, 1, 0.0, False, False))
+        return None
+
+    monkeypatch.setattr(dm, "_scan_into", no_stop)
+    di = _load(qtbot, m, a, expected=3)
+    assert _names(m, di) == ["g0.txt", "g1.txt", "g2.txt"]
 
 
 # ---------- 本地目录 watcher ----------

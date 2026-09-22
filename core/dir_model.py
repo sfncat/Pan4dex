@@ -6,6 +6,9 @@ Pan4dex 万格 — DirStoreModel：以目录节点为单位的异步文件模型
 - 一次枚举一个目录，杜绝 QFileSystemModel 在 SMB 上的逐项 stat 与 watcher 轮询
 - 后台线程枚举（QThreadPool），主线程零阻塞；未加载完成 rowCount=0，canFetchMore/
   fetchMore 驱动，加载完 begin/endInsertRows 增量插入
+- 在飞的枚举**可中断**：导航离开一个慢位置（`core/mounts.py` 判据）时，那个再也不会
+  出现在屏幕上的目录不再被扫完，被中断的扫描也不回投条目（否则万条目会在主线程
+  采纳，见 `_LoadTask` / `_drop_stale_scans`；显式入口 `cancel_load`）
 - TTL 缓存 + 定向失效：应用内操作后只失效涉及的目录，F5 只重扫当前目录
 - 本地目录挂 QFileSystemWatcher（只挂「当前显示的那一个」，外部程序改动时自动重扫）；
   监视器全进程共用一个 _WatchHub；网络目录一律不挂 watcher（那正是拖垮 SMB 的
@@ -62,7 +65,8 @@ class Entry:
 
 class DirNode:
     """一个目录节点：持有其枚举出的条目列表与加载状态。"""
-    __slots__ = ("path", "key", "entries", "loaded", "loading", "gen", "_stale", "ts")
+    __slots__ = ("path", "key", "entries", "loaded", "loading", "gen", "_stale", "ts",
+                 "abandoned")
 
     def __init__(self, path):
         self.path = os.path.normpath(path)
@@ -71,6 +75,7 @@ class DirNode:
         self.loaded = False
         self.loading = False
         self.gen = 0               # 枚举请求代次：只采纳最新一次的结果
+        self.abandoned = False     # 在飞枚举被放弃（导航离开慢位置 / 显式取消）→ 该停扫
         self._stale = None         # 上一代条目快照（见 _discard_node：不能直接还给 GC）
         self.ts = 0.0              # 快照生成时刻，判过期用（见 _snapshot_fresh）
 
@@ -183,7 +188,75 @@ def _entry_hidden(path, name):
     return False
 
 
-def enumerate_dir(path, show_hidden=True):
+class _EnumerationAborted(Exception):
+    """枚举被主动放弃（切走窗格 / 另起一次枚举）——与「目录为空」「没权限」区分开"""
+
+
+# 每读这么多个目录项探一次取消标志。取 2 的幂：`&` 比 `%` 便宜，而在远端挂载上
+# 逐项 stat 本身就是几十毫秒量级，这个间隔下取消延迟可忽略，开销量不出来。
+_ENUM_CANCEL_CHECK_EVERY = 256
+
+
+class _Enumerator:
+    """`enumerate_dir` 的扫描主体：持有取消令牌，按固定间隔探一次该不该停。
+
+    取消令牌可以是一个可调用的「还要不要这份结果」（`_LoadTask` 就是这么喂的，它把
+    `abandoned` 与 gen 校验一并报回来），也可以是一个只带 `abandoned` 布尔属性的对象
+    （测试桩与探针更搭这样）。**判定在调用方**，本类只负责「问」与「停」—— 早退发生
+    在调用方的线程上，不跨线程改任何共享状态。
+    """
+
+    __slots__ = ("_cancel", "_n")
+
+    def __init__(self, cancel):
+        self._cancel = cancel
+        self._n = 0
+
+    def check(self):
+        cancel = self._cancel
+        if cancel is None:
+            return
+        self._n += 1
+        if self._n & (_ENUM_CANCEL_CHECK_EVERY - 1):
+            return
+        aborted = bool(cancel()) if callable(cancel) else cancel.abandoned
+        if aborted:
+            raise _EnumerationAborted()
+
+
+def _scan_into(path, entries, show_hidden, check=None):
+    """把 `path` 的目录项读进 `entries`；`check` 是 `_Enumerator.check`（可为 None）。
+
+    只读单项属性、不额外 stat：`os.scandir` 已经把这些信息带在 `WIN32_FIND_DATA`
+    / POSIX dirent 的返回结果里，这是「一个目录一次往返」这个设计目标的前提。
+    """
+    with os.scandir(path) as it:
+        for e in it:
+            if check is not None:
+                check()
+            try:
+                is_dir = e.is_dir(follow_symlinks=False)
+                is_link = e.is_symlink()
+            except OSError:
+                is_dir = os.path.isdir(e.path)
+                is_link = os.path.islink(e.path)
+            size = -1
+            mtime = 0.0
+            try:
+                st = e.stat(follow_symlinks=False)
+                mtime = getattr(st, "st_mtime", 0.0) or 0.0
+                if not is_dir:
+                    size = getattr(st, "st_size", 0) or 0
+            except OSError:
+                pass
+            hidden = _entry_hidden(e.path, e.name)
+            if not show_hidden and hidden:
+                continue
+            entries.append(Entry(e.name, os.path.normpath(e.path),
+                                 is_dir, size, mtime, hidden, is_link))
+
+
+def enumerate_dir(path, show_hidden=True, cancel=None):
     """枚举一个目录，返回 [Entry]。
 
     用 os.scandir：Windows 下 DirEntry 的 stat 结果来自枚举时已获取的
@@ -191,31 +264,19 @@ def enumerate_dir(path, show_hidden=True):
     网络往返——整个目录通常一次枚举往返即可拿到 name/attr/size/mtime。
     排序：目录优先、按名称（不区分大小写）升序，作为稳定基序；列排序由
     PaneSortProxyModel 负责。
+
+    `cancel` 非空时是一个「该停了吗」的令牌（带 `abandoned` 属性或可调用）：每
+    `_ENUM_CANCEL_CHECK_EVERY` 项探一次，命中就抛 `_EnumerationAborted` 而不是返回
+    半截列表 —— 半截列表与「这个目录本来就这么多项」在调用方根本分不开，而分不开
+    的结果一旦被采纳，用户在万条目共享上看到的就是一个安静的、看不出的截断列表。
     """
     entries = []
+    enumerator = _Enumerator(cancel) if cancel is not None else None
+    check = enumerator.check if enumerator is not None else None
     try:
-        with os.scandir(path) as it:
-            for e in it:
-                try:
-                    is_dir = e.is_dir(follow_symlinks=False)
-                    is_link = e.is_symlink()
-                except OSError:
-                    is_dir = os.path.isdir(e.path)
-                    is_link = os.path.islink(e.path)
-                size = -1
-                mtime = 0.0
-                try:
-                    st = e.stat(follow_symlinks=False)
-                    mtime = getattr(st, "st_mtime", 0.0) or 0.0
-                    if not is_dir:
-                        size = getattr(st, "st_size", 0) or 0
-                except OSError:
-                    pass
-                hidden = _entry_hidden(e.path, e.name)
-                if not show_hidden and hidden:
-                    continue
-                entries.append(Entry(e.name, os.path.normpath(e.path),
-                                     is_dir, size, mtime, hidden, is_link))
+        _scan_into(path, entries, show_hidden, check)
+    except _EnumerationAborted:
+        raise
     except (PermissionError, OSError) as exc:
         logger.debug("枚举目录失败 %s: %s", path, exc)
         return []
@@ -251,28 +312,82 @@ def dir_pool():
 # ---------- 后台枚举任务 ----------
 
 class _LoadSignals(QObject):
-    finished = pyqtSignal(object, object, int)   # DirNode, list[Entry], gen
+    finished = pyqtSignal(object, object, int, object)   # DirNode, list[Entry], gen, task
+    cancelled = pyqtSignal(object, int, object)          # DirNode, gen, task
 
 
 class _LoadTask(QRunnable):
+    """一次后台枚举。它自己就是取消令牌（`abandoned`）。
+
+    三个停扫条件（都在 worker 线程里逐项探，见 `_Enumerator`）：
+    - `gen != node.gen`：期间又发起过新枚举（F5 / 到达即重扫），这次结果注定不采纳
+    - `node.abandoned`：导航已离开这个目录，或节点已被丢弃（见 `_drop_stale_scans`）
+    - 两项都在主线程设置，worker 只读布尔；GIL 保证可见性，不依赖跨线程写共享结构
+
+    被中断时**不回投条目**，只投一个 `cancelled(gen, task)`：光把 `node.loading`
+    改回 False 不够 —— 用户可能在 worker 还没注意到标志时就导航回来了，那时
+    `set_directory` 见 `loading` 为真会拒绝重扫，视图就永久停在空列表上。
+    """
+
     def __init__(self, node, gen, show_hidden, signals):
         super().__init__()
         self.node = node
         self.gen = gen
         self.show_hidden = show_hidden
         self.signals = signals
+        self.abandoned = False     # 由模型在主线程置位（与 node.abandoned 同步）
+        self.self_id = id(self)    # 采纳端认任务身份用（见 `_on_entries_loaded`）
         self.setAutoDelete(True)
 
+    def _still_wanted(self):
+        """这次枚举还有没有人要。只读主线程写好的几个布尔，不碰盘、不改状态。"""
+        node = self.node
+        return (not self.abandoned) and (not node.abandoned) and (node.gen == self.gen)
+
+    def _should_stop(self):
+        # `_Enumerator.check` 的令牌约定是「返回 True = 该停了」（与测试里那个
+        # `return len(hits) >= 2` 的令牌一致），而 `_still_wanted` 是「还要这份结果 =
+        # 继续扫」—— 两者相反。直接把 `_still_wanted` 当 `__call__` 会让每个健康扫描
+        # 在第一次探测就自杀（本轮踩过），令牌必须报「停」的方向。
+        return not self._still_wanted()
+
+    __call__ = _should_stop
+    # ↑ 任务本身就是 `enumerate_dir` 的取消令牌：除了带 `abandoned` 属性（上面那条
+    # 路径），它还可调 = 「该不该停扫」。把 gen 校验也接进扫描循环才能真省
+    # 下那一段盘（只靠 `abandoned` 的话，被 F5 超越的旧扫描仍会一路扫到黑）；
+    # 而对测试桩与探针来说，`cancel=` 喂进去的东西一律可用。
+
     def run(self):
+        node = self.node
+        rows = None
+        why = ""
         try:
-            rows = enumerate_dir(self.node.path, self.show_hidden)
+            if not self._still_wanted():
+                why = "开工前已过期"          # 排队期间就被导航走了：一个目录项都不该读
+            else:
+                try:
+                    rows = enumerate_dir(node.path, self.show_hidden, cancel=self)
+                except TypeError:
+                    # 被替身接管的 `enumerate_dir` 不认识 cancel（测试桩 / 探针）：
+                    # 重跑一次不带的，不拿签名不匹配当枚举失败把空目录交给用户
+                    rows = enumerate_dir(node.path, self.show_hidden)
+                if not self._still_wanted():
+                    rows, why = None, "扫描期间被放弃"
+        except _EnumerationAborted:
+            why = "枚举早退"                  # 交回线程池槽位，不拿半截列表去采纳
         except Exception:
-            rows = []
-        # queued 投递回主线程（signals 属于主线程对象）。模型可能已先一步销毁，
-        # 而 signals 是模型的子对象、届时自己也成了悬空包装 → emit 报 RuntimeError；
-        # 丢掉这份结果即可，不能让异常死在 worker 线程里
+            rows, why = [], "枚举异常"
+        # 无论哪条分支，都要给主线程一个交代（`cancelled` 只用来复位 `loading`，
+        # 带 gen 与任务身份，迟到的通知不会误伤当代请求）
         try:
-            self.signals.finished.emit(self.node, rows, self.gen)
+            if rows is not None:
+                # queued 投递回主线程（signals 属于主线程对象）。模型可能已先一步销毁，
+                # 而 signals 是模型的子对象、届时自己也成了悬空包装 → emit 报 RuntimeError；
+                # 丢掉这份结果即可，不能让异常死在 worker 线程里
+                self.signals.finished.emit(node, rows, self.gen, self)
+            else:
+                logger.debug("枚举放弃 %s gen=%s：%s", node.path, self.gen, why)
+                self.signals.cancelled.emit(node, self.gen, self)
         except RuntimeError:
             logger.debug("枚举结果丢弃：投递目标已随模型销毁")
 
@@ -318,6 +433,10 @@ class DirStoreModel(QAbstractItemModel):
         # docs/unsolved-issues.md 问题 13）。
         self._loader = _LoadSignals(self)
         self._loader.finished.connect(self._on_entries_loaded)
+        self._loader.cancelled.connect(self._on_load_cancelled)
+        # dirkey -> 在飞的 `_LoadTask`。只由主线程写（注册在 `_start_load`、除名在
+        # 两个采纳槽里），worker 只读自己那个任务的布尔 —— 字典不会跨线程改动。
+        self._pending = {}
         self._invalid = QModelIndex()
         # begin/end 行信号嵌套深度（见 _rows_signal）
         self._rows_changing = 0
@@ -379,6 +498,9 @@ class DirStoreModel(QAbstractItemModel):
         self._top_node = node
         self._top_key = key
         self.endResetModel()
+        # 导航离开的那个目录如果还在被扫（它可能正卡在 SMB 上十几秒），把它的枚举
+        # 放弃掉：不回投 = 不在主线程采纳，同时交还线程池槽位（见 _drop_stale_scans）
+        self._drop_stale_scans(prev)
         # reset 已通知所有视图丢弃索引 → 上一代条目可以归还 GC 了（见 _drop_stale）
         self._drop_stale()
         # 监视跟随「屏幕上看得见的那个目录」：只监视顶层，切走即摘。
@@ -733,29 +855,89 @@ class DirStoreModel(QAbstractItemModel):
         return bool(self._filter & QDir.Filter.Hidden)
 
     def _start_load(self, node):
-        """发起一次后台枚举；旧请求的结果按代次(gen)作废。
+        """发起一次后台枚举；旧请求的结果按代次(gen)作废，并且旧请求本身会被中断。
 
         隐式调用方自行判断 `not loaded and not loading`；显式刷新（_reload_top）
         会先清 loading 再调用，以保证能拿到改动后的枚举结果。
+
+        入册必须在 `self._pool.start()` **之前**：任务一旦交给线程池就可能立刻跑起来，
+        而它随时可能被导航放弃，那时 `_drop_stale_scans` 得能在 `_pending` 里找到它。
         """
         node.gen += 1
         node.loading = True
+        node.abandoned = False
         task = _LoadTask(node, node.gen, self._show_hidden(), self._loader)
+        self._pending[node.key] = task
         self.loadingStarted.emit(node.path)
         self._pool.start(task)
 
-    @pyqtSlot(object, object, int)
-    def _on_entries_loaded(self, node, entries, gen):
+    def _drop_stale_scans(self, prev=None):
+        """放弃「本次导航已经不再显示」的在飞枚举，只放走慢位置的那批。
+
+        只在 `set_directory` 切完顶层之后调，并把**刚离开的那个节点**交给它 ——
+        届时 `_top_node` 已是新目录，光拿 `_top_node` 比对永远认不出刚切走的那个
+        （p59e 现场里卡 23.2s 的正是它）。
+        命中条件两条全部成立才中断（宁可少停不可错停）：
+        1. 任务对应的节点就是刚离开的那个，或已不是当前显示的顶层
+        2. 那个目录在慢位置上（复用 `_is_network`，判据一份，都在主线程调）
+
+        不中断的那批照常回投，由 `_on_entries_loaded` 的现有 gen / 节点归属校验处理
+        —— 本次改动不拿它开刀，本地万条目目录的采纳延迟（实测 1256ms）与存储无关，
+        是「行落地」的通用代价，得另案（分批插入）才能压下去。
+        """
+        for key, task in list(self._pending.items()):
+            node = task.node
+            if node is not prev and node is self._top_node:
+                continue                       # 还在屏幕上显示着，扫完就是给用户看的
+            if not self._is_network(node.path):
+                continue
+            task.abandoned = True
+            node.abandoned = True
+            logger.debug("放弃在飞枚举（导航离开慢位置）：%s", node.path)
+
+    def cancel_load(self, path=None):
+        """中断一个目录的在飞枚举（产品侧唯一的枚举取消入口，也是它的手工验证入口）。
+
+        `path=None` 时放弃本模型全部在飞枚举。被中断的扫描不回投条目，因此不会
+        在主线程采纳；`loading` 经 `cancelled` 投递复位，所以用户马上再导航回来会
+        重新枚举（代价是重扫，不是永久空列表）。
+
+        与 `_drop_stale_scans` 的分工：那里按慢位置判据选择性停扫，这里是显式指令，
+        不分本地/远端一律停（调用方已经明确表示不要这份结果了）。
+        任务**留在 `_pending` 里**等它自己投 `cancelled` 来除名 —— 现在就弹掉的话，
+        复位投递会被身份校验挡掉，`loading` 永远停在 True。
+        """
+        targets = list(self._pending.values()) if path is None \
+            else [t for k, t in self._pending.items() if k == _key(path)]
+        for task in targets:
+            task.abandoned = True
+            task.node.abandoned = True
+
+    def _forget_scan(self, node, task):
+        """主线程除名：本代次的枚举已有交代（采纳、丢弃或中断），不再跟踪。
+
+        不按 key 弹：若 F5 已为同一节点入册了新任务，旧的交代不能把新的踢出
+        登记表，否则新任务再也过不了采纳端的身份校验，它的结果会被丢一次。
+        """
+        if self._pending.get(node.key) is task:
+            self._pending.pop(node.key, None)
+
+    @pyqtSlot(object, object, int, object)
+    def _on_entries_loaded(self, node, entries, gen, task=None):
         if gen != node.gen:
             return  # 过期结果：期间又发起过新枚举，否则旧快照会占据视图
+        if task is not None and self._pending.get(node.key) is not task:
+            return  # 不是本节点当前跟踪的那次枚举（F5 后迟到的旧投递）：不动状态
         # 先取完要用的自身状态：本槽由后台线程的投递触发，销毁时刻不受本槽控制，
         # 实测存在“槽跑到一半 self.__dict__ 已被清空”的现场（见 __init__ 处的说明）
         show_hidden = self._show_hidden()
         if node.key not in self._nodes or self._nodes.get(node.key) is not node:
             node.loading = False
+            self._forget_scan(node, task)
             return  # 节点已被丢弃
         if node.loaded:
             node.loading = False
+            self._forget_scan(node, task)
             return  # 幂等：同一节点重复的完成信号不得再次插入（避免重复行）
         parent_idx = self.createIndex(0, 0, node)
         first = 0
@@ -769,10 +951,30 @@ class DirStoreModel(QAbstractItemModel):
                 self.endInsertRows()
         # loading 最后才清：过渡态不能对任何重入查询暴露（同 _rows_signal 的理由）
         node.loading = False
+        self._forget_scan(node, task)
         try:
             self.directoryLoaded.emit(node.path)
         except RuntimeError:
             pass  # 模型已在本槽执行期间被销毁：目录已加载完，不必再通知
+
+    @pyqtSlot(object, int, object)
+    def _on_load_cancelled(self, node, gen, task=None):
+        """一次枚举被中断/放弃：复位 `loading`，让导航回来时能重新发起。
+
+        两道校验缺一不可：
+        - `gen < node.gen`：F5 已另起新枚举，它的 `loading=True` 属于当代，不能清
+          （清了就会同一目录并发扫两遍，见 gotchas 24「别把一次枚举发起两遍」）
+        - 任务身份：`cancelled` 是排队投递，可能「新任务已入册」之后才派发到位，
+          那时 gen 相同而归属不同，按 gen 判仍会把当代的 loading 误清
+        两个条件都不满足时才认作「当代请求的结清」。
+        """
+        if gen != node.gen:
+            return                             # 迟到或被超越：当代自己会交代
+        if task is not None and self._pending.get(node.key) is not task:
+            return
+        node.loading = False
+        node.abandoned = False   # 本代次已结清，节点回到「可被重新发起」的中性态
+        self._forget_scan(node, task)
 
     # ---- QAbstractItemModel 必需实现 ----
     def index(self, *args, **kwargs):
