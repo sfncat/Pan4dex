@@ -1,6 +1,6 @@
 [project]
 name = "pan4dex"
-version = "1.9.022"  # 与 config/app_config.py 的 VERSION 主版本号保持同步
+version = "1.9.023"  # 与 config/app_config.py 的 VERSION 主版本号保持同步
 description = "Pan4dex 万格 — 跨平台四窗格文件管理器"
 readme = "README.md"
 requires-python = ">=3.11"

@@ -2031,42 +2031,66 @@ class Pane(QWidget):
         except Exception:
             pass
 
+    @staticmethod
+    def choose_paste_source(shared_paths, shared_action, system_paths):
+        """粘贴源裁决：应用内剪贴板 vs 系统剪贴板，返回 (paths, action, is_move)。
+
+        应用内复制/剪切会同步写回系统剪贴板（_write_system_clipboard），所以
+        「内部条还有效」等价于「系统剪贴板的文件条与它一致」。外部程序（如资源
+        管理器）后复制时只改得动系统剪贴板、清不掉内部条 —— 两者不一致即证明
+        内部条是过期残留，最后的复制发生在应用外，必须听系统的。
+        不直接让外部复制清空内部条，是因为本机写回也可能触发变更信号，
+        信号侧难以分辨内外，判据放在粘贴一刻做集合比对最稳。
+        系统剪贴板无文件条（纯文本/图片）时维持旧优先级。
+        """
+        norm = lambda ps: {os.path.normcase(os.path.normpath(p)) for p in ps}
+        if shared_paths:
+            if not system_paths or norm(system_paths) == norm(shared_paths):
+                return list(shared_paths), shared_action, shared_action == 'cut'
+            return list(system_paths), 'system', False
+        if system_paths:
+            return list(system_paths), 'system', False
+        return [], None, False
+
     def _paste_to(self, target_dir):
         """粘贴到指定目录：应用内剪贴板优先，其次系统剪贴板（后台线程执行，不阻塞界面）"""
-        global SHARED_CLIPBOARD_ACTION
+        global SHARED_CLIPBOARD, SHARED_CLIPBOARD_ACTION
         
-        if SHARED_CLIPBOARD:
-            was_cut = (SHARED_CLIPBOARD_ACTION == 'cut')
-            src_paths = list(SHARED_CLIPBOARD) if was_cut else []
-            # 快照源列表：worker 线程复制期间主线程可能清理剪贴板
-            clip_snapshot = list(SHARED_CLIPBOARD)
-            if SHARED_CLIPBOARD_ACTION == 'copy':
-                self._run_file_op_async(
-                    "正在复制",
-                    lambda: self.file_ops.copy(clip_snapshot, target_dir),
-                    lambda result: self._on_paste_done(result, target_dir, None))
-            elif SHARED_CLIPBOARD_ACTION == 'cut':
-                self._run_file_op_async(
-                    "正在移动",
-                    lambda: self.file_ops.move(clip_snapshot, target_dir),
-                    lambda result: self._on_paste_done(result, target_dir, src_paths))
-            return
-        
-        # 应用内剪贴板为空：尝试系统剪贴板（从系统文件管理器复制/剪切进来）
+        # 先读系统剪贴板再裁决：内部条与系统条不一致 = 应用外有更新的复制，
+        # 粘贴外部新复制的内容（回归：内部复制后从资源管理器复制照片再粘贴，
+        # 曾错粘内部过期条）
         system_paths, system_is_move = self._system_clipboard_paths()
-        if system_paths:
-            if system_is_move:
-                self._run_file_op_async(
-                    "正在移动",
-                    lambda: self.file_ops.move(list(system_paths), target_dir),
-                    lambda result: self._on_system_paste_done(
-                        result, target_dir, len(system_paths), system_paths))
-            else:
-                self._run_file_op_async(
-                    "正在复制",
-                    lambda: self.file_ops.copy(system_paths, target_dir),
-                    lambda result: self._on_system_paste_done(result, target_dir, len(system_paths), None))
+        paths, action, is_move = self.choose_paste_source(
+            list(SHARED_CLIPBOARD), SHARED_CLIPBOARD_ACTION, system_paths)
+        if action == 'system':
+            is_move = system_is_move
+            # 过期内部条就地作废（clear 而非重绑：各 Pane 持有同一列表别名）
+            SHARED_CLIPBOARD.clear()
+            SHARED_CLIPBOARD_ACTION = None
+        if not paths:
             return
+        src_paths = list(paths) if is_move else []
+        snapshot = list(paths)
+        if is_move:
+            self._run_file_op_async(
+                "正在移动",
+                lambda: self.file_ops.move(snapshot, target_dir),
+                lambda result: self._paste_done_dispatch(
+                    action, result, target_dir, src_paths, snapshot))
+        else:
+            self._run_file_op_async(
+                "正在复制",
+                lambda: self.file_ops.copy(snapshot, target_dir),
+                lambda result: self._paste_done_dispatch(
+                    action, result, target_dir, None, snapshot))
+
+    def _paste_done_dispatch(self, action, result, target_dir, src_paths, pasted_srcs):
+        """按粘贴源分发完成回调：'system' 走系统剪贴板收尾，其余走应用内收尾"""
+        if action == 'system':
+            moved = src_paths if result.success else None
+            self._on_system_paste_done(result, target_dir, len(pasted_srcs), moved)
+        else:
+            self._on_paste_done(result, target_dir, src_paths)
     
     def _on_paste_done(self, result, target_dir, src_paths):
         """粘贴完成（应用内剪贴板，主线程）：刷新视图 + 清理剪切剪贴板"""

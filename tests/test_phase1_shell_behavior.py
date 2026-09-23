@@ -67,6 +67,46 @@ def test_clipboard_prefers_move_none_and_garbage():
     assert Pane._clipboard_prefers_move(QMimeData()) is False
 
 
+# ---------- 粘贴源裁决：应用内条过期时被外部复制翻盘 ----------
+
+def test_stale_internal_clipboard_loses_to_newer_system_copy():
+    """回归（用户现场）：在 pan4dex 复制后，去系统文件管理器复制一张照片，
+    Ctrl+V 应粘照片（系统剪贴板），不能再粘应用内那份过期条。
+
+    应用内复制会同步写回系统剪贴板，所以「系统条与内部条不一致」只能
+    是外部程序后复制所致 —— 此时必须听系统的。"""
+    from core.pane import Pane
+    photo = os.path.join(os.path.expanduser("~"), "photo.jpg")
+    inner = os.path.join(os.path.expanduser("~"), "doc.txt")
+    paths, action, is_move = Pane.choose_paste_source(
+        [inner], 'copy', [photo])
+    assert paths == [photo]
+    assert action == 'system'
+    assert is_move is False
+
+
+def test_matching_system_clipboard_keeps_internal_action_semantics():
+    """系统条与内部条一致 = 内部条仍是最新一次复制，沿用内部动作语义
+    （内部剪切的 move 靠 Preferred DropEffect 回读会误判，内部条更可信）"""
+    from core.pane import Pane
+    a = os.path.join(os.path.expanduser("~"), "a.txt")
+    b = os.path.join(os.path.expanduser("~"), "b.txt")
+    paths, action, is_move = Pane.choose_paste_source([a, b], 'cut', [b, a])
+    assert paths == [a, b]
+    assert action == 'cut'
+    assert is_move is True
+
+
+def test_non_file_system_clipboard_keeps_internal_priority():
+    """系统剪贴板是纯文本/图片（无文件条）时，维持旧优先级用内部条"""
+    from core.pane import Pane
+    inner = os.path.join(os.path.expanduser("~"), "doc.txt")
+    paths, action, _ = Pane.choose_paste_source([inner], 'copy', [])
+    assert paths == [inner] and action == 'copy'
+    # 两边都空：无粘贴源
+    assert Pane.choose_paste_source([], None, []) == ([], None, False)
+
+
 # ---------- 1.3 / 1.4 复制元数据 + 冲突决策 ----------
 
 @pytest.fixture
