@@ -19,6 +19,32 @@
 
 ## 更新记录
 
+### v1.9.022 — 2026-09-23（开发分支 dev/shell-behavior-smb-perf）
+
+> 修一个用户现场报的显示缺陷：**向一个空目录复制文件后，状态栏数得到那个文件、列表却看不到，F5 刷新也无效**。
+
+#### 🐛 缺陷修复：刷新一个「当前为空的已加载目录」后，刚出现的文件现在能正常显示
+- 现象：新建目录 → 导航进去（空）→ 复制一个文件进去 → 状态栏显示「0 个目录, 1 个文件」但列表恒空，
+  重复按 F5 仍看不到（本机 v1.9.020 上复现）
+- 两条路径本就不相干：状态栏 `update_status_bar` 走 `os.scandir` 直接数盘（永远反映磁盘真相），
+  视图取的是 `DirStoreModel` 的行——所以计数对、视图却空
+- 根因：刷新汇入 `_reload_top`，其清行块写成 `if node.loaded and node.entries:`。空目录
+  `entries == []` 是假值 → 整块被跳过 → **`node.loaded` 没被复位**；随后 `_start_load` 另起枚举，
+  刚扫到的文件回到 `_on_entries_loaded`，却在幂等守卫 `if node.loaded: return`（本意防同一代次
+  重复插行）处**被整份丢弃**。F5 每次都重复同样的死循环
+- 修法：把「复位状态位」与「发 Qt 行移除信号」解耦——只有确有旧行时才 `begin/endRemoveRows`，
+  但 `node.entries = None; node.loaded = False` **无条件**执行（补 `else` 分支）。F5（`model.refresh`）
+  与应用内粘贴完成（`refresh_dir` 的当前目录分支）都汇入 `_reload_top`，两个入口一并修好
+
+#### 🚦 测试
+- `tests/test_dir_model.py` 新增回归用例 `test_refresh_empty_dir_after_new_file_visible`：先复现（修复前
+  `waitUntil` 超时、rowCount 恒 0），修复后转绿；`test_dir_model.py` 41 passed、`test_pane_dir_store` +
+  `test_regression` 30 passed
+
+#### 📝 文档
+- `gotchas.md` 新增第 55 条：用 `if collection:`（空集合为假）守卫「清理/复位」逻辑时，边界空集
+  会让状态位停在旧值，叠加下游去重/幂等守卫就会静默吞掉新数据
+
 ### v1.9.021 — 2026-09-23（开发分支 dev/shell-behavior-smb-perf）
 
 > 闭 L2（万条目真共享）查出的两条产品缺口：**枚举不可取消**、**导航离开慢位置后仍把盘扫完并采纳**。

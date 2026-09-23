@@ -223,6 +223,25 @@ def test_refresh_after_new_file_wins(qtbot, tree):
     assert "late.txt" in _names(m, di)
 
 
+def test_refresh_empty_dir_after_new_file_visible(qtbot, tmp_path):
+    """回归：刷新一个「当前为空的已加载目录」后，刚出现的文件必须可见。
+
+    现场：新建目录→导航进去（空，rowCount=0）→往里复制一个文件→状态栏数到
+    1 个文件但列表空，F5 刷新仍空。根因：`_reload_top` 的清行块被
+    `if node.loaded and node.entries` 挡住（空目录 entries==[] 为假），没把
+    `node.loaded` 复位，新枚举结果在采纳端撞上「幂等：node.loaded」守卫被整份丢弃。
+    """
+    empty = tmp_path / "tmp_test"
+    empty.mkdir()
+    m = DirStoreModel()
+    di = _load(qtbot, m, empty, expected=0)        # 空目录，加载完 0 行
+    assert m.rowCount(di) == 0
+    (empty / "copied.xlsx").write_text("x")         # 模拟复制进来的文件
+    m.refresh()                                     # F5
+    qtbot.waitUntil(lambda: m.rowCount(di) == 1, timeout=5000)
+    assert _names(m, di) == ["copied.xlsx"]
+
+
 def test_invalidate_drops_cache(tree):
     entries = enumerate_dir(str(tree))
     DirStoreModel._cache_put(_key(str(tree)), True, entries)

@@ -776,6 +776,14 @@ class DirStoreModel(QAbstractItemModel):
                 node.loaded = False
                 self.endRemoveRows()
                 self._drop_stale(node)   # 行已按信号移除，旧快照此刻才可释放
+            else:
+                # 目录当前为空（entries==[]）或尚未 loaded：没有旧行要移除，但
+                # 仍必须把 loaded 复位——否则新枚举结果会在采纳端撞上
+                # `_on_entries_loaded` 的「幂等：node.loaded」守卫被整份丢弃，
+                # 表现为：新建目录→进去（空）→复制文件进去→F5 刷新，状态栏数得到
+                # 那个文件但列表永远为空（空目录刷新看不到新文件的回归）。
+                node.entries = None
+                node.loaded = False
             # 重扫请求总是另起一次枚举（gen+1）， in-flight 的旧结果会被作废
             self._start_load(node)
 
