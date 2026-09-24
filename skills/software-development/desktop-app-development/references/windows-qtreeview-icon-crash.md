@@ -1,5 +1,14 @@
 # Windows QTreeView setIconSize Crash — Known Qt/GDI Bug
 
+> **Status: still the shipped design (re-verified against the code 2026-09-23, v1.9.023).**
+> `core/pane.py` keeps `setIconSize` at 48px (icon mode) and 16px (list mode) exactly as the
+> "Safe Pattern" below prescribes; 128px thumbnails live in a separate `QListWidget` —
+> `widgets/thumbnail_view.py` — which lazy-registers `pillow-heif` so HEIC/AVIF render, and
+> caches 200 pixmaps. The `ThumbnailDelegate` mentioned under "What Didn't Help" is still in
+> the tree but wired to nothing (`docs/architecture.md` records it as dead code, and
+> `test_thumbnail_delegate_not_used_in_product` guards that). Chinese docs: crash-class
+> knowledge lives in `docs/gotchas.md`, HEIC acceptance evidence in `docs/linux-gap.md` §5.2 L7.
+
 ## Problem
 
 On Windows, setting `setIconSize(QSize(128, 128))` on a `QTreeView` (with shared `QFileSystemModel`) causes an **immediate C++-level segfault** when rendering large icons. Python exception handlers (`sys.excepthook`, `faulthandler`) CANNOT catch this — the process dies silently with no log.

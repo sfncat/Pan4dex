@@ -98,6 +98,50 @@
   `gotchas.md` 新增第 54 条：取消令牌谓词的「方向」陷阱（`_still_wanted` 当 `__call__` 会让健康扫描
   自杀）与「测试替身不能自带一套取消判据」的教训
 
+### v1.9.020 — 2026-09-18（开发分支 dev/shell-behavior-smb-perf，tag `v1.9.020` = `0f9e6e9`）
+
+> **这一节是 2026-09-23 补写的**：`59b5caa` 把误挂在枚举取消修复上的「v1.9.020」标题改名为
+> v1.9.021 时，顺手删掉了唯一的 020 分节，导致这个已发布、已打 tag 的版本在 changelog 里
+> 整段消失（`docs/feature-checklist.md` §更新记录 与 `releases/RELEASE-v1.9.020.md` 当时都还
+> 指着它）。以下按 `0f9e6e9` 的实际改动与当前代码状态重写，并修正发布说明里说过头的部分。
+
+#### 🚀 功能增强
+- **16.2 二进制文件比较**：`widgets/file_compare.py` 逐字节比对 + 十六进制转储 + 相邻差异分组 +
+  大文件进度（同版本引入分块读取，避免整文件进内存）。**这一半实测可用**（2026-09-23 探针直接以
+  `compare_mode=BINARY` 走 `compare()`，能出报告）
+- **16.3 比较结果导出**：HTML（带深色样式）与纯文本两种，含比较元数据。**HTML 那半是坏的** ——
+  `_export_html()` 调类里不存在的 `escape_html()`（`widgets/file_compare.py:578` 等三处），一点就
+  `AttributeError`；纯文本那半本轮没跑过，不敢替它背书
+- **18.4 扩展压缩格式**：`widgets/archive_tool.py` 支持创建 7Z / RAR，探测系统 7-Zip / WinRAR，
+  探不到时给下载链接而不是崩
+- **21.1 / 21.2 用户操作菜单**：`config/user_operations.py`（JSON 持久化 + 占位符 + 文件类型过滤
+  + 启停）与 `widgets/user_operations_dialog.py`。**只有配置层是能用的那一半**：对话框模块第 4 行从
+  `PyQt6.QtWidgets` 导入不存在的 `QKeySequenceValidator`，**import 即 `ImportError`**
+
+#### ⚠️ 对当时发布说明的更正（2026-09-23 核查）
+- `releases/RELEASE-v1.9.020.md` 把 21.1/21.2 写成「✅ 快捷键绑定框架」等已完成状态：实际
+  **这两个组件从未接进应用** —— 除 `tests/test_new_features.py` 外全仓零引用，主窗口菜单与窗格
+  右键都没有入口，代码里也不存在任何 shortcut/hotkey 绑定。清单先改回 🟡，本轮跑过 import 之后
+  再改回 🔴（见上）。
+- `docs/implementation-summary.md` 的「✅ 全部完成」同样按组件层而非用户可用性统计，读时以
+  `docs/feature-checklist.md` 的状态为准。
+- **`docs/test-report-new-features.md` 自己写的是「14/27 通过、13 条待修」**，报告里那句
+  「QKeySequenceValidator 已修复（从 QtGui 移到 QtWidgets）」也是假的 —— 这批功能是在**已知半数用例
+  不通过**的情况下发布的。同一天该报告还把这 5 条失败解释成「需要完整 Qt 应用上下文」，掩盖了
+  `ImportError` 这个真因。
+- **连带后果，也是这一节最该记的一条**：`FileCompareDialog.__init__` 在给定两个文件时会立刻
+  `compare()`，文本比较路径撞上不存在的 `highlight_diffs()`，异常被 `except` 转成
+  `QMessageBox.warning` —— offscreen 下没人点 OK，**「用两个文件路径构造 `FileCompareDialog`」这一步就会
+  永久挂住**。踩中 9 处、跨两档（`tests/test_new_features.py` 6 处、`tests/test_m5_tools.py` 3 处），
+  整个 `tests/` 全量自此跑不完。changelog 里最后一次全量绿的记录停在 v1.9.019（Windows 662 passed /
+  4 skipped），之后各版只跑过针对性文件。销账与规矩见 `docs/gotchas.md` 第 56 条、清单第 23 节 T4/T5。
+
+#### 📝 文档（同批次）
+- 新增 `docs/implementation-summary.md`、`docs/test-report-new-features.md`（27 项新用例的报告；
+  2026-09-23 已在该文件顶部加了复核块，那份报告不能当「已验证」读）
+
+---
+
 ### v1.9.019 — 2026-09-18（开发分支 dev/shell-behavior-smb-perf）
 
 > 真机 GUI 验收第七轮（p50–p54）：L5「打开方式」与 L6「内嵌终端」两条挂账一起闭环，

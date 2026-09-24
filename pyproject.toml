@@ -18,6 +18,12 @@ dependencies = [
 build = [
     "pyinstaller>=6.0",
 ]
+# 跑测试用的依赖。仓库里没有 requirements-dev.txt，测试依赖只有这一处真相：
+# `uv sync --extra dev`（PyInstaller 那批用 `--extra build`）
+dev = [
+    "pytest>=8.0",
+    "pytest-qt>=4.5",
+]
 
 [tool.uv]
 package = false

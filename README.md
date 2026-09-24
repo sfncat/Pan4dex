@@ -33,18 +33,21 @@ Pan4dex 是一个跨平台四窗格文件管理器，功能对标 Windows 下的
 
 ## 安装
 
+发布产物在 [Releases](https://github.com/sfncat/Pan4dex/releases) 上，命名固定为两件事：
+Linux 是 `pan4dex-<版本>-linux`（单文件，无扩展名），Windows 是 `pan4dex-<版本>.zip`（解压后运行其中的 `pan4dex.exe`）。
+
 ### Linux
 
 ```bash
-# 直接下载可执行文件
-wget https://github.com/sfncat/Pan4dex/releases/latest/download/pan4dex-linux -O pan4dex
+# 取最新版本（也可以直接下 Releases 页面上的 pan4dex-<版本>-linux）
+wget https://github.com/sfncat/Pan4dex/releases/latest/download/pan4dex-<版本>-linux -O pan4dex
 chmod +x pan4dex
 ./pan4dex
 ```
 
 ### Windows
 
-从 [Releases](https://github.com/sfncat/Pan4dex/releases) 下载 `pan4dex-windows.exe` 即可运行。
+下载 `pan4dex-<版本>.zip`，解压到任意目录后运行 `pan4dex.exe`。
 
 ---
 
@@ -52,17 +55,22 @@ chmod +x pan4dex
 
 ### 环境要求
 
-* Python 3.10+
+* Python 3.11+（仓库锁到 `.python-version` 指定的版本；Linux 构建镜像内是 3.11）
 * PyQt6
 
 ### 安装依赖
 
 ```bash
+# 推荐：uv（依赖与锁文件分别是 pyproject.toml / uv.lock）
+uv sync --extra dev            # 运行时依赖 + pytest / pytest-qt
+uv sync --extra build          # 运行时依赖 + PyInstaller
+
+# 或手工 venv
 python3 -m venv venv
 source venv/bin/activate  # Linux/Mac
 # 或 venv\Scripts\activate  # Windows
 pip install -r requirements.txt
-pip install -r requirements-dev.txt
+pip install pytest pytest-qt pyinstaller   # 没有 requirements-dev.txt；测试依赖在 pyproject 的 .dev extra
 ```
 
 ### 运行
@@ -74,8 +82,18 @@ python main.py
 ### 测试
 
 ```bash
-pytest tests/ -v --qt-api=pyqt6
+QT_QPA_PLATFORM=offscreen pytest tests/ -q
 ```
+
+无显示环境必须设离屏平台变量。**当前全量会挂住**（不是慢）：只要用两个文件路径构造
+`FileCompareDialog`，它就立刻比较并在错误路径弹模态框，offscreen 下没人点 OK 就永不返回；踩中这一点
+的用例在 `tests/test_new_features.py` 与 `tests/test_m5_tools.py` 两档里，**两个都要排除**才跑得完：
+
+```bash
+QT_QPA_PLATFORM=offscreen pytest tests/ -q --ignore=tests/test_new_features.py --ignore=tests/test_m5_tools.py
+```
+
+详情见 [`docs/testing.md`](docs/testing.md) §5 与 [`docs/feature-checklist.md`](docs/feature-checklist.md) 第 23 节。
 
 ### 打包
 
@@ -87,7 +105,7 @@ bash scripts/build-linux-docker.sh
 python scripts/build_windows.py
 ```
 
-**详细构建指南**: [`docs/build-guide.md`](docs/build-guide.md)（含 230 Kali Docker 构建详解、后台构建、验证清单）
+**详细构建指南**: [`docs/BUILD-GUIDE.md`](docs/BUILD-GUIDE.md)（含 230 Kali Docker 构建详解、后台构建、验证清单）
 
 两条命令的版本号都缺省取自 `config/app_config.py`。`pyinstaller packaging/pan4dex.spec` 是手动/降级路线，只在 Docker 不可用时应急（不带输入法插件与内置 exiftool/7zz），差异见 `docs/development-guide.md` §5.2。
 
@@ -97,11 +115,17 @@ python scripts/build_windows.py
 
 | 文档 | 说明 |
 |------|------|
+| [`AGENT.md`](AGENT.md) | **AI 与新会话的入口索引**：项目是什么、代码怎么串、铁律、去哪读 |
 | [`QUICKSTART.md`](QUICKSTART.md) | **快速开始**（一键构建、常用命令） |
-| [`docs/build-guide.md`](docs/build-guide.md) | **构建指南**（Linux/Windows 构建、230 Docker 详解） |
-| [`docs/development-guide.md`](docs/development-guide.md) | 开发指南（测试、打包、代码规范） |
+| [`docs/BUILD-GUIDE.md`](docs/BUILD-GUIDE.md) | **构建指南**（Linux/Windows 构建、230 Docker 详解）← 构建的当前真相 |
+| [`docs/architecture.md`](docs/architecture.md) | 模块职责、数据流、关键设计决策 |
+| [`docs/development-guide.md`](docs/development-guide.md) | 开发指南（环境、加模块、代码规范、文档维护） |
+| [`docs/testing.md`](docs/testing.md) | 测试策略与常用命令 |
 | [`docs/feature-checklist.md`](docs/feature-checklist.md) | 功能清单与实现状态 |
-| [`docs/gotchas.md`](docs/gotchas.md) | 踩坑记录与注意事项 |
+| [`docs/linux-gap.md`](docs/linux-gap.md) | Linux 能力对照：哪些没做、哪些只是没验证 |
+| [`docs/gotchas.md`](docs/gotchas.md) | 踩坑记录 #1–#55（为什么不能那么写） |
+| [`docs/changelog.md`](docs/changelog.md) | 更新日志 |
+| [`docs/unsolved-issues.md`](docs/unsolved-issues.md) | 还挂着的问题 |
 
 ---
 
@@ -126,21 +150,20 @@ python scripts/build_windows.py
 
 ## 技术栈
 
-* [Python 3.10+](https://www.python.org/)
-* [PyQt6](https://www.riverbankcomputing.com/software/pyqt/)
-* [PyInstaller](https://pyinstaller.org/)
-* [send2trash](https://github.com/Sharachchandra/send2trash)
-* [Pillow](https://python-pillow.org/)
+* [Python 3.11+](https://www.python.org/)（依赖：`pyproject.toml` + `uv.lock`）
+* [PyQt6](https://www.riverbankcomputing.com/software/pyqt/) — 界面
+* [Pillow](https://python-pillow.org/) + [pillow-heif](https://pillow-heif.readthedocs.io/) — 图片与 HEIC 预览
+* [QDarkStyle](https://github.com/QDarkStyleSheet/qdarkstyle) — 深色主题
+* [send2trash](https://github.com/Sharachchandra/send2trash) — 安全删除（网络位置一律永久删除）
+* [pyte](https://pyte.readthedocs.io/) + [pywinpty](https://github.com/pywinpty/pywinpty)（Windows）— 内嵌终端
+* [PyInstaller](https://pyinstaller.org/) — 单文件打包
 
----
+## 里程碑
 
-## 路线图
-
-* [ ] M1: 核心框架（四窗格布局 + 基础导航）
-* [ ] M2: 文件操作（复制 / 移动 / 删除 + 拖拽）
-* [ ] M3: 标签页 + 快速预览
-* [ ] M4: 主题系统 + 收藏夹 + 筛选
-* [ ] M5: 打磨 + 打包发布
+M1–M5（核心框架 / 文件操作 / 标签页与预览 / 主题与收藏夹 / 打包发布）均已完成，
+当前处于「对齐 Windows 资源管理器与 Q-Dir 的行为细节 + Linux 真机验收」阶段。
+具体做没做看 [`docs/feature-checklist.md`](docs/feature-checklist.md)，
+Linux 侧差距看 [`docs/linux-gap.md`](docs/linux-gap.md)。
 
 ---
 

@@ -1,5 +1,19 @@
 # 功能实现总结
 
+> **读前须知（2026-09-23 校）**：本文件是 v1.9.020 那一批（16.2 / 16.3 / 18.4 / 21.1 / 21.2）的
+> 组件层实现说明，**不是可用性状态表**。当天把代码重跑了一遍，本文件有**四处**失真：
+> ① 21.1 / 21.2 标了 ✅，实际 `widgets/user_operations_dialog.py` **连 import 都失败**（第 4 行导入
+> 不存在的 `QKeySequenceValidator`），且全仓除测试外零引用，没有菜单或右键入口，用户拿不到；
+> 只有 `config/user_operations.py` 那一半是好的。可用性以 `docs/feature-checklist.md` 为准（现改判 🔴）。
+> ② 「后续改进建议 2. 更多压缩格式：支持解压 7z/RAR」**已经做完了**：`core/archive_ops.py`
+> 走系统或内置 7-Zip，支持 `.7z/.zip/.rar/.tar/.gz/.bz2/.xz` 与 `.tar.gz` 类双后缀。
+> ③ 本文件把「支持文本比较和二进制比较两种模式切换」写成已完成 —— 二进制那半实测可用，**文本比较
+> 调了类里不存在的 `highlight_diffs()`**，一点就 `AttributeError`；16.3 的 HTML 导出同病（`escape_html()`）。
+> ④ 更糟的是那条错误路径会弹**模态框**，于是 offscreen 下「用两个文件路径构造 `FileCompareDialog`」
+> 就永久挂住 —— `tests/test_new_features.py`（6 处）与 `tests/test_m5_tools.py`（3 处）两档都中招，
+> 本仓全量测试自 v1.9.020 起跑不完（gotchas 第 56 条、清单第 23 节 T4/T5）。
+> 版本的发布叙事看 `docs/changelog.md` v1.9.020 一节。
+
 ## 已完成的中优先级功能 (P2-P3)
 
 ### ✅ 16.2 - 二进制文件比较

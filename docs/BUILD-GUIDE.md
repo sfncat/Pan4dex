@@ -13,6 +13,30 @@
 
 ---
 
+## 🧭 仓库里脚本那么多，哪一条是入口
+
+`scripts/` 与根目录攒了一堆构建/部署脚本，其中只有一小部分是活的。**2026-09-23 逐个打开核过**，
+下表按「能不能拿来当入口」分类；判定依据写在括号里，别凭文件名猜。
+
+| 状态 | 脚本 | 为什么 |
+|---|---|---|
+| ✅ 现行入口 | `scripts/build-linux-docker.sh` | Linux 唯一入口，产物 `releases/pan4dex-<版本>-linux` |
+| ✅ 现行入口 | `scripts/build_windows.py` | Windows 本机入口；onedir，产物 `releases/pan4dex-<版本>/` + 同名 `.zip`，并把 `BUILD_TIME` 写回 `config/app_config.py` |
+| ✅ 配套 | `scripts/install-linux.sh`、`packaging/pan4dex.spec`、`packaging/Dockerfile-linux` | 安装脚本 / 降级路线 spec / 镜像定义 |
+| ⚠️ 半旧，只在多机内网可用 | `scripts/build.sh` | 顶部自述「跨机构建/部署编排（win54 构建 → win55 部署、Linux 转发给 Docker 入口）」。第 1 步转发已经改对了，但第 4 步仍在 win54 上找 `releases/pan4dex-<版本>.exe` —— 现行 Windows 产物是**目录 + zip，根本没有这个 exe**，那一段必然失败。这些机器（54/55/58）也早已不在当前流程里 |
+| 🔴 断链，别执行 | `scripts/zip_it.py` | glob 写死 `C:\workspace\pan4dex\releases\pan4dex-v*.exe`：路径是另一台机器的、命名规则（带 `v` 前缀的 exe）也是旧的，任何情况下都找不到文件 |
+| 🔴 断链，别执行 | `scripts/zip_exe.py` | 写死 `releases/pan4dex-v0.9.536.exe`（那个产物早不存在），且是相对路径，只在项目根目录执行才找得到 |
+| 🔴 断链，别执行 | `scripts/extract_zip.py` | 开头 `os.chdir(r'D:\workspace\2026\pan4dex\dist')` —— 那是已退役部署机 win55 上的路径，在别的机器上直接 `FileNotFoundError` |
+| 🔴 第三套入口 | `scripts/build_all.py` | 又一整套「同时构建两端」的编排，与上面两条入口并行存在、无人维护；要用就分别跑两条现行入口 |
+| 🔴 版本写死 | `build_windows_quick.bat`、`build_linux_quick.sh`（根目录） | 里面钉着 v1.9.020，产物早改名了；双击它会构建出一个源码已不匹配的旧版本 |
+| 🟡 一次性工具 | `scripts/build.bat`（示例还是 v0.8.7）、`scripts/deploy.bat`、`scripts/deploy.py`、`fix_*.py`×8、`repro_*.py`×4、`add_verbose_help.py`、`cleanup_blank_lines.py`、`make_icon.py` | 当年修某个具体问题留下的，都已完成使命；留着只为可追溯，**都不是构建入口**。`make_icon.py` 是唯一还有用的（生成图标） |
+
+需要说明的取舍：这些脚本本轮**一个都没删** —— 删可执行入口的风险比删文档大（谁在别的机器上
+手动跑过无从知晓），所以先把话说死在这里。真要清，建议按上表 🔴 那几行成批删，删完这条表格
+同步改掉，别留下「文档说删了但还在」或反之。
+
+---
+
 ## 🐧 Linux 版本构建
 
 ### 方式一：Docker 构建（推荐，所有环境统一使用）
@@ -91,9 +115,26 @@ QT_QPA_PLATFORM=offscreen ./releases/pan4dex-<版本>-linux --version
 scp linux230:/home/kali/workspace/pan4dex-dev/releases/pan4dex-<版本>-linux releases\
 ```
 
+#### 跨机传源码 / 传产物仍然成立的几条坑
+
+（2026-09-23 从 `skills/` 下那份已废弃的 win54/win55/gti 多机构建参考里挑出来的，其余内容随那两份
+文档一起删了；这几条与用哪台机器无关。）
+
+- **大二进制不要裸 scp**：链路长了可能悄悄损坏，走 zip（有 CRC 校验）再解包。Windows 侧现行产物本就
+  是 `releases/pan4dex-<版本>.zip`，直接传它。
+- **运行中的 exe 删不掉**：Windows 会锁住正在执行的文件，替换前先 `taskkill /F /IM pan4dex*`。
+- **`tar | ssh` 往 Windows 灌源码会按 GBK 码页落地**，带中文注释的源文件读出来就是乱码，症状是
+  `UnicodeDecodeError: 'utf-8' can't decode byte 0x94`。防御写法是先 `read_bytes()` 再按 utf-8→gbk
+  回退解码；`scripts/build_windows.py` 开头改 `BUILD_TIME` 的那一段（`read_bytes()` → utf-8 失败再走
+  gbk）保留的就是这一手。
+- **Windows 侧的两个平台差异**：PyInstaller 的 `--add-data` 分隔符是 `;` 不是 `:`；OpenSSH 里属于
+  Administrators 组的账户，公钥必须放 `C:\ProgramData\ssh\administrators_authorized_keys`（用户目录下的
+  `authorized_keys` 不生效），且判管理员用的 `whoami /groups` 输出是 GBK 编码。
+
 #### Docker 镜像细节
 
-- **镜像**: `pan4dex-builder-linux:latest`（实测 Python 3.10.18 / glibc 2.31），另有 `:py311` 变体用于 A/B
+- **镜像**: `pan4dex-builder-linux:latest`，基座 `python:3.11-bullseye`（`packaging/Dockerfile-linux:6`；
+  历史上曾是 3.10，`3.3b` 那条记过 bullseye 镜像不可重建的坑），另有 `:py311` 变体用于 A/B
 - **构建层**: `packaging/Dockerfile-linux`
 - **关键依赖**:
   - `pillow-heif` (HEIC 解码，已实测随产物捆绑)
@@ -104,7 +145,7 @@ scp linux230:/home/kali/workspace/pan4dex-dev/releases/pan4dex-<版本>-linux re
 
 ```bash
 releases/
-└── pan4dex-1.9.020-linux    # onefile 可执行文件 (约 70MB)
+└── pan4dex-<版本>-linux    # onefile 可执行文件 (约 70MB)
 ```
 
 ---
@@ -127,14 +168,14 @@ pyinstaller packaging/pan4dex.spec
 
 ### 前置条件
 
-1. **Python 3.10+**
+1. **Python 3.11+**（与 `pyproject.toml` 的 `requires-python` 一致）
    ```powershell
-   python --version  # 应显示 3.10.0 或更高
+   python --version  # 应显示 3.11.0 或更高
    ```
 
 2. **PyInstaller 6.0+**
    ```powershell
-   pip install -r requirements-dev.txt
+   pip install pyinstaller        # 仓库里没有 requirements-dev.txt，别照抄那条
    ```
 
 3. **PowerShell 5.1+** 或 **Git Bash**
@@ -163,8 +204,12 @@ python scripts/build_windows.py 1.9.021
 # 1. 检查配置
 Get-Content config\app_config.py | Select-String "VERSION|BUILD_TIME"
 
-# 2. 运行 PyInstaller
-pyinstaller pan4dex.spec
+# 2. 运行 PyInstaller —— 用 packaging/ 那份
+pyinstaller packaging\pan4dex.spec
+#    ⚠️ 仓库根目录还有一份同名 `pan4dex.spec`，那是 PyInstaller 自动生成的残件：里面硬写着
+#    `C:/workspace/Pan4dex/.venv/...` 的绝对路径，换机器直接失败。**别用它**。
+#    另：降级 spec 仍是 `console=False`，与 canonical 路线（`--console` + 运行时释放控制台）
+#    不一致，应急产物在 CLI 输出上与主路线有差异。
 
 # 3. 验证产物
 Test-Path dist\pan4dex.exe
@@ -263,21 +308,24 @@ sha256sum pan4dex-*-linux > checksums.txt
 ### Linux 产物验证
 
 ```bash
-# 1. 基本检查
-file releases/pan4dex-*.linux
+# 1. 基本检查（产物命名是 `-linux`，不是 `.linux`）
+file releases/pan4dex-*-linux
 # 应显示：ELF 64-bit LSB executable, x86-64
 
 # 2. 依赖检查
-ldd releases/pan4dex-*.linux | grep "not found"
+ldd releases/pan4dex-*-linux | grep "not found"
 # 应为空（除系统库外）
 
-# 3. HEIC 支持验证
+# 3. HEIC 支持验证 —— 注意这条只测**宿主解释器**，不能证明产物里带没带 pillow-heif
 python3 -c "from PIL import Image; print('pillow-heif' in str(Image.EXTENSION))"
+#   产物侧要看构建日志里是否收了 `_pillow_heif*.so`（`packaging/Dockerfile-linux:61` 的 pip
+#   列表是源头），真机渲染结论见 docs/linux-gap.md §5.2 L7
 
-# 4. 启动测试（无头模式）
-./releases/pan4dex-1.9.020-linux --test-mode &
-sleep 2
-pgrep -f pan4dex
+# 4. 启动测试（没有 `--test-mode` 这个参数；离屏常驻才是判据）
+./releases/pan4dex-*-linux --version      # 打印版本号与构建时间
+QT_QPA_PLATFORM=offscreen ./releases/pan4dex-<版本>-linux &
+sleep 3
+pgrep -f pan4dex                          # 还在 = 没启动即死
 ```
 
 ### Windows 产物验证
@@ -289,8 +337,8 @@ Test-Path dist\pan4dex.exe
 # 2. 依赖检查（使用 Dependency Walker 或 dumpbin）
 dumpbin /dependents dist\pan4dex.exe
 
-# 3. 启动测试
-.\dist\pan4dex.exe --test-mode
+# 3. 启动测试（没有 `--test-mode`；能打印版本、能常驻即可）
+.\dist\pan4dex.exe --version
 ```
 
 ---

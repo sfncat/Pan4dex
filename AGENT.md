@@ -1,317 +1,98 @@
-# AGENT.md — Pan4dex 万格 项目指南
+# AGENT.md — Pan4dex 万格 · 索引
 
-> AI 助手和开发者阅读此文件后应能快速理解项目结构、开发流程和约定。
+> 本文件只做导航与铁律，**不复制正文**。每条细节都属于下面某一份文档里的那一处：
+> 同一句话写进两处，就必然有一处过期（本文件的历史版本正是这么落后的）。
 
----
+## 这是什么
 
-## 项目简介
+跨平台四窗格文件管理器（对标 Windows 的 Q-Dir）。Python 3.11+（开发机 3.13，依赖由 uv 管理）
++ PyQt6，PyInstaller 打成单文件产物。当前版本 `1.9.023`，工作分支 `dev/shell-behavior-smb-perf`。
 
-Pan4dex 万格 是一个跨平台四窗格文件管理器，功能对标 Windows 下的 Q-Dir。支持 Linux（Ubuntu/Kali）和 Windows，使用 Python + PyQt6 开发，通过 PyInstaller 打包为单文件可执行。
+## 去哪读
 
-**核心功能**：
-- 2×2 网格四窗格布局（可切换为双窗格）
-- 跨窗格拖拽复制/移动文件
-- 标签页支持（新建/关闭/重命名/独立四窗格）
-- 快速预览面板（文本/图片/文件信息）
-- 文件类型 → 打开应用映射
-- 可配置外部终端（图形化设置界面）
-- 收藏夹侧边栏（右键目录直接添加）
-- 目录树侧边栏（双击导航到当前活动窗格）
-- 深色/浅色主题 + 自定义主题接口
-- 批量重命名、校验和、文件比较、目录同步、压缩包处理、文件分割/合并、高级搜索
-
----
-
-## 技术栈
-
-| 组件 | 版本 | 说明 |
-|---|---|---|
-| Python | 3.10+ | Ubuntu 22.04+ 自带 |
-| PyQt6 | 最新稳定版 | GUI 框架 |
-| pytest | 最新 | 测试框架 |
-| pytest-qt | 最新 | PyQt 组件测试 |
-| pytest-cov | 最新 | 覆盖率 |
-| send2trash | 最新 | 安全删除 |
-| Pillow | 最新 | 图片预览 |
-| PyInstaller | 最新 | 打包 |
-
----
-
-## 项目目录结构
-
-```
-pan4dex/
-├── main.py                   # 程序入口（版本号、构建时间）
-├── core/                     # 核心业务逻辑
-│   ├── __init__.py
-│   ├── main_window.py        # 主窗口（标签页 + 布局管理 + 设置对话框入口）
-│   ├── pane.py               # 单窗格（路径栏 + 文件列表 + 右键菜单 + 终端启动）
-│   └── file_operations.py    # 复制/移动/删除/重命名
-├── widgets/                  # UI 组件
-│   ├── __init__.py
-│   ├── path_bar.py           # 路径栏组件
-│   ├── preview_panel.py      # 快速预览面板
-│   ├── bookmark_sidebar.py   # 收藏夹侧边栏
-│   ├── tree_sidebar.py       # 目录树侧边栏
-│   ├── settings_dialog.py    # 设置对话框
-│   ├── batch_rename.py       # 批量重命名工具
-│   ├── checksum_tool.py      # 文件校验和工具
-│   ├── file_compare.py       # 文件比较工具
-│   ├── dir_sync.py           # 目录同步工具
-│   ├── archive_tool.py       # 压缩包处理工具
-│   ├── file_split.py         # 文件分割/合并工具
-│   └── advanced_search.py    # 高级搜索工具
-├── config/                   # 配置管理
-│   ├── __init__.py
-│   ├── file_associations.py  # 文件类型-应用映射
-│   └── theme_manager.py      # 主题管理器
-├── docs/                     # 文档目录
-│   ├── design.md             # 设计文档
-│   ├── architecture.md       # 架构设计
-│   ├── development-guide.md  # 开发指南
-│   ├── testing.md            # 测试策略
-│   ├── implementation.md     # 实现设计
-│   ├── feature-checklist.md  # 功能清单与规划
-│   ├── linux-gap.md          # Linux 能力对照与差距（哪些没做、哪些只是没验证）
-│   └── changelog.md          # 更新日志
-├── tests/                    # 测试目录
-│   ├── conftest.py           # pytest 配置和 fixtures
-│   ├── test_m1_core.py       # M1 核心框架测试
-│   ├── test_m3_preview.py    # M3 快速预览测试
-│   ├── test_m4_theme.py      # M4 主题系统测试
-│   ├── test_m5_tools.py      # M5 工具功能测试
-│   └── test_m6_tools.py      # M6 工具功能测试
-├── scripts/                  # 辅助脚本
-│   ├── build-linux-docker.sh # Linux 构建唯一入口（Docker：pan4dex-builder-linux）
-│   ├── build.sh              # 跨机编排：Linux 构建转发给上面那条，再部署到 gti/win55
-│   ├── build_windows.py      # Windows 构建脚本（本机直接跑）
-│   ├── zip_it.py             # 打包 zip（自动找最新 exe）
-│   └── extract_zip.py        # 解压部署到目标机器
-├── packaging/                # 打包配置
-│   ├── Dockerfile-linux      # Linux 构建镜像（canonical）
-│   └── pan4dex.spec          # PyInstaller spec（手动/降级路线，见下）
-├── resources/                # 资源文件（图标等）
-├── requirements.txt          # 运行时依赖
-├── AGENT.md                  # 本文件
-└── pyproject.toml            # 项目配置
-```
-
----
-
-## 开发约定
-
-### 代码风格
-- 遵循 PEP 8
-- 类型注解尽可能完整
-- 函数和类的 docstring 使用 Google 风格
-- 行长度不超过 100 字符
-
-### 命名约定
-- 模块：小写 + 下划线（`file_operations.py`）
-- 类：大驼峰（`FileOperations`）
-- 函数/方法：小写 + 下划线（`copy_files`）
-- 常量：全大写下划线（`MAX_RETRIES`）
-- 私有方法前缀：单下划线（`_internal_method`）
-
-### Git 约定
-- 功能分支：`feature/<功能名>`
-- 修复分支：`fix/<问题描述>`
-- 提交信息：`[模块] 动词 + 描述`，例如 `[file-ops] 修复大文件复制进度显示异常`
-
-### 测试约定
-- 每个模块有对应的测试文件
-- 测试命名：`test_<模块>_<场景>`
-- 单元测试不依赖 GUI（mock Qt 组件）
-- 集成测试使用 `pytest-qt` 的 `qtbot`
-- 目标覆盖率：核心模块 ≥ 85%，UI 模块 ≥ 60%
-
----
-
-## 构建与部署
-
-### 构建脚本
-```bash
-# Linux 版本（唯一入口：Docker 内 PyInstaller，产物 releases/pan4dex-<版本>-linux）
-bash scripts/build-linux-docker.sh            # 版本缺省取 config/app_config.py 的 VERSION
-# 镜像需重建时（改了 packaging/Dockerfile-linux）：sudo docker rmi pan4dex-builder-linux
-
-# Windows 版本（本机直接构建，产物 releases/pan4dex-<版本>/ + .zip）
-python scripts/build_windows.py
-
-# 跨机部署编排（需要 gti / win54 / win55 可达，开发机上跑不通）
-bash scripts/build.sh --skip-windows
-```
-
-### 机器配置
-| 机器 | IP | 用户 | 用途 | 路径 |
-|---|---|---|---|---|
-| win54 | 192.168.5.54 | kali | Windows 构建机 | C:\workspace\pan4dex\ |
-| 55 | 192.168.5.55 | sshuser | Windows 部署目标 | D:\workspace\2026\pan4dex\dist\ |
-| gti | 192.168.5.58 | kali | Linux 部署目标 | ~/tools/pan4dex/ |
-
-### win54 唤醒
-```bash
-wakeonlan -i 192.168.5.50 -p 9 52:54:10:73:70:cd
-# 等待 SSH 就绪（可能需要 2-3 分钟）
-```
-
-### 文件同步清单
-每次必须同步的文件：
-- `main.py`（版本号）
-- `widgets/path_bar.py`
-- `widgets/thumbnail_view.py`
-- `core/pane.py`
-- `core/main_window.py`
-- `config/theme_manager.py`
-- `scripts/build_windows.py`
-- `scripts/zip_it.py`
-- `scripts/extract_zip.py`
-
-### 构建要求
-`build_windows.py` 必须包含：
-- `--hidden-import=PyQt6.QtSvg`
-- `--collect-all=PyQt6`
-- `--add-data=...imageformats;imageformats`（图片格式插件）
-
-### 55 上解压部署
-```bash
-ssh sshuser@192.168.5.55 'cmd /c "taskkill /F /IM pan4dex* /T 2>nul & timeout /t 2 /nobreak >nul & cd /d D:\workspace\2026\pan4dex\dist & python extract_zip.py"'
-```
-
-### 常见错误
-| 错误 | 原因 | 解决 |
-|------|------|------|
-| 55 上版本号不对 | zip_it.py 硬编码了旧版本 | 修复 zip_it.py 为自动查找最新 |
-| 图片无法显示 | 缺少 Qt 图片格式插件 | 确保 build_windows.py 包含 `--add-data=imageformats` |
-| 应用崩溃 | QTreeView setIconSize(128) | 使用独立 ThumbnailView |
-| win54 SSH 超时 | 机器睡眠 | 先 WOL 唤醒，等待 2-3 分钟 |
-| 55 上文件被占用 | 应用正在运行 | 先 taskkill 再替换 |
-
-### 版本号规则
-- 格式：`0.9.5XX`（三位小版本号）
-- 用户手动控制，不要自动递增
-- 构建时间由 `build_windows.py` 自动注入
-
----
-
-## 架构要点
-
-### 数据流
-
-```
-用户操作 → Pane 捕获 → FileOperations 执行 → 回调更新 UI
-                                ↓
-                       进度信号 → 窗格底部进度条
-```
-
-### 关键设计决策
-- 文件列表使用自研 `core/dir_model.py:DirStoreModel`（每窗格一个实例）：`os.scandir` 一次只枚举
-  一个目录、在**限流专用池** `dir_pool()`（4 线程，不用 `QThreadPool.globalInstance()`）后台执行，
-  TTL 缓存 + 定向失效；**只给当前显示的本地目录**挂
-  `QFileSystemWatcher`（外部程序的改动自动重扫），网络/慢位置目录完全不挂（SMB 上的逐项 `stat`
-  与 watcher 轮询是卡顿根因，仍靠 TTL 2s + 定向失效）；应用内改动仍显式 `refresh_dir` 重扫
-- 目录监视的六条约束（缺一就会闪列表、漏更新，或直接 access violation，见
-  `docs/gotchas.md` 第 23 条）：只登记本地目录（“本地”由 `core/mounts.py:is_remote_location()`
-  定，两端同一个判据，见第 43 条）；只登记**屏幕上看得见的那个目录**（切走即摘）；
-  监视器全进程共用一个 `_WatchHub`（以 `QApplication` 为父，弱引用计数），不用 per-model
-  watcher；通知经 350ms 防抖合并；应用内改动用**类级** `_self_change` 时间戳抑制随后的
-  通知（实例级不够——跨窗格 `dirChanged` 会让没“改过”的窗格也收到同一次改动的通知）；
-  native `addPath`/`removePath` 推到**事件循环顶层**一次性 flush（不在 `set_directory` 的栈里做）。
-  监视量、并发枚举数与枚举量都是**稳定性预算**：实测监视全部曾导航目录 → 10/10 轮必崩，
-  只监视当前目录 + 延迟登记 + 枚举限流 → 0/14；「本地目录到达即重扫」把枚举量翻倍 → 9/10
-  必崩，改用快照 TTL 过期
-- **“这个位置是不是慢位置”全仓只有一份判据**：`core/mounts.py:is_remote_location()`，消费方
-  （窗格刷新、目录监视、删除文案）不得自己再写一份。它历史上正是两份各自 `if os.name != 'nt':
-  return False` 的实现 —— 门控不是“Linux 上少个功能”，而是把整套保守策略在 Linux 上**整体
-  关掉**。新增任何平台判据都要两边都有真实分支，并且**失败一律退化为代价最小的那一侧**
-  （这里按本地处理：宁可多挂一个 watcher，也不能让导航或删除跟着失败）；见
-  `docs/gotchas.md` 第 43 条、`docs/linux-gap.md` §2
-- **不要把 Qt 对象的生死交给分代 GC**：`removeTab` 之后必须握住 Python 引用（如
-  `MainWindow._closed_tabs`）再 `deleteLater()`，否则信号→绑定方法构成的引用环一被回收就当场
-  `delete` C++ 并级联拆光子树，销毁时机变成“任意 Python 分配点”（见 `docs/gotchas.md` 第 28 条）
-- **列表筛选只用一层代理**：条件由 `widgets/filter_bar.py:compile_filter()` 编译成 `EntryFilter`，
-  在已有的 `PaneSortProxyModel.filterAcceptsRow` 里生效（排序与过滤同一代理，不叠第二层，
-  也不重扫目录）；`filterAcceptsRow` 里**禁止** `stat`/`isdir` 等碰磁盘的调用，只用 `Entry`
-  已缓存的 `name`/`is_dir`/`size`/`mtime`；筛选语义对齐资源管理器：只筛当前目录、不递归、
-  不影响“隐藏文件”规则（见 `docs/gotchas.md` 第 29、30 条）
-- **排序比较也只读条目缓存属性**：`lessThan` 一次排序跑 O(n log n) 次比较，里面一个
-  `os.path.isdir()` 就能把 SMB 大目录的延时按比较次数乘回去；大小/日期必须按
-  `Entry.size`/`Entry.mtime` 比，不能比格式化字符串（“4.0 KB” 字典序小于 “5 B”）；
-  “目录优先”在**两个方向**都要保持，降序只反转同类内部顺序
-- 两个侧边目录树（`widgets/pane_tree_view.py` / `widgets/tree_sidebar.py`）仍用 `QFileSystemModel`（按需展开，非瓶颈）
-- 每个标签页持有独立的 `QuadPaneWidget`（包含 4 个 Pane）
-- 跨窗格拖拽使用自定义 MIME 类型 `application/x-pan4dex-drag`
-- 文件操作在 `QThread` 中执行，避免阻塞 UI
-- 后台线程→主线程投递一律走 `_emit_ui(信号名, ...)`（`Pane` / `TerminalView`）：参数传
-  **信号名字符串**而非信号对象，并在 `try` 里 `getattr` —— 在已销毁的 QObject 上连取
-  信号属性都会抛 RuntimeError
-- 延后执行（启动分阶段 / 防抖 / 轮询）统一用 `core/lifecycle.py:call_later(obj, ms, fn)`
-  而不是 `QTimer.singleShot`：后者的定时器不属于对象，对象先销毁时回调仍会访问已删除子控件
-- 进程退出统一用 `core/lifecycle.py:exec_and_drain(app)`：`app.exec()` 一返回就排空
-  `QThreadPool.globalInstance()`。未派发的跨线程投递持有 Python 对象，留给解释器收尾阶段
-  去释放会让进程以 `0xC0000409` fast-fail 退出（用户侧就是“关掉程序时报错”）
-- 后台结果回投主线程时，信号连接的**接收者必须就是目标 QObject**（绑定方法直连）：
-  换成弱引用 closure 后接收者变成 sender，模型销毁不再剔除已排队投递，实测反而直接 AV
-  （见 `docs/gotchas.md` 第 22 条）
-- 主题系统支持运行时切换，无需重启
-- 目录树导航通过 `_active_pane` 跟踪当前活动窗格
-- 窗格焦点通过 `eventFilter` 监听 `FocusIn` 和 `MouseButtonPress` 事件
-
-### 活动窗格机制
-- `Pane` 安装事件过滤器到 `tree_view`
-- 当 `tree_view` 获得焦点或鼠标点击时，发出 `activated` 信号
-- `MainWindow` 的 `_active_pane` 总是指向最后交互的窗格
-- 目录树/收藏夹导航作用于 `_active_pane`
-
-### 终端配置
-- 优先级：用户配置 → xdg-mime 系统默认 → 自动检测已安装终端
-- 配置文件：`~/.config/pan4dex/settings.json`
-- 设置界面：帮助 → 设置
-- Windows 支持：wt.exe、pwsh.exe、powershell.exe、cmd.exe
-- Linux 支持：gnome-terminal、konsole、xfce4-terminal、alacritty、kitty 等
-
----
-
-## 配置系统
-
-### 配置文件位置
-- Linux: `~/.config/pan4dex/`
-- Windows: `%APPDATA%\pan4dex\`
-
-### 配置文件
-| 文件 | 用途 |
+| 想知道 | 读这份 |
 |---|---|
-| `settings.json` | 终端应用等全局设置 |
-| `bookmarks.json` | 收藏夹列表 |
-| `associations.json` | 文件类型-应用映射 |
+| 模块职责、数据流、关键设计决策 | `docs/architecture.md` ← 唯一持续与代码同步的架构文档 |
+| 怎么构建出可安装的产物（Linux / Windows） | `docs/BUILD-GUIDE.md` ← 构建链路的当前真相 |
+| 上手跑起来、日常命令 | `QUICKSTART.md` |
+| 开发流程、加测试、代码规范、文档维护 | `docs/development-guide.md`；测试策略见 `docs/testing.md` |
+| 某功能做没做、还剩什么 | `docs/feature-checklist.md`；Linux 半边另看 `docs/linux-gap.md` |
+| 为什么不能那么写（踩过一次的都在这） | `docs/gotchas.md`（#1–#56，第六/七节是模型与生命周期） |
+| 发布改了什么 | `docs/changelog.md` |
+| 现在还挂着的问题 | `docs/unsolved-issues.md` |
 
-### settings.json 示例
-```json
-{
-    "terminal": "gnome-terminal"
-}
+## 代码怎么串起来
+
+```
+main.py                         入口：CLI 参数（--version/--info/--install-menu/--test-open）、
+                                崩溃日志、GUI 模式下释放控制台（`free_console_in_gui_mode()`）
+└─ core/main_window.py          MainWindow · QuadPaneWidget · 快捷键落点 · terminal/* 设置
+   └─ core/pane.py              Pane · FileListTreeView · PaneSortProxyModel（排序+筛选同一代理）
+      └─ core/dir_model.py      DirStoreModel：文件列表唯一数据源（后台枚举 + TTL 缓存 + 定向失效）
+   文件操作   core/file_operations.py  纯执行层，不知道线程也不认识 Qt
+              core/file_op_runner.py   后台线程 + 进度对话框 + 冲突询问 + 跨线程回投
+   跨端判据   core/mounts.py     is_remote_location()
+   生命周期   core/lifecycle.py  call_later() · exec_and_drain() · safe_event_filter
+   UI 组件    widgets/           侧边栏 / 路径栏 / 预览 / 筛选栏 / 搜索 / 各工具对话框
+   配置       config/app_config.py  VERSION · BUILD_TIME
+              config/paths.py       用户级 JSON 的唯一落点（win %APPDATA%\pan4dex，其余 ~/.config/pan4dex）
+              其余持久化直接走 QSettings(ORG_NAME, APP_NAME)，键由各宿主自己读写
 ```
 
----
+依赖声明在 `pyproject.toml`（锁在 `uv.lock`）；**没有 `requirements-dev.txt`**，打包依赖在
+`[project.optional-dependencies].build`、测试依赖在 `.dev`（`uv sync --extra dev`）。
 
-## 常见问题
+## 铁律（违反即回归；出处是 `docs/gotchas.md` 的对应条号）
 
-**Q: PyQt6 在 headless 测试环境中无法初始化？**
-A: 使用 `xvfb-run` 或设置 `QT_QPA_PLATFORM=offscreen`
+1. 「这个位置是不是慢位置」全仓只有一份判据 `core/mounts.py:is_remote_location()`。新增平台判据
+   两端都要有真实分支，且失败一律退化成代价最小的一侧。（#43）
+2. 目录监视的六条约束缺一就会闪列表或直接 AV：只监视**屏幕上看得见的本地目录**、全进程共用一个
+   `_WatchHub`、通知 350ms 防抖合并、应用内改动用**类级** `_self_change` 抑制后续通知、native
+   `addPath/removePath` 推到事件循环顶层一次性 flush、慢位置完全不挂。（#23、#12）
+3. 排序比较与筛选判定里禁止任何碰磁盘的调用（`stat`/`isdir`），只读 `Entry` 已缓存的
+   `name/is_dir/size/mtime` —— 一次排序要跑 O(n log n) 次比较。（#29、#30）
+4. 不要把 Qt 对象的生死交给分代 GC：`removeTab` 之后必须握住 Python 引用再 `deleteLater`。（#28）
+5. 后台 → UI 的投递：信号接收者必须就是目标 QObject（别为「判活」改成 closure）；延后执行用
+   `call_later` 而不是 `QTimer.singleShot`；进程退出走 `exec_and_drain`。（#17、#20、#21、#22）
+6. 快捷键与侧边栏点击的落点只认 `MainWindow.target_pane()`，且焦点在文本控件里时不去动文件系统；
+   直接判 `_active_pane` 会在 Linux/X11 上静默失效。（#47、#49）
+7. 改了「怎么说」就得同时改「怎么做」：删除的确认文案与是否走回收站共用同一个判据。（#50）
+8. 用 `if 集合:` 守卫「清理/复位状态位」时，边界空集会静默跳过复位，新数据再被下游幂等守卫整份
+   吞掉。（#55）
+9. 新 UI 模块要么带上入口、要么登记成待办，**不许标 🟢**（全仓除测试外零引用的组件，产品里点不到，
+   `ImportError` 只有被 import 时才炸）；发布前跑完整 `tests/`，**跑不完就是跑不过** —— 弹窗写在
+   `except` 分支里会把「测试失败」变成「测试永久挂住」。（#56）
 
-**Q: 如何处理不同发行版的终端差异？**
-A: 通过设置界面配置，或自动检测：用户配置 → xdg-mime → 已安装终端扫描
+## 命令
 
-**Q: 打包后图标/资源找不到？**
-A: PyInstaller spec 中正确配置 `datas`，运行时使用 `sys._MEIPASS` 定位资源
+```bash
+python main.py                                  # 跑起来
+QT_QPA_PLATFORM=offscreen python -m pytest tests/ -q   # GUI 测试离屏跑（Windows 上先设环境变量）
+bash scripts/build-linux-docker.sh              # Linux 唯一入口 → releases/pan4dex-<版本>-linux
+python scripts/build_windows.py                 # Windows 本机 → releases/pan4dex-<版本>/ + 同名 .zip
+```
 
-**Q: 目录树双击导航到错误的窗格？**
-A: 确保先点击目标窗格使其获得焦点，_directory tree 导航总是作用于 `_active_pane`
+> 全量那条**当前会挂住**（不是慢）：只要**用两个文件路径构造 `FileCompareDialog`**，`__init__` 就立刻
+> `compare()`，错误分支弹模态 `QMessageBox`，offscreen 下永不返回。踩中 9 处，在
+> `tests/test_new_features.py`（6 处）**和** `tests/test_m5_tools.py`（3 处）两档里 —— 所以 `--ignore`
+> 必须同时排除这两档，只排一个会在 50% 处卡住。详见 gotchas #56 与 `docs/feature-checklist.md` 第 23 节 T4/T5。
 
-**Q: 标签页右键菜单坐标偏移？**
-A: `customContextMenuRequested` 的坐标是相对 `QTabWidget` 的，需要用 `tabBar.mapFrom()` 转换
+## 发布一次要动哪几处
 
----
+1. `config/app_config.py` 的 `VERSION` 与 `pyproject.toml` 的 `version` 同步（末位 +1，人工控制，
+   不要自动递增）。
+2. `docs/changelog.md` 新增分节；功能状态变了就同步 `docs/feature-checklist.md` /
+   `docs/linux-gap.md` / `docs/gotchas.md`——**状态改了正文没跟上，比没改更坏**。
+3. 出产物后由 `scripts/build_windows.py` 写回 `BUILD_TIME`，单独一条 `chore(build)` 提交，保持
+   「源码 BUILD_TIME == 已发布二进制」这条惯例。
+4. 打 tag `v<版本>`。
+5. 前置条件是**完整 `tests/` 跑得出汇总行**（不是只跑本次改动相关的文件）：`pytest tests/ -q`
+   跑不完就是跑不过（#56）。
 
-**文档版本**: v1.2  
-**最后更新**: 2026-08-31
+## 约定
+
+- 提交信息：Conventional Commits（`fix(scope): 中文摘要`），正文按「现场 → 根因 → 修法 → tests →
+  docs」写；修复类必须带真实复现路径。
+- 测试：`tests/` 是扁平一层（**没有 `unit/` / `integration/` 子目录**），GUI 走 pytest-qt +
+  offscreen，不 mock 掉被测行为本身。
+- 版本号格式：`1.9.0XX`。

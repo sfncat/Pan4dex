@@ -116,7 +116,10 @@ def _expand_parts(self, parts, idx):
 
 **解决**：`FreeConsole()` + `AttachConsole(-1)` 尝试挂父控制台，失败则 `AllocConsole()` + `SetConsoleCP(65001)`。输出用 `open("CONOUT$", "w", encoding="utf-8")` 而不是 `os.fdopen(os.open(...))`。
 
-**状态**：还有乱码问题，待进一步研究。
+**状态**：本条的处置**已被后续方案整体替代** —— 现在不再走 `--windowed` + 手工挂回控制台，
+而是打包直接用 `--console` 并在 GUI 模式下由 `main.py:free_console_in_gui_mode()` 释放控制台
+（见 `docs/unsolved-issues.md` 问题 2）。留着本条只为了「SSH 下取 Windows CLI 输出」这个背景，
+别再按它改代码。
 
 ### 9. SSH 输出编码
 
@@ -152,7 +155,8 @@ def _expand_parts(self, parts, idx):
 
 **根因**：为避开 SMB 上的 watcher 轮询，`DirStoreModel` 早期版本完全不挂文件监视；
 旧共享模型时代 `QFileSystemModel` 会自己发现本地变更，删掉它之后这份“免费午餐”就
-没了。又因为旧缓存对本地目录永久新鲜（`_fresh_or_local()` 恒为 True），陈旧节点
+没了。又因为旧缓存对本地目录永久新鲜（`_fresh_or_local()` 恒为 True；这个函数随旧实现一起
+删掉了，现在源码里搜不到，读到这里别去找），陈旧节点
 不丢弃就永远不重扫。
 
 **解决**：两层。① pane 侧所有改动完成回调统一走 `_reload_after_mutation(path)`
@@ -1136,7 +1140,8 @@ L2 这一轮里，「点列头后 1 万行一行没动」这个现场被误判�
 两次都是探针自己的错。把它拆开写，因为每一条都能单独复现。
 
 **一、不能只看前 N 行（p59b 的错）**。「表头指示已变、可见顺序未变」看起来铁证如山，
-但靶子是 200 目录 + 9,800 文件，而 `PaneSortProxyModel.lessThan`（`core/pane.py:117`）
+但靶子是 200 目录 + 9,800 文件，而 `PaneSortProxyModel.lessThan`（`core/pane.py`，定义处
+103 行附近；**别照抄行号，按函数名定位**）
 明文规定**大小列下目录之间比名称而不比 size** —— 前 200 行全是目录，切「大小」列时
 它们**本来就不该动**。用 `lessThan` 计数器一问，那次排序其实调了 115,476 次比较。
 判据要改成：读**全部**可见行、按目录块/文件块**各自**断言单调，并且先证明
@@ -1230,9 +1235,40 @@ v1.9.021 修 L2「能取消 / 切走窗格不继续扫」时踩到两个坑，�
 是「尚未加载」，两者都是该重扫的理由；拿它当「要不要复位状态位」的闸门，就会与下游的
 去重/幂等守卫合谋，静默吞掉新数据。回归用例 `test_refresh_empty_dir_after_new_file_visible`。
 
+### 56. 「谁都没调用过」的 UI 模块能带着两个不存在的方法活两个月，而它的错误弹窗会让测试挂死而不是失败
 
+**现场**（2026-09-23 文档审计，跑代码复核 v1.9.020 那批工具类功能）：`pytest tests/test_new_features.py`
+0.1 秒之后**再不返回**；单跑 `TestUserOperationsDialog` → 5 条 `ImportError`。
 
+**三处根因，每一处都单独致命**：
 
+1. `widgets/user_operations_dialog.py:4` 从 `PyQt6.QtWidgets` 导入 `QKeySequenceValidator` —— 这个名字
+   在 QtWidgets 和 QtGui 里都不存在，模块 **import 期就硬错**。`docs/test-report-new-features.md`
+   第 107 行当时记的是「已修复（从 QtGui 移到 QtWidgets）」，那次修复本身是幻影。
+2. `widgets/file_compare.py:316` 调 `self.highlight_diffs()`、`:578` 等三处调 `self.escape_html()` ——
+   类里都没定义（AST 扫全类，只炸出这两个幽灵名字）。
+3. `compare()` 外面套着 `except Exception`，捕获后 `QMessageBox.warning(...)`。**模态框在 offscreen
+   下永远等不到人点 OK**，于是套件不是「失败 5 条」而是「整档挂住」，把后面所有测试一起拖死。
+   而 `FileCompareDialog.__init__` 末尾「两个文件都给了就直接 `self.compare()`」，所以连**构造**都能
+   走到这条弹窗路径。踩中 9 处、跨两档（`tests/test_new_features.py` 6 处、`tests/test_m5_tools.py` 3 处），
+   因此 `--ignore` 只排除一个文件照样会在 50% 处卡住 —— 排除两档才出得来汇总行（644 passed / 4 skipped）。
+
+**为什么两个月没人发现**：这两个模块**全仓除测试外零引用**，产品里点不到，`ImportError` 只有被
+import 的那一刻才炸；`0f9e6e9`（v1.9.020）之后就没再跑过一次完整 `tests/`（changelog 里最后一次
+全量绿停在 v1.9.019：Windows 662 passed / 4 skipped）。发布说明却照着「测试已加」写成 ✅。
+
+**规矩**：
+
+- 新 UI 模块**没有入口就别进版本库**，更别在功能清单里标 🟢；接线是它「存在」的一部分。已经只
+  建了组件的，登记成待办（本仓现状见 `docs/feature-checklist.md` 第 23 节 T2/T4/T5）。
+- 「加了 try/except 的 UI 代码」要问一句：异常有没有被**弹成模态框**。第 41 条说测试里要替掉全部
+  模态入口，这里补一半 —— **except 分支里的弹窗也是模态入口**，而且只在出错时才出现，最容易漏。
+- 核对 UI 类里方法调用的存在性，用 `ast` 扫一遍（`self.x(...)` 的 `x` 是否出现在该类的 `def` 名单
+  里），比眼睛可靠；同「架构表拿 `git ls-files` 逐个对账」是一个路子。
+- 用例构造对话框前先确认构造函数不会弹东西；会的话要么喂不触达错误路径的输入，要么把
+  `QMessageBox` 替掉。
+- 发布前跑完整 `tests/`；**跑不完就是跑不过**，不存在「只是挂住、跟本次改动无关」（第 44 条同源：
+  基线是整场套件的状态，不是被单独点亮的那几条）。
 
 ---
 
@@ -1281,7 +1317,9 @@ python scripts/deploy.py 0.9.618
 - [ ] 新增后台线程/线程池任务：进程退出是否走 `exec_and_drain(app)`（而非裸 `app.exec()`），
       保证事件循环一返回就排空未派发的投递
 - [ ] 新增 UI 入口（菜单项 / 对话框 / 工具栏）：枚举本机信息（注册表、`.desktop`、
-      扫盘）是否**延迟到真要显示时** + 带 TTL 缓存 + 失败只少一项不外抛（见第 33 条）？
+      扫盘）是否**延迟到真要显示时** + 带 TTL 缓存 + 失败只外抛不了（见第 33 条）？
+      反向问一句：新加的 widget 模块**有没有入口**？没有入口就不要在清单里标 🟢，
+      并确认它能被 `import`（`python -c "import widgets.xxx"`，见第 56 条）
 - [ ] 测试里手工造的父 `QMenu` / 父 widget：是否被调用方握住（只返回子对象会被 GC
       连带删掉整棵子树，见第 34 条）？
 - [ ] 写盘的用户条件/偏好：存的是“界面上的数字”还是“真正参与执行的那份值”？能否

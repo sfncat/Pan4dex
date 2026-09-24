@@ -3,46 +3,54 @@
 ## 1. 开发环境搭建
 
 ### 1.1 系统要求
-- Ubuntu 22.04+ / Kali Linux
-- Python 3.10+
+- Ubuntu 22.04+ / Kali Linux，或 Windows 10/11
+- Python 3.11+（`pyproject.toml` 的 `requires-python`；开发机的 `.python-version` 是 3.13，
+  Linux 构建镜像内是 3.11）
 - Qt 6 运行时（开发时由 PyQt6 提供）
+- 依赖与锁文件：`pyproject.toml` + `uv.lock`（用 uv 就 `uv sync`；`requirements.txt` 只是
+  运行时依赖的另一份抄本，两边要保持一致）
 
 ### 1.2 安装依赖
 
 ```bash
 # 克隆项目
-cd /home/kali/workspace/pan4dex
+cd /c/workspace/Pan4dex        # Linux 上按自己的路径
 
-# 创建虚拟环境
-python3 -m venv venv
-source venv/bin/activate
+# 推荐：uv（依赖与锁的真相在 pyproject.toml / uv.lock）
+uv sync --extra dev            # 运行时依赖 + pytest / pytest-qt
+uv sync --extra build          # 再加 PyInstaller（打产物时）
 
-# 安装运行时依赖
+# 不用 uv 的等价做法
+python3 -m venv .venv && source .venv/bin/activate     # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-
-# 安装开发依赖（测试、打包）
-pip install -r requirements-dev.txt
+pip install pytest pytest-qt pyinstaller
 ```
 
-### 1.3 requirements.txt
+### 1.3 requirements.txt（运行时，与 `pyproject.toml` 的 dependencies 一致）
 
 ```
 PyQt6>=6.6.0
 send2trash>=1.8.0
 Pillow>=10.0.0
+pillow-heif>=0.16.0      # HEIC/HEIF 预览
+qdarkstyle>=3.2.0        # 深色主题
+pyte>=0.8.0              # 内嵌终端的终端仿真
+pywinpty>=3.0.0; sys_platform == "win32"   # 内嵌终端的 PTY
 ```
 
-### 1.4 requirements-dev.txt
+### 1.4 开发依赖的现状（2026-09-23 更新）
 
-```
-pytest>=7.4.0
-pytest-qt>=4.2.0
-pytest-cov>=4.1.0
-pytest-xdist>=3.3.0
-PyInstaller>=6.0.0
-ruff>=0.1.0
-mypy>=1.5.0
-```
+* 测试：`pytest` + `pytest-qt` —— 已写进 `pyproject.toml` 的 `[project.optional-dependencies].dev`，
+  装法 `uv sync --extra dev`。**本轮之前**它是「实际在用但清单里没有」：`uv sync` 会把 `.venv` 里
+  没声明的包同步掉，所以「本机装过」不构成安装方式。
+* 打包：`pyinstaller` —— 声明在 `pyproject.toml` 的 `[project.optional-dependencies].build`，
+  `uv sync --extra build` 能装上。
+* 顺带发现：跑 `uv lock` 之前，`uv.lock` 里本包版本还钉在 **0.9.619**（源码早已是 1.9.023），
+  锁与 `pyproject.toml` 脱钩了很久 —— 改了依赖不重跑 `uv lock`，`uv sync` 就会静默按旧锁走。
+  改完依赖顺手 `uv lock --check`。
+* 静态检查：`ruff` / `mypy` —— **仓库里既没有配置文件也没有依赖**，旧文档里那两条命令是历史
+  设想，照抄必失败。要引入就先加 `ruff.toml` / `[tool.mypy]` 并补依赖。
+* 覆盖率 / 并行：`pytest-cov` / `pytest-xdist` 同样未声明，用之前先装。
 
 ---
 
@@ -50,34 +58,45 @@ mypy>=1.5.0
 
 ### 2.1 TDD 开发流程
 
-1. **编写测试**：在 `tests/unit/` 或 `tests/integration/` 中编写测试
-2. **运行测试确认失败**：`pytest tests/ -v`
+1. **编写测试**：在 `tests/` 下按模块建 `test_<模块>.py`（`tests/` 是扁平一层）
+2. **运行测试确认失败**：先单跑新加的那条（`pytest tests/test_xxx.py::test_yyy -q`），确认它
+   确实是因为缺陷而红
 3. **编写实现**：在 `core/` 或 `widgets/` 中编写代码
-4. **运行测试确认通过**
+4. **运行测试确认通过**：还是单跑，然后补一轮**相关模块**的用例
 5. **重构**：优化代码结构
-6. **覆盖率检查**：`pytest --cov --cov-report=term-missing`
+6. **提交前跑全量**：`QT_QPA_PLATFORM=offscreen pytest tests/ -q`（当前需把挂住的两档一起
+   `--ignore` 掉，见 §2.3）。**别拿第 4 步的单跑当「测试通过」** ——
+   gotchas 第 56 条那次回归就是因为只跑了针对性文件
+
+覆盖率检查这一步暂时没有：`pytest-cov` 未声明（§1.4）。
 
 ### 2.2 功能开发顺序
 
-```
-M1: 核心框架 → M2: 文件操作 → M3: 标签页+预览 → M4: 主题+收藏+筛选 → M5: 打磨+打包
-```
+M1–M5 是项目早期的排期口径，**已经全部走完**（四窗格核心、文件操作、标签页+预览、主题+收藏+筛选、
+打包发布）。现在按「版本 + 清单」排：做什么、还剩什么，一律看 `docs/feature-checklist.md`
+（第 23 节是待办），Linux 那半边看 `docs/linux-gap.md`。
 
 ### 2.3 代码提交前检查
 
 ```bash
-# 1. 运行全部测试
-pytest tests/ -v --qt-api=pyqt6
+# 1. 先只跑受本次改动影响的文件（反馈快）
+QT_QPA_PLATFORM=offscreen pytest tests/test_dir_model.py -q
 
-# 2. 代码格式检查
-ruff check core/ widgets/ config/
-
-# 3. 类型检查
-mypy core/ widgets/ config/
-
-# 4. 覆盖率报告
-pytest tests/ --cov --cov-report=term-missing
+# 2. 再补一轮全量 —— 顺序别反，只跑第 1 步就是 gotchas 第 56 条那次回归的成因
+QT_QPA_PLATFORM=offscreen pytest tests/ -q
 ```
+
+> **第 2 步当前跑不完**：`tests/test_new_features.py` 与 `tests/test_m5_tools.py` 里共 9 处「用两个文件
+> 路径构造 `FileCompareDialog`」，会弹模态框把套件挂死（只排除前者会在 50% 处卡在后者上）。当前能跑到
+> 汇总行的命令，以及销账条件，都在 `docs/testing.md` §5 与清单第 23 节 T4/T5。
+
+```bash
+# 3. 静态检查：仓库里既没有 ruff/mypy 配置也没有这两个依赖（见 §1.4）。
+#    想引入就单独开一条 chore 提交，把配置与依赖一起补上，别在提交说明里写「已过 ruff 检查」——
+#    本机根本没装。历史上这条命令是设想，不是现状。
+```
+
+**没有覆盖率这一步**：`pytest-cov` 同样未声明，`--cov` 参数会直接报错。
 
 ---
 
@@ -86,103 +105,96 @@ pytest tests/ --cov --cov-report=term-missing
 ### 3.1 新增核心模块
 
 1. 在 `core/` 下创建 `new_module.py`
-2. 在 `tests/unit/` 下创建 `test_new_module.py`
-3. 在 `docs/implementation.md` 中添加实现设计说明
+2. 在 `tests/` 下创建 `test_<模块>.py`（`tests/` 是扁平一层，没有 `unit/` / `integration/` 子目录）
+3. 在 `docs/architecture.md` §2 补一行模块职责；踩过坑的写进 `docs/gotchas.md`
 4. 在 `docs/feature-checklist.md` 中更新状态
 
 ### 3.2 新增 UI 组件
 
 1. 在 `widgets/` 下创建 `new_widget.py`
-2. 在 `tests/integration/` 下创建 `test_new_widget.py`
-3. 使用 `pytest-qt` 的 `qtbot` 进行组件测试
+2. 在 `tests/` 下创建 `test_<组件>.py`，用 `pytest-qt` 的 `qtbot` 测组件
+   （离屏跑：`QT_QPA_PLATFORM=offscreen`）
 
 ### 3.3 新增配置项
 
-1. 在 `config/settings.py` 中添加 get/set 方法
-2. 在 `tests/unit/test_settings.py` 中添加测试
-3. 在设置界面中添加对应 UI（如有）
+没有统一的设置封装层，按数据性质二选一：
+
+1. **结构化用户数据**（JSON 文件）：在 `config/` 下新建 store，配置目录向
+   `config/paths.py:default_config_dir()` 委托，别自己再算一份路径
+2. **界面/窗口偏好**：宿主直接 `QSettings(ORG_NAME, APP_NAME)` 读写自己的键（见
+   `core/main_window.py`、`widgets/settings_dialog.py`）
+3. 需要在设置界面里可改的，再往 `widgets/settings_dialog.py` 加对应 UI
 
 ---
 
 ## 4. 测试指南
 
-### 4.1 单元测试
+### 4.1 不碰 UI 的用例（模型层、判据、纯函数）
 
 ```python
-# tests/unit/test_file_operations.py
-import pytest
+# tests/test_file_operations.py
 from core.file_operations import FileOperations
 
 class TestFileOperations:
     def test_copy_single_file(self, tmp_dir):
-        """测试复制单个文件"""
-        src = tmp_dir / "source.txt"
-        src.write_text("hello")
-        dst = tmp_dir / "dest.txt"
-        
-        ops = FileOperations()
-        result = ops.copy(str(src), str(dst))
-        
+        src_dir = tmp_dir / "src"
+        src_dir.mkdir()
+        (src_dir / "source.txt").write_text("hello")
+        dst_dir = tmp_dir / "dst"
+        dst_dir.mkdir()
+
+        result = FileOperations().copy([str(src_dir / "source.txt")], str(dst_dir))
+
         assert result.success
-        assert dst.read_text() == "hello"
-    
+        assert (dst_dir / "source.txt").read_text() == "hello"
+
     def test_copy_to_nonexistent_directory(self, tmp_dir):
-        """测试复制到不存在的目录"""
         src = tmp_dir / "source.txt"
         src.write_text("hello")
-        dst = tmp_dir / "nonexistent" / "dest.txt"
-        
-        ops = FileOperations()
-        result = ops.copy(str(src), str(dst))
-        
+        result = FileOperations().copy([str(src)], str(tmp_dir / "nonexistent"))
         assert not result.success
-        assert "No such file" in result.error
 ```
 
-### 4.2 集成测试
+`copy` / `move` 的签名是 `(sources: list[str], destination: str)`，`delete` 是
+`(paths: list[str], safe: bool = True)`，都返回 `FileOperationResult`（`success` / `error` / …）。
+旧文档里 `ops.copy(src, dst)` 那种「单个源 → 目标文件」的写法在代码里不存在。
+
+### 4.2 需要控件的用例
 
 ```python
-# tests/integration/test_pane.py
-import pytest
-from widgets.pane import Pane
+# tests/test_pane.py（节选）
+from core.pane import Pane          # 注意：Pane 在 core/，不在 widgets/
 
-class TestPane:
-    def test_navigate_to_directory(self, qtbot, tmp_path):
-        """测试导航到目录"""
-        pane = Pane(pane_id="test")
-        qtbot.addWidget(pane)
-        
-        # 创建测试目录
-        test_dir = tmp_path / "test_dir"
-        test_dir.mkdir()
-        (test_dir / "file.txt").write_text("test")
-        
-        # 导航
-        pane.navigate_to(str(test_dir))
-        
-        # 验证
-        assert pane.current_path == str(test_dir)
-        assert pane.model.rowCount(pane.tree_view.rootIndex()) > 0
+def test_navigate_to_directory(qtbot, tmp_path):
+    test_dir = tmp_path / "test_dir"
+    test_dir.mkdir()
+    (test_dir / "file.txt").write_text("test")
+
+    pane = Pane("t_nav", start_path=str(test_dir))   # 构造签名：(pane_id, parent, start_path)
+    qtbot.addWidget(pane)
+
+    tv = pane.tree_view                              # 视图上挂的是 PaneSortProxyModel
+    qtbot.waitUntil(lambda: tv.model().rowCount(tv.rootIndex()) == 1, timeout=5000)
+    assert pane.current_path == str(test_dir)
 ```
+
+写 GUI 用例前先读 gotchas 第 41 条（离屏测 Qt 的四个坑）与第 32 条（合成按键的修饰键态会
+漏给下一个用例）；`tests/conftest.py` 只给了 `qapp`（session 级）、`tmp_dir`、
+`_reap_top_level_widgets`（autouse，防状态泄漏）和 `qt_exceptions` 四个夹具。
 
 ### 4.3 运行测试
 
 ```bash
-# 全部测试
-pytest tests/ -v --qt-api=pyqt6
+# 全部（无显示的环境必须离屏）—— 少一个 --ignore 就会挂住，见 §2.3 与 testing.md §5
+QT_QPA_PLATFORM=offscreen pytest tests/ -q --ignore=tests/test_new_features.py --ignore=tests/test_m5_tools.py
 
-# 仅单元测试
-pytest tests/unit/ -v
-
-# 仅集成测试
-pytest tests/integration/ -v --qt-api=pyqt6
-
-# 覆盖率
-pytest tests/ --cov=core --cov=widgets --cov=config --cov-report=html --cov-report=term-missing
-
-# 并行测试
-pytest tests/ -n auto
+# 按文件 / 按用例
+pytest tests/test_dir_model.py -v
+pytest tests/test_dir_model.py::test_refresh_empty_dir_after_new_file_visible -v
 ```
+
+覆盖率（`--cov`）与并行（`-n auto`）这两条**现在都用不了**：`pytest-cov` / `pytest-xdist` 没写进任何
+依赖清单（§1.4），装了才有；覆盖率策略本身见 `docs/testing.md` §1。
 
 ---
 
@@ -346,12 +358,14 @@ debugpy.wait_for_client()  # 等待 VS Code 连接
 
 | 文档 | 何时更新 |
 |---|---|
-| `docs/design.md` | 功能需求变更时 |
-| `docs/architecture.md` | 架构变更时 |
-| `docs/implementation.md` | 实现细节变更时 |
+| `AGENT.md` | 只改导航与铁律条目，**不往里复制正文** |
+| `docs/architecture.md` | 模块职责、数据流、关键设计决策变更时 |
+| `docs/gotchas.md` | 每踩过一个会复发的坑，当场记一条（编号连续，别插空号） |
+| `docs/changelog.md` | 每次发布新增一节 |
+| `docs/feature-checklist.md` | 功能实现状态变更时（改了状态要连正文一起改） |
+| `docs/linux-gap.md` | Linux 侧缺口关闭或真机验收有结论时 |
+| `docs/BUILD-GUIDE.md` | 构建/发布链路变更时（构建的当前真相） |
 | `docs/testing.md` | 测试策略变更时 |
-| `docs/feature-checklist.md` | 功能实现状态变更时 |
-| `AGENT.md` | 项目结构/约定变更时 |
 
 ### 8.2 更新记录格式
 
