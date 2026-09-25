@@ -295,26 +295,29 @@ def install_signal_handlers():
 
 
 def install_qt_plugin_path():
-    """设置 Qt 插件路径，确保能找到图片格式插件"""
+    """清理会泄漏给子进程的 Qt 环境变量，并保证本进程能找到图片格式插件。
+
+    PyInstaller 的 pyi_rth_pyqt6 运行时钩子在打包程序每次启动时都会设置
+    QT_PLUGIN_PATH / QML2_IMPORT_PATH 指向 bundle 内的插件目录。环境变量会被
+    所有子进程继承，外部 Qt 程序（如 DB Browser for SQLite）会去扫描我们的
+    插件 DLL，因 Qt 版本不匹配弹 "Invalid metadata version" 错误。
+    pip 安装的 PyQt6 wheel 自带嵌入式 qt.conf，插件路径由 QLibraryInfo 自动
+    解析（钩子注释亦说明这些变量主要给 conda 安装兜底），因此 frozen 模式下
+    直接删除即可，本进程的 Qt 仍能找到全部插件。
+    """
     import os
     import sys
 
     if getattr(sys, 'frozen', False):
-        # onefile 模式：文件解压到 _MEIPASS 临时目录
+        os.environ.pop('QT_PLUGIN_PATH', None)
+        os.environ.pop('QML2_IMPORT_PATH', None)
+        # 兜底：构建脚本还会在 _MEIPASS 顶层复制一份 imageformats，
+        # 加进本进程的库搜索路径（addLibraryPath 只影响本进程，不会泄漏）。
         plugin_path = os.path.join(sys._MEIPASS, "imageformats")
-        logger.info(f"[DEBUG] _MEIPASS: {sys._MEIPASS}")
-        logger.info(f"[DEBUG] plugin_path: {plugin_path}")
-        logger.info(f"[DEBUG] plugin_path exists: {os.path.exists(plugin_path)}")
         if os.path.exists(plugin_path):
-            os.environ["QT_PLUGIN_PATH"] = sys._MEIPASS
-            logger.info(f"[DEBUG] QT_PLUGIN_PATH set to: {sys._MEIPASS}")
-        else:
-            logger.info(f"[DEBUG] plugin_path does not exist, listing _MEIPASS:")
-            try:
-                for f in os.listdir(sys._MEIPASS):
-                    logger.info(f"[DEBUG]   {f}")
-            except:
-                pass
+            from PyQt6.QtCore import QCoreApplication
+            QCoreApplication.addLibraryPath(sys._MEIPASS)
+            logger.info(f"Qt library path added: {sys._MEIPASS}")
 
 
 def _cli_output():

@@ -154,6 +154,9 @@ class MainWindow(QMainWindow):
 
         # 延迟应用主题和恢复布局（避免阻塞启动）
         call_later(self, 0, self._deferred_init)
+        # 布局恢复独立调度：_deferred_init 内任何一步失败（如主题样式模块缺失）
+        # 都不得阻断"记住上次打开的目录"
+        call_later(self, 0, self._auto_load_layout)
         logger.info(f"[启动计时] 延迟初始化已调度: {(time.perf_counter()-_t0)*1000:.1f}ms")
     
     def _deferred_init(self):
@@ -162,9 +165,13 @@ class MainWindow(QMainWindow):
         _t0 = time.perf_counter()
         
         # 应用主题（QSettings 有记录则恢复，否则默认）
+        # 主题样式为动态 import（qdarkstyle），缺失时绝不能让后续初始化中断
         saved_theme = self.settings.value("theme", "")
         theme = saved_theme if saved_theme else DEFAULT_THEME
-        self.theme_manager.apply_theme(theme)
+        try:
+            self.theme_manager.apply_theme(theme)
+        except Exception as exc:
+            logger.error(f"主题加载失败（跳过，使用系统默认样式）: {exc}")
         logger.info(f"[启动计时] 主题应用: {(time.perf_counter()-_t0)*1000:.1f}ms")
 
         # 恢复字体设置
@@ -194,9 +201,8 @@ class MainWindow(QMainWindow):
         # 窗格分割比例：等延迟创建的 pane2-4 就位（250ms）后再恢复
         call_later(self, 400, self._restore_splitter_sizes)
 
-        # 自动恢复上次的布局
-        self._auto_load_layout()
-        logger.info(f"[启动计时] 布局恢复: {(time.perf_counter()-_t0)*1000:.1f}ms")
+        # （布局恢复已改为独立调度，见 __init__）
+        logger.info(f"[启动计时] 延迟初始化完成: {(time.perf_counter()-_t0)*1000:.1f}ms")
 
     def _restore_splitter_sizes(self):
         """恢复各分割器比例（按布局模式分别保存）"""

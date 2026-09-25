@@ -670,6 +670,17 @@ class Pane(QWidget):
             if self.pane_tree_view.isVisible():
                 self.pane_tree_view.expand_to_path(path)
             self.update_status_bar()
+        elif state.get('current_path'):
+            # 无标签页的窗格：之前 tab_paths 为空时整段恢复被跳过，
+            # 导致"关闭前打开的目录"重启后回到默认目录
+            path = state['current_path']
+            if os.path.isdir(path):
+                self.current_path = path
+                self.path_bar.set_path(path)
+                self._set_root_index(path)
+                if self.pane_tree_view.isVisible():
+                    self.pane_tree_view.expand_to_path(path)
+                self.update_status_bar()
         
         # 恢复目录树可见性
         if state.get('tree_visible', False):

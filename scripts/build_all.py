@@ -12,7 +12,7 @@ from datetime import datetime
 
 # 切换到项目根目录
 script_path = pathlib.Path(__file__).resolve()
-project_root = script_path.parent
+project_root = script_path.parent.parent
 os.chdir(project_root)
 
 print("=" * 60)
