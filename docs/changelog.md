@@ -134,7 +134,7 @@
   `QMessageBox.warning` —— offscreen 下没人点 OK，**「用两个文件路径构造 `FileCompareDialog`」这一步就会
   永久挂住**。踩中 9 处、跨两档（`tests/test_new_features.py` 6 处、`tests/test_m5_tools.py` 3 处），
   整个 `tests/` 全量自此跑不完。changelog 里最后一次全量绿的记录停在 v1.9.019（Windows 662 passed /
-  4 skipped），之后各版只跑过针对性文件。销账与规矩见 `docs/gotchas.md` 第 56 条、清单第 23 节 T4/T5。
+  4 skipped），之后各版只跑过针对性文件。销账与规矩见 `docs/gotchas.md` 第 56 条、`docs/todo.md` T4/T5。
 
 #### 📝 文档（同批次）
 - 新增 `docs/implementation-summary.md`、`docs/test-report-new-features.md`（27 项新用例的报告；

@@ -23,7 +23,7 @@
 | 收藏夹树 `BookmarkStore` | `tests/test_bookmarks.py` | 注入临时目录做 JSON 落盘（gotchas 第 39 条：测持久化组件必须注入临时目录） |
 | 文件关联 / 已保存搜索 | `tests/test_saved_search.py`、`test_search_results.py`、`test_open_with.py` | 临时目录注入做 JSON 落盘（gotchas 第 39 条）；`test_open_with.py` 在 Windows 上真读注册表 |
 | 崩溃日志落点 | `tests/test_crash_log_path.py` | 只读安装目录时要能退到用户级落点（gotchas 第 45 条） |
-| 各工具对话框（比较/预览/操作） | `tests/test_new_features.py`、`tests/test_m5_tools.py` | ⚠️ **这两档当前会把整场测试挂住**：合计 9 处「用两个文件路径构造 `FileCompareDialog`」即撞模态错误框，见 §5 顶部的当前状态说明与清单第 23 节 T4/T5 |
+| 各工具对话框（比较/预览/操作） | `tests/test_new_features.py`、`tests/test_m5_tools.py` | ⚠️ **这两档当前会把整场测试挂住**：合计 9 处「用两个文件路径构造 `FileCompareDialog`」即撞模态错误框，见 §5 顶部的当前状态说明与 `docs/todo.md` T4/T5 |
 
 （`DragDrop` / `Terminal` / `Settings` / `FileModel` 这些**模块在本仓不存在**，旧表里那几行
 是按设想写的。拖放判据实际住在 `file_operations.decide_drop_action()`，终端住在
@@ -159,7 +159,7 @@ QT_QPA_PLATFORM=offscreen pytest tests/ -q
 > `QT_QPA_PLATFORM=offscreen pytest tests/ -q --ignore=tests/test_new_features.py --ignore=tests/test_m5_tools.py`。
 > 2026-09-23 本机实测这条：Windows / Python 3.13 / offscreen → **644 passed, 4 skipped in 85.56s**
 > （`tmp/p62_fullsuite_minus2.log`，日志不入库）。
-> 根因与销账条件写在 `docs/feature-checklist.md` 第 23 节 T4/T5、`docs/gotchas.md` 第 56 条。
+> 根因与销账条件写在 `docs/todo.md` T4/T5、`docs/gotchas.md` 第 56 条。
 > **修好之前别在任何文档里写「全量通过」** —— v1.9.020 起就没有过一次跑完的 `tests/`；
 > 排除两档跑出的数字是「次全量」，报的时候要照实写排除了什么。
 

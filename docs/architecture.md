@@ -61,8 +61,8 @@
 | `progress_dialog.py` / `conflict_dialog.py` | 文件操作的独立进度窗口（速度/剩余时间/取消）与同名冲突询问（替换/跳过/保留两者，含「对后续同样处理」），宿主是 `core/file_op_runner.py` |
 | `thumbnail_view.py` / `pane_tree_view.py` / `tree_sidebar.py` | 超大图标视图（独立组件，绕开 `QTreeView.setIconSize(128)` 的 GDI 崩溃，见 gotchas 第 10 条）、窗格内嵌目录树、侧边目录树 —— 后两者仍用 `QFileSystemModel`（按需展开，不是瓶颈） |
 | `settings_dialog.py` | 设置对话框（主题/字体/默认打开目录/启动侧边栏/启动器列表），按各自的 QSettings 键直接读写 |
-| `batch_rename.py` / `checksum_tool.py` / `dir_sync.py` / `file_compare.py` / `file_split.py` / `archive_tool.py` / `timestamp_tool.py` | 从菜单进入的各功能工具。其中 `file_compare.py` 只有一半能用：二进制比较实测正常，文本比较与 HTML 导出各调一个类里不存在的方法（`highlight_diffs`、`escape_html`），一点就 `AttributeError`，被 `except` 转成模态错误框（清单 16.1/16.3 为 🔴，登记在第 23 节 T4） |
-| `user_operations_dialog.py` | 用户自定义操作的配置对话框。**当前是 import 期硬错的死模块**：第 4 行从 `PyQt6.QtWidgets` 导入不存在的 `QKeySequenceValidator`（QtGui 里也没有），`import` 就 `ImportError`，全仓除测试外零引用（2026-09-23 实测）。清单 21.1/21.2 因此是 🔴 而不是「组件已建好」，修复与接线见清单第 23 节 T2 |
+| `batch_rename.py` / `checksum_tool.py` / `dir_sync.py` / `file_compare.py` / `file_split.py` / `archive_tool.py` / `timestamp_tool.py` | 从菜单进入的各功能工具。其中 `file_compare.py` 只有一半能用：二进制比较实测正常，文本比较与 HTML 导出各调一个类里不存在的方法（`highlight_diffs`、`escape_html`），一点就 `AttributeError`，被 `except` 转成模态错误框（清单 16.1/16.3 为 🔴，待办见 `docs/todo.md` T4） |
+| `user_operations_dialog.py` | 用户自定义操作的配置对话框。**当前是 import 期硬错的死模块**：第 4 行从 `PyQt6.QtWidgets` 导入不存在的 `QKeySequenceValidator`（QtGui 里也没有），`import` 就 `ImportError`，全仓除测试外零引用（2026-09-23 实测）。清单 21.1/21.2 因此是 🔴 而不是「组件已建好」，修复与接线见 `docs/todo.md` T2 |
 
 ### 2.3 config/ — 配置管理
 

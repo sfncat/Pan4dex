@@ -6,7 +6,8 @@
 ## 这是什么
 
 跨平台四窗格文件管理器（对标 Windows 的 Q-Dir）。Python 3.11+（开发机 3.13，依赖由 uv 管理）
-+ PyQt6，PyInstaller 打成单文件产物。当前版本 `1.9.023`，工作分支 `dev/shell-behavior-smb-perf`。
++ PyQt6，PyInstaller 打成单文件产物。当前版本 `1.9.023`，开发分支就是 `master`
+  （2026-09-24 起不再走 `dev/*`，动手前先 `git pull --ff-only`）。
 
 ## 去哪读
 
@@ -16,7 +17,7 @@
 | 怎么构建出可安装的产物（Linux / Windows） | `docs/BUILD-GUIDE.md` ← 构建链路的当前真相 |
 | 上手跑起来、日常命令 | `QUICKSTART.md` |
 | 开发流程、加测试、代码规范、文档维护 | `docs/development-guide.md`；测试策略见 `docs/testing.md` |
-| 某功能做没做、还剩什么 | `docs/feature-checklist.md`；Linux 半边另看 `docs/linux-gap.md` |
+| 某功能做没做、还剩什么 | `docs/feature-checklist.md`（状态表）；**待办看 `docs/todo.md`**；Linux 半边另看 `docs/linux-gap.md` |
 | 为什么不能那么写（踩过一次的都在这） | `docs/gotchas.md`（#1–#56，第六/七节是模型与生命周期） |
 | 发布改了什么 | `docs/changelog.md` |
 | 现在还挂着的问题 | `docs/unsolved-issues.md` |
@@ -75,14 +76,15 @@ python scripts/build_windows.py                 # Windows 本机 → releases/pa
 > 全量那条**当前会挂住**（不是慢）：只要**用两个文件路径构造 `FileCompareDialog`**，`__init__` 就立刻
 > `compare()`，错误分支弹模态 `QMessageBox`，offscreen 下永不返回。踩中 9 处，在
 > `tests/test_new_features.py`（6 处）**和** `tests/test_m5_tools.py`（3 处）两档里 —— 所以 `--ignore`
-> 必须同时排除这两档，只排一个会在 50% 处卡住。详见 gotchas #56 与 `docs/feature-checklist.md` 第 23 节 T4/T5。
+> 必须同时排除这两档，只排一个会在 50% 处卡住。详见 gotchas #56 与 `docs/todo.md` T4/T5。
 
 ## 发布一次要动哪几处
 
 1. `config/app_config.py` 的 `VERSION` 与 `pyproject.toml` 的 `version` 同步（末位 +1，人工控制，
    不要自动递增）。
-2. `docs/changelog.md` 新增分节；功能状态变了就同步 `docs/feature-checklist.md` /
-   `docs/linux-gap.md` / `docs/gotchas.md`——**状态改了正文没跟上，比没改更坏**。
+2. `docs/changelog.md` 新增分节；功能状态变了就同步 `docs/feature-checklist.md`（状态表）、
+   `docs/todo.md`（销账那条改 ✅ 但**保留整行**）、`docs/linux-gap.md` / `docs/gotchas.md`——
+   **状态改了正文没跟上，比没改更坏**。
 3. 出产物后由 `scripts/build_windows.py` 写回 `BUILD_TIME`，单独一条 `chore(build)` 提交，保持
    「源码 BUILD_TIME == 已发布二进制」这条惯例。
 4. 打 tag `v<版本>`。

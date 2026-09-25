@@ -73,8 +73,8 @@ pywinpty>=3.0.0; sys_platform == "win32"   # 内嵌终端的 PTY
 ### 2.2 功能开发顺序
 
 M1–M5 是项目早期的排期口径，**已经全部走完**（四窗格核心、文件操作、标签页+预览、主题+收藏+筛选、
-打包发布）。现在按「版本 + 清单」排：做什么、还剩什么，一律看 `docs/feature-checklist.md`
-（第 23 节是待办），Linux 那半边看 `docs/linux-gap.md`。
+打包发布）。现在按「版本 + 清单」排：状态看 `docs/feature-checklist.md`、**还剩什么看
+`docs/todo.md`**（待办唯一正文），Linux 那半边看 `docs/linux-gap.md`。
 
 ### 2.3 代码提交前检查
 
@@ -88,7 +88,7 @@ QT_QPA_PLATFORM=offscreen pytest tests/ -q
 
 > **第 2 步当前跑不完**：`tests/test_new_features.py` 与 `tests/test_m5_tools.py` 里共 9 处「用两个文件
 > 路径构造 `FileCompareDialog`」，会弹模态框把套件挂死（只排除前者会在 50% 处卡在后者上）。当前能跑到
-> 汇总行的命令，以及销账条件，都在 `docs/testing.md` §5 与清单第 23 节 T4/T5。
+> 汇总行的命令，以及销账条件，都在 `docs/testing.md` §5 与 `docs/todo.md` T4/T5。
 
 ```bash
 # 3. 静态检查：仓库里既没有 ruff/mypy 配置也没有这两个依赖（见 §1.4）。
@@ -107,7 +107,7 @@ QT_QPA_PLATFORM=offscreen pytest tests/ -q
 1. 在 `core/` 下创建 `new_module.py`
 2. 在 `tests/` 下创建 `test_<模块>.py`（`tests/` 是扁平一层，没有 `unit/` / `integration/` 子目录）
 3. 在 `docs/architecture.md` §2 补一行模块职责；踩过坑的写进 `docs/gotchas.md`
-4. 在 `docs/feature-checklist.md` 中更新状态
+4. 在 `docs/feature-checklist.md` 中更新状态；没做完的部分登记到 `docs/todo.md`（编号续 `T<n>`）
 
 ### 3.2 新增 UI 组件
 
@@ -363,6 +363,7 @@ debugpy.wait_for_client()  # 等待 VS Code 连接
 | `docs/gotchas.md` | 每踩过一个会复发的坑，当场记一条（编号连续，别插空号） |
 | `docs/changelog.md` | 每次发布新增一节 |
 | `docs/feature-checklist.md` | 功能实现状态变更时（改了状态要连正文一起改） |
+| `docs/todo.md` | 待办的唯一正文：登记新条目、销账时状态改 ✅ 但**保留整行**（它是验收记录） |
 | `docs/linux-gap.md` | Linux 侧缺口关闭或真机验收有结论时 |
 | `docs/BUILD-GUIDE.md` | 构建/发布链路变更时（构建的当前真相） |
 | `docs/testing.md` | 测试策略变更时 |

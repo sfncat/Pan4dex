@@ -10,7 +10,7 @@
 > |---|---|
 > | 「`TestBinaryCompare` 因 GUI 初始化问题未运行」 | 不是初始化问题：`FileCompareDialog.__init__` 末尾会直接 `compare()`，而 `compare_text()` 调**不存在的方法** `highlight_diffs`（`widgets/file_compare.py:316`），异常被外层 `except` 转成 `QMessageBox.warning` —— **offscreen 下没人点 OK，测试文件从第 1 条起永久挂住**。同一坑位在 `tests/test_m5_tools.py` 里还有 3 处（全仓 9 处），所以排除档时两档都得排 —— 这条也顺带说明：本仓最后一次全量 `tests/` 绿是 v1.9.019，v1.9.020 起套件跑不完 |
 > | 下文「已知问题 2. **QKeySequenceValidator 位置** —— 已修复（从 QtGui 移到 QtWidgets）」 | **假的**。`QKeySequenceValidator` 在 `PyQt6.QtWidgets` 和 `PyQt6.QtGui` 里都不存在，`widgets/user_operations_dialog.py:4` 至今 import 即 `ImportError`；那 5 条对话框用例现在仍然 5 failed（不是「需要完整 Qt 上下文」） |
-> | 「二进制比较（16.2）核心功能已实现」 | 这句是对的：绕开文本模式、`compare_mode=BINARY` 直接 `compare()`，实测能出报告。坏的是文本比较与 HTML 导出（`escape_html` 同样不存在），见 `docs/feature-checklist.md` 16.1/16.3 与第 23 节 T4 |
+> | 「二进制比较（16.2）核心功能已实现」 | 这句是对的：绕开文本模式、`compare_mode=BINARY` 直接 `compare()`，实测能出报告。坏的是文本比较与 HTML 导出（`escape_html` 同样不存在），见 `docs/feature-checklist.md` 16.1/16.3 与 `docs/todo.md` T4 |
 > | 「用户操作配置（JSON 层）8/8 ✅」 | 仍然成立，`config/user_operations.py` 是这批里唯一真的部分 |
 >
 > 下面原文照旧保留（含那张 14/27 的表），但**别再拿它当「已验证」的证据**；结论一律以

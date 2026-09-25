@@ -15,7 +15,7 @@
 > ④ 同日全仓文档审计又翻出两条挂账，都**不写在本文件**（避免一处事实两份真相）：
 > 「用户操作菜单只建了组件、从未接进应用」与「`widgets/tree_sidebar.py:121`/`:180` 仍直接判
 > `_active_pane`，Linux/X11 上没点过窗格时静默失灵」——统一记在
-> `docs/feature-checklist.md` 第 23 节 T2 / T3。
+> `docs/todo.md` T2 / T3。
 
 ---
 

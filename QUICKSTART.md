@@ -24,7 +24,8 @@ python scripts/build_windows.py
 | [`docs/BUILD-GUIDE.md`](docs/BUILD-GUIDE.md) | **详细构建指南**（含 230 Docker 构建） |
 | [`docs/architecture.md`](docs/architecture.md) | 模块职责与关键设计决策 |
 | [`docs/development-guide.md`](docs/development-guide.md) | 开发指南（环境、加模块、文档维护） |
-| [`docs/feature-checklist.md`](docs/feature-checklist.md) | 功能清单与实现状态 |
+| [`docs/feature-checklist.md`](docs/feature-checklist.md) | 功能清单与实现状态（状态表） |
+| [`docs/todo.md`](docs/todo.md) | **待办清单**：还剩什么、卡在哪儿、销账判据 |
 | [`docs/linux-gap.md`](docs/linux-gap.md) | Linux 侧差距与真机验收清单 |
 | [`README.md`](README.md) | 项目简介和安装说明 |
 
