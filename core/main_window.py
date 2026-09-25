@@ -876,6 +876,12 @@ class MainWindow(QMainWindow):
     def new_tab(self):
         """新建标签页"""
         quad_widget = QuadPaneWidget(self, start_dir=self._default_start_dir())
+        # 下发已保存的工具栏按钮配置：pane1 立即应用，pane2-4 延迟创建后自行补齐
+        cfg = dict(getattr(self, '_toolbar_buttons_config', {}))
+        quad_widget.toolbar_buttons_config = cfg
+        if cfg:
+            for btn_name, visible in cfg.items():
+                quad_widget.pane1.set_button_visibility(btn_name, visible)
         # 连接活动窗格信号
         quad_widget.pane_activated.connect(self.on_pane_activated)
         index = self.tab_widget.addTab(quad_widget, "新标签页")
@@ -1509,8 +1515,12 @@ class MainWindow(QMainWindow):
     
     def apply_toolbar_buttons(self, config: dict):
         """应用工具栏按钮可见性"""
+        # 记住配置：pane2-4 延迟创建完成后（及未来新标签页）需要补应用
+        self._toolbar_buttons_config = dict(config)
         for tab_index in range(self.tab_widget.count()):
             quad = self.tab_widget.widget(tab_index)
+            if isinstance(quad, QuadPaneWidget):
+                quad.toolbar_buttons_config = dict(config)
             if hasattr(quad, 'pane1'):
                 for pane in [quad.pane1, quad.pane2, quad.pane3, quad.pane4]:
                     if pane is None:
@@ -1609,6 +1619,9 @@ class QuadPaneWidget(QWidget):
         self.layout.setSpacing(0)
         self.layout_mode = "quad"  # 当前布局模式：quad/dual/dual_h/2_1/1_2
         self.start_dir = start_dir or ""  # 默认打开目录（空 = 用户目录）
+        # 工具栏按钮可见性配置（MainWindow.apply_toolbar_buttons 下发）；
+        # pane2-4 延迟创建时已错过启动期的应用，创建完成后按此补齐
+        self.toolbar_buttons_config = {}
         
         # 创建四窗格
         self.create_quad_panes()
@@ -1693,6 +1706,12 @@ class QuadPaneWidget(QWidget):
             self._placeholder3.deleteLater()
             self._placeholder4.deleteLater()
             self._all_panes_created = True
+            # pane2-4 错过了启动期的 apply_toolbar_buttons（当时还不存在），
+            # 按下发的配置补齐，否则保持默认可见性（后退/前进会多显示出来）
+            if self.toolbar_buttons_config:
+                for pane in (self.pane2, self.pane3, self.pane4):
+                    for btn_name, visible in self.toolbar_buttons_config.items():
+                        pane.set_button_visibility(btn_name, visible)
             logger.info(f"[启动计时] 延迟创建 pane2-4: {(time.perf_counter()-_t0)*1000:.1f}ms")
         except RuntimeError as exc:
             # 只在宿主确实已死时吞掉：这种中断可能发生在构造的任意一步（包括 `init_ui`
