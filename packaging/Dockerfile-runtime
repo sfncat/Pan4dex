@@ -1,0 +1,24 @@
+# Pan4dex RUNTIME image: turnkey Linux GUI app with CJK fonts + ibus Pinyin.
+# Base noble (glibc 2.39) runs the bullseye-built onefile fine.
+FROM ubuntu:24.04
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Qt6/xcb runtime libs + CJK fonts + ibus & intelligent-pinyin engine
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libegl1 libgl1 libglx-mesa0 libglib2.0-0 libdbus-1-3 \
+    libx11-6 libxcb1 libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
+    libxcb-randr0 libxcb-render0 libxcb-render-util0 libxcb-shape0 libxcb-shm0 \
+    libxcb-sync1 libxcb-util1 libxcb-xfixes0 libxcb-xinerama0 libxcb-xkb1 \
+    libxkbcommon0 libxkbcommon-x11-0 libfontconfig1 libfreetype6 libxrender1 \
+    libxi6 libxcursor1 libxrandr2 libgdk-pixbuf-2.0-0 shared-mime-info \
+    fonts-noto-cjk \
+    ibus ibus-libpinyin libgtk-3-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY appbin/pan4dex /opt/pan4dex/pan4dex
+COPY pan4dex-runtime-entry.sh /entry.sh
+RUN chmod +x /opt/pan4dex/pan4dex /entry.sh
+
+ENV QT_IM_MODULE=ibus GTK_IM_MODULE=ibus XMODIFIERS=@im=ibus QT_QPA_PLATFORM=xcb
+ENTRYPOINT ["/entry.sh"]
+CMD ["/opt/pan4dex/pan4dex"]

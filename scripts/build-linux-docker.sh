@@ -55,6 +55,7 @@ $DOCKER rm -f ${CONTAINER_NAME} 2>/dev/null || true
 # 格式：源目录|包内目标|人话名字（缺了会少什么能力）
 ADD_SPECS=(
     "resources/icons|resources/icons|应用图标（缺了只剩任务栏默认图标）"
+    "resources/fonts|resources/fonts|内置 CJK 字体（目标机无中文字体时避免中文方块）"
     "resources/tools/exiftool-linux|resources/tools/exiftool-linux|内置 ExifTool（拍摄日期元数据）"
     "resources/tools/7z|resources/tools/7z|内置 7zz（压缩/解压兜底）"
     "resources/tools/qt6-im-plugins|PyQt6/Qt6/plugins/platforminputcontexts|Qt6 输入法插件（不带则无法输入中文）"

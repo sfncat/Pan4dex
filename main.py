@@ -629,6 +629,27 @@ def main():
         logger.info(f"[启动计时] QApplication 创建: {(time.perf_counter()-_t0)*1000:.1f}ms")
         app.setApplicationName(APP_NAME)
         app.setApplicationVersion(VERSION)
+        # 内置 CJK 字体兜底：目标机没装中文字体时，注册随包携带的字体，避免中文显示方块
+        try:
+            from PyQt6.QtGui import QFontDatabase
+            _font_dirs = []
+            if getattr(sys, "frozen", False):
+                _font_dirs.append(os.path.join(sys._MEIPASS, "resources", "fonts"))
+                _font_dirs.append(
+                    os.path.join(os.path.dirname(os.path.abspath(sys.executable)), "resources", "fonts")
+                )
+            _font_dirs.append(os.path.join(BASE_DIR, "resources", "fonts"))
+            _fonts_dir = next((d for d in _font_dirs if os.path.isdir(d)), None)
+            _added = 0
+            if _fonts_dir:
+                for _fn in sorted(os.listdir(_fonts_dir)):
+                    if _fn.lower().endswith((".ttc", ".ttf", ".otf")):
+                        if QFontDatabase.addApplicationFont(os.path.join(_fonts_dir, _fn)) != -1:
+                            _added += 1
+            if _added:
+                logger.info(f"内置字体注册: {_added} 个 (dir={_fonts_dir})")
+        except Exception as _fe:
+            logger.warning(f"内置字体注册失败: {_fe}")
         # Windows 任务栏图标支持：设置 AppUserModelID + 窗口图标
         if sys.platform == "win32":
             try:
