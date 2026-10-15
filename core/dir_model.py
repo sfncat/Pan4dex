@@ -1080,8 +1080,8 @@ class DirStoreModel(QAbstractItemModel):
             return base
         e = index.internalPointer()
         if isinstance(e, Entry) and e.is_dir:
-            # 目录：可作为拖放目标；是否有子项由 rowCount/canFetchMore 决定
-            base |= Qt.ItemFlag.ItemIsDropEnabled
+            # 目录：可拖拽、可作为拖放目标；是否有子项由 rowCount/canFetchMore 决定
+            base |= Qt.ItemFlag.ItemIsDragEnabled | Qt.ItemFlag.ItemIsDropEnabled
         elif isinstance(e, Entry):
             # 文件：可拖拽、确定无子项
             base |= Qt.ItemFlag.ItemIsDragEnabled | Qt.ItemFlag.ItemNeverHasChildren
