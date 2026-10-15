@@ -101,12 +101,23 @@ class ConflictDialog(QDialog):
 
         btns = QHBoxLayout()
         btns.addStretch()
-        # 与资源管理器同款三选项：替换 / 跳过 / 取消（“保留两者改名”
-        # 作为无 UI 回调时的默认回退，不在此占用按钮）
+        # 四选项对齐资源管理器：替换 / 保留两份（自动加序号后缀
+        # name (2).ext，两份都不丢）/ 跳过 / 取消
         self._add_btn(btns, "替 换", 'replace', default=True)
+        self._add_btn(btns, "保留两份", 'keep_both')
         self._add_btn(btns, "跳 过", 'skip')
         self._add_btn(btns, "取 消", 'cancel')
         layout.addLayout(btns)
+        # 提示“保留两份”后的实际文件名：name (2).ext（取首个不冲突序号）。
+        # 必须在 addLayout 之后查找：按钮此前未 reparent，findChildren 找不到
+        keep_btn = self.button("保留两份")
+        if keep_btn is not None:
+            d = os.path.dirname(os.path.normpath(dst))
+            base, ext = os.path.splitext(name)
+            i = 2
+            while os.path.exists(os.path.join(d, f"{base} ({i}){ext}")):
+                i += 1
+            keep_btn.setToolTip(f"另存为：{base} ({i}){ext}")
 
     def _side_box(self, header, path, size, mtime, is_dir) -> QWidget:
         w = QWidget()
