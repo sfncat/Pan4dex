@@ -1,0 +1,58 @@
+# ============================================================================
+#  通用 PyQt6 Linux 构建基座（可共享）—— Debian 11 bullseye / glibc 2.31
+# ----------------------------------------------------------------------------
+#  目的：任何 PyQt6 项目都能 `FROM` 它，用**低 glibc(2.31)** 编 out onefile，
+#        而不必各自重搭 Qt6/xcb 运行库、也不必重复处理 bullseye EOL 的 archive 换源。
+#  只放“构建期通用”的东西；**项目专属依赖请放到各自的 Dockerfile 里 pip 安装**，别塞进基座。
+#
+#  单独构建：
+#      docker build --network=host -f packaging/Dockerfile-qt6-builder \
+#                   -t qt6-builder-bullseye:py311 .
+#  用法（新项目 Dockerfile 第一行）：
+#      FROM qt6-builder-bullseye:py311
+#  详见 docs/build/qt6-builder-base.md
+# ============================================================================
+FROM python:3.11-bullseye
+
+ENV QT_QPA_PLATFORM=offscreen \
+    PIP_NO_CACHE_DIR=1
+
+# bullseye 已 EOL：官方包从 deb.debian.org 搬到 archive.debian.org，且 Release 过期需关
+# Check-Valid-Until；否则 apt-get update 一堆 +deb11uNN 404(exit 100)。把这套 EOL 处理收敛进基座。
+# archive 站点常限速/截断，会让 apt-get update 只拿到“部分索引”→ 反而 “Unable to locate package”。
+# 对策：精简索引(只取英文,少一半文件) + 有界重试，直到探测包可解析再进 install。
+RUN sed -i '/debian-security/d' /etc/apt/sources.list && \
+    sed -i 's|deb.debian.org/debian |archive.debian.org/debian |g' /etc/apt/sources.list && \
+    for i in 1 2 3 4 5; do \
+      apt-get update -o Acquire::Check-Valid-Until=false -o Acquire::Languages=none -o Acquire::Retries=5; \
+      if apt-cache policy xvfb libatk1.0-0 2>/dev/null | grep -q 'Candidate: [0-9]'; then break; fi; \
+      echo "apt-get update 索引不全，重试 ($i/5)…"; sleep 3; \
+    done && \
+    apt-get install -y --no-install-recommends \
+      -o Acquire::Retries=5 \
+      libgl1-mesa-dev libegl1-mesa-dev \
+      libxkbcommon-dev libxkbcommon-x11-0 \
+      libfontconfig1-dev libfreetype6-dev \
+      libx11-dev libx11-xcb-dev libxext-dev libxfixes-dev libxi-dev libxrender-dev \
+      libxcb1-dev libxcb-glx0-dev libxcb-keysyms1-dev libxcb-image0-dev libxcb-shm0-dev \
+      libxcb-icccm4-dev libxcb-sync-dev libxcb-xfixes0-dev libxcb-shape0-dev libxcb-randr0-dev \
+      libxcb-render-util0-dev libxcb-cursor0 \
+      libdbus-1-dev libssl-dev \
+      libgtk-3-0 libgdk-pixbuf-2.0-0 libatk1.0-0 libglib2.0-0 \
+      xvfb \
+    && rm -rf /var/lib/apt/lists/*
+
+# 通用构建工具链（锁版本，保证可复现）。Qt6 本体由 PyQt6-Qt6 wheel 自带，
+# 且 wheel 内含 platforminputcontexts 插件(libibus/libcompose)——输入法“引擎”不在此列，属运行时。
+RUN python -m pip install --upgrade pip && \
+    pip install --only-binary=:all: \
+      "PyQt6==6.9.1" \
+      "PyQt6-Qt6==6.9.2" \
+      "PyQt6-sip==13.12.0" \
+      "PyInstaller==6.22.3"
+
+# 离屏显示：PyInstaller 分析期会 import 一次 Qt，需要 display。entrypoint 起 Xvfb 后 exec 传入命令。
+RUN printf '#!/bin/bash\nXvfb :99 -screen 0 1024x768x24 &>/dev/null &\nexport DISPLAY=:99\nsleep 1\nexec "$@"\n' > /entrypoint.sh && \
+    chmod +x /entrypoint.sh
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["bash"]

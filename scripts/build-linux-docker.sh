@@ -6,6 +6,7 @@ RELEASES_DIR="$(pwd)/releases"
 # 镜像可用 DOCKER_IMAGE 覆盖：改了 packaging/Dockerfile-linux 后想先拿新镜像做 A/B
 # （不动旧镜像）时，构一个 `pan4dex-builder-linux:py311` 之类的临时 tag 再传进来。
 DOCKER_IMAGE="${DOCKER_IMAGE:-pan4dex-builder-linux}"
+BASE_IMAGE="${BASE_IMAGE:-qt6-builder-bullseye:py311}"
 CONTAINER_NAME="pan4dex-build-linux"
 
 # 能直接访问 docker daemon 时不要 sudo（docker 在用户组里、或已在容器/root 环境下时，
@@ -14,6 +15,72 @@ if docker info >/dev/null 2>&1; then
     DOCKER="docker"
 else
     DOCKER="sudo docker"
+fi
+
+# ── 网络模式（两种场景都支持）：BUILD_NET=direct|proxy（默认 direct） ──
+#  铁律：容器（哪怕 --network=host）里的 127.0.0.1 不是宿主机 loopback，代理绝不能用 127.0.0.1。
+#  direct：容器直连，并显式清空继承自 ~/.docker/config.json 的代理（防坏代理把 apt 卡成残缺索引）。
+#  proxy ：走本机代理，用容器可达地址（host.docker.internal 或 WSL 端口转发口），走 bridge + host-gateway。
+BUILD_NET="${BUILD_NET:-direct}"
+PROXY_URL="${PROXY_URL:-http://host.docker.internal:20170}"
+NO_PROXY="${NO_PROXY:-localhost,127.0.0.1,::1}"
+
+# 从“构建容器同一网络视角”探某 host:port 的 TCP 可达性（bridge + host-gateway）
+_container_reachable() {
+    [ "$($DOCKER run --rm --add-host=host.docker.internal:host-gateway python:3.11-bullseye \
+        bash -c "timeout 6 bash -c '</dev/tcp/$1/$2' 2>/dev/null && echo R || echo N" 2>/dev/null)" = "R" ]
+}
+
+# auto：先测直连可达→direct；否则测“容器能否连到代理”→proxy；都不行→报错退出。
+# 直连探测目标可用 DIRECT_PROBE=host:port 覆盖（默认 deb.debian.org:80）。
+if [ "$BUILD_NET" = "auto" ]; then
+    _ah=${PROXY_URL#*://}; _ah=${_ah%%:*}
+    _ap=${PROXY_URL##*:}; _ap=${_ap%%/*}
+    _dp="${DIRECT_PROBE:-deb.debian.org:80}"
+    _dh=$(printf '%s' "$_dp" | sed -E 's#^[a-zA-Z]+://##; s#[:/].*##')
+    _dpt=$(printf '%s' "$_dp" | sed -E 's#.*[:/]##'); _dpt=${_dpt:-80}
+    if timeout 6 bash -c "</dev/tcp/${_dh}/${_dpt}" 2>/dev/null; then
+        BUILD_NET=direct; echo "[auto] 直连可达(${_dh}:${_dpt}) → direct"
+    elif _container_reachable "$_ah" "$_ap"; then
+        BUILD_NET=proxy; PROXY_PREFLIGHT=0; echo "[auto] 直连不可达、代理可达(${_ah}:${_ap}) → proxy"
+    else
+        echo "✗ [auto] 直连(${_dh}:${_dpt}) 与代理(${_ah}:${_ap}) 均不可达，已中止。请检查外网，或让代理对容器可达（LAN 监听 / socat 转发）。"
+        exit 1
+    fi
+fi
+
+NET_ARGS=()
+if [ "$BUILD_NET" = "proxy" ]; then
+    PROXY_URL="${PROXY_URL:-http://host.docker.internal:20170}"
+    NET_ARGS+=(--add-host=host.docker.internal:host-gateway \
+               --build-arg "http_proxy=$PROXY_URL" --build-arg "https_proxy=$PROXY_URL" \
+               --build-arg "HTTP_PROXY=$PROXY_URL" --build-arg "HTTPS_PROXY=$PROXY_URL" \
+               --build-arg "no_proxy=$NO_PROXY" --build-arg "NO_PROXY=$NO_PROXY")
+    echo "网络模式=proxy：容器走代理 $PROXY_URL（须为容器可达地址）"
+else
+    NET_ARGS+=(--network=host \
+               --build-arg "http_proxy=" --build-arg "https_proxy=" \
+               --build-arg "HTTP_PROXY=" --build-arg "HTTPS_PROXY=")
+    echo "网络模式=direct：容器直连（已清空继承代理）"
+fi
+
+# ── proxy 预检：从“构建容器同一网络视角”验证代理可达；不可达直接报错退出，别把 apt 拖成残缺索引 ──
+# 只在 BUILD_NET=proxy 时执行；PROXY_PREFLIGHT=0 可跳过（代理确认可达但探测误判时）。
+if [ "$BUILD_NET" = "proxy" ] && [ "${PROXY_PREFLIGHT:-1}" = "1" ]; then
+    _hp=$(printf '%s' "$PROXY_URL" | sed -E 's#^[a-zA-Z][a-zA-Z0-9+.-]*://##; s#/.*##')
+    _ph=${_hp%:*}; _pp=${_hp##*:}
+    echo "[preflight] 从容器网络探测代理 ${_ph}:${_pp} 可达性…"
+    _r=$($DOCKER run --rm --add-host=host.docker.internal:host-gateway python:3.11-bullseye \
+          bash -c "timeout 5 bash -c '</dev/tcp/${_ph}/${_pp}' 2>/dev/null && echo REACHABLE || echo UNREACHABLE" 2>/dev/null)
+    if [ "$_r" != "REACHABLE" ]; then
+        echo "✗ 预检失败：容器内连不到代理 ${_ph}:${_pp}（结果=${_r:-UNKNOWN}），已中止。"
+        echo "  多半是代理只监听宿主机 127.0.0.1（容器到不了）。可选处理："
+        echo "    1) 用直连： BUILD_NET=direct bash scripts/build-linux-docker.sh （或 python scripts/build.py linux）"
+        echo "    2) 让代理对容器可达：v2rayA 开 LAN 监听后用 PROXY_URL=http://host.docker.internal:<port>；或在 WSL 内 socat 转发后把 PROXY_URL 指过去"
+        echo "    3) 确认代理其实可用、只是探测误判：加 PROXY_PREFLIGHT=0 跳过"
+        exit 1
+    fi
+    echo "[preflight] 代理可达，继续构建。"
 fi
 
 echo "=========================================="
@@ -31,6 +98,14 @@ else
     sleep 2
 fi
 
+# 先确保通用基座镜像存在（Dockerfile-linux 会 FROM 它）。改了基座要生效：先 docker rmi ${BASE_IMAGE} 再跑本脚本。
+if $DOCKER image inspect ${BASE_IMAGE} >/dev/null 2>&1; then
+    echo "[base] 基座镜像已存在：${BASE_IMAGE}"
+else
+    echo "[base] 构建基座镜像 ${BASE_IMAGE} ..."
+    $DOCKER build "${NET_ARGS[@]}" -t ${BASE_IMAGE} -f packaging/Dockerfile-qt6-builder .
+fi
+
 # 构建镜像：仅当镜像不存在时构建（构建环境固定，每次重建无意义且浪费时间/网络）。
 # 改了 packaging/Dockerfile-linux 后必须让它重建：要么先删 tag（$DOCKER rmi ...），
 # 要么用一个新 tag 做 A/B（DOCKER_IMAGE=pan4dex-builder-linux:py311 bash scripts/build-linux-docker.sh）。
@@ -38,7 +113,7 @@ if $DOCKER image inspect ${DOCKER_IMAGE} >/dev/null 2>&1; then
     echo "[2/6] 使用已有镜像 ${DOCKER_IMAGE}（如需重建：$DOCKER rmi ${DOCKER_IMAGE}）"
 else
     echo "[2/6] 构建 Docker 镜像 ${DOCKER_IMAGE}..."
-    $DOCKER build --network=host -t ${DOCKER_IMAGE} -f packaging/Dockerfile-linux .
+    $DOCKER build "${NET_ARGS[@]}" -t ${DOCKER_IMAGE} -f packaging/Dockerfile-linux .
 fi
 
 # 清理旧容器

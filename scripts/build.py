@@ -15,6 +15,7 @@
 构建过程与产物完全一致；因此不需要、也不应该为不同 Linux 宿主复制 Dockerfile。
 """
 import argparse
+import os
 import pathlib
 import subprocess
 import sys
@@ -79,14 +80,24 @@ def _ensure_docker_running(dry: bool, env: str) -> bool:
 def build_linux(args) -> int:
     env = args.env if args.env != "auto" else ("wsl" if is_wsl() else "bare")
     ver = args.version or read_version()
-    print(f"== Linux 构建  env={env}  version={ver} ==")
+    print(f"== Linux 构建  env={env}  net={args.net}  version={ver} ==")
     print("   wsl / bare 共用同一入口与镜像：scripts/build-linux-docker.sh + packaging/Dockerfile-linux")
     if not _ensure_docker_running(args.dry_run, env):
         return 1
 
+    sub_env = {**os.environ, "BUILD_NET": args.net}
+    if args.net in ("proxy", "auto"):
+        if args.proxy_url:
+            sub_env["PROXY_URL"] = args.proxy_url
+        if args.no_proxy_preflight:
+            sub_env["PROXY_PREFLIGHT"] = "0"
+
     script = ROOT / "scripts" / "build-linux-docker.sh"
     if args.dry_run:
-        print("$", show(["bash", str(script)] + ([ver] if ver else [])))
+        pre = f"BUILD_NET={args.net}"
+        if sub_env.get("PROXY_URL"):
+            pre += f" PROXY_URL={sub_env['PROXY_URL']}"
+        print("$", pre, show(["bash", str(script)] + ([ver] if ver else [])))
         return 0
     # 兼容 Windows CRLF 工作树：必要时用去 CR 的同目录临时副本执行，执行后删除
     data = script.read_bytes()
@@ -97,7 +108,7 @@ def build_linux(args) -> int:
         tmp.write_bytes(data.replace(b"\r\n", b"\n"))
         target = tmp
     try:
-        return subprocess.run(["bash", str(target)] + ([ver] if ver else []), cwd=str(ROOT)).returncode
+        return subprocess.run(["bash", str(target)] + ([ver] if ver else []), cwd=str(ROOT), env=sub_env).returncode
     finally:
         if tmp is not None and tmp.exists():
             tmp.unlink()
@@ -134,6 +145,12 @@ def main() -> None:
     ap.add_argument("--version", help="覆盖版本号；缺省读 config/app_config.py 的 VERSION")
     ap.add_argument("--env", choices=["auto", "wsl", "bare"], default="auto",
                     help="Linux 宿主类型；仅影响前置检查，构建过程一致（默认按 /proc/version 自动判定）")
+    ap.add_argument("--net", choices=["direct", "proxy", "auto"], default="direct",
+                    help="linux：容器网络模式。direct=直连(默认,清空继承代理)；proxy=走本机代理(容器可达地址)；auto=先试直连、不可达再走代理、都不行则退出")
+    ap.add_argument("--proxy-url", default=None,
+                    help="配合 --net proxy：容器可达的代理地址，默认 http://host.docker.internal:20170（切勿用 127.0.0.1）")
+    ap.add_argument("--no-proxy-preflight", action="store_true", dest="no_proxy_preflight",
+                    help="配合 --net proxy：跳过“容器能否连到代理”的预检")
     ap.add_argument("--remote", help="windows：远端 Windows 的 user@host，经 SSH 远程构建")
     ap.add_argument("--remote-path", help="windows：远端仓库绝对路径，如 C:\\workspace\\Pan4dex")
     ap.add_argument("--dry-run", action="store_true", help="只打印将执行的命令，不真正构建")
