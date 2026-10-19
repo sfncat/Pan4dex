@@ -62,3 +62,7 @@ dist_onefile/
 
 # 取证/复现脚本与中间产物（本地跑完即弃，不入库；文档里引用它们时只写路径与结论）
 tmp/
+
+# 例外：构建文档目录 docs/build/ 不是 PyInstaller 的 build/ 产物目录
+!docs/build/
+!docs/build/**

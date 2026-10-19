@@ -210,7 +210,7 @@ pytest tests/test_dir_model.py::test_refresh_empty_dir_after_new_file_visible -v
 版本号缺省从 `config/app_config.py` 的 `VERSION` 读（构建时会连 `BUILD_TIME` 一起写回源码，
 构建完由发布提交还原）。Linux 走 Docker（镜像 `packaging/Dockerfile-linux`，
 `python:3.11-bullseye` / glibc 2.31）是为了不把构建机的新 glibc 烧进产物，细节见
-`docker/README.md`。
+[`docs/build/build-linux.md`](build/build-linux.md)。
 
 ### 5.2 手动 / 降级路线：`packaging/pan4dex.spec`
 
