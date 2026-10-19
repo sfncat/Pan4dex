@@ -24,7 +24,7 @@ python scripts/build.py windows --remote U@WIN --remote-path 'C:\workspace\Pan4d
 
 ## 仍然有效的相邻文档
 - `docs/development-guide.md` §5：开发环境构建
-- `packaging/Dockerfile-linux`：生效的 Linux 构建镜像定义。原 `docker/` 目录（`Dockerfile`/`entrypoint.sh`/`build.sh`/`README.md`）已移除，其废弃来龙去脉见 [build/legacy-multimachine.md](build/legacy-multimachine.md)；现行 Docker 构建见 [build/build-linux.md](build/build-linux.md)
+- `packaging/Dockerfile-linux`：生效的 Linux 构建镜像定义（`FROM` 通用基座 `packaging/Dockerfile-qt6-builder`）。基座可共享给其他 Qt6 项目，见 [build/qt6-builder-base.md](build/qt6-builder-base.md)。原 `docker/` 目录（`Dockerfile`/`entrypoint.sh`/`build.sh`/`README.md`）已移除，其废弃来龙去脉见 [build/legacy-multimachine.md](build/legacy-multimachine.md)；现行 Docker 构建见 [build/build-linux.md](build/build-linux.md)
 - `docs/linux-gap.md`、`docs/gotchas.md`：Linux 已知差异与坑位清单
 
 > 本页原有的“脚本入口分类表”“win54/win55/gti/230 多机编排”已迁入 [build/legacy-multimachine.md](build/legacy-multimachine.md)。

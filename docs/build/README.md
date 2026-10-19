@@ -61,7 +61,8 @@ python scripts/build.py linux
 - [build-windows.md](build-windows.md)：W1 本机、W2 从 Linux 经 SSH 远程到 Windows。
 - [build-linux.md](build-linux.md)：L1 裸 Linux+Docker、L2 Windows+WSL+Docker，共用镜像，中文与验证。
 - [legacy-multimachine.md](legacy-multimachine.md)：退役多机编排与断链脚本归档。
+- [qt6-builder-base.md](qt6-builder-base.md)：通用 PyQt6 构建基座 `qt6-builder-bullseye`（可共享给其他 Qt6 项目）。
 
 ## 相关源文件
 
-`scripts/build.py`、`scripts/build_windows.py`、`scripts/build-linux-docker.sh`、`packaging/Dockerfile-linux`、`packaging/Dockerfile-runtime`、`packaging/pan4dex.spec`（Linux 降级路线）、`resources/fonts/`、`main.py`（内置字体注册 + 输入法探测）。
+`scripts/build.py`、`scripts/build_windows.py`、`scripts/build-linux-docker.sh`、`packaging/Dockerfile-qt6-builder`（通用基座）、`packaging/Dockerfile-linux`、`packaging/Dockerfile-runtime`、`packaging/pan4dex.spec`（Linux 降级路线）、`resources/fonts/`、`main.py`（内置字体注册 + 输入法探测）。

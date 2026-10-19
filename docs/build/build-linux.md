@@ -15,9 +15,9 @@ Pan4dex 用 `packaging/Dockerfile-linux`，基座 `python:3.11-bullseye`（Debia
 
 ## 关键约束：Dockerfile 唯一
 
-L1 与 L2 **必须**用同两份东西，别为不同宿主复制：
+L1 与 L2 **必须**用同一套东西，别为不同宿主复制：
 - 构建脚本（唯一入口）：`scripts/build-linux-docker.sh`
-- 镜像定义（唯一）：`packaging/Dockerfile-linux`
+- 镜像定义（唯一）：`packaging/Dockerfile-qt6-builder`（**通用基座**：bullseye/glibc2.31 + Qt6/xcb + PyInstaller，锁版本）+ `packaging/Dockerfile-linux`（`FROM` 基座，只加 Pan4dex 专属依赖）。基座可共享给其他 Qt6 项目，详见 [qt6-builder-base.md](qt6-builder-base.md)。
 
 `build-linux-docker.sh` 对宿主是 WSL 还是裸 Linux **完全无感**：它 `docker build -f packaging/Dockerfile-linux`（带 `--network=host`）→ 起容器跑 `pyinstaller --onefile --windowed` → 产物挪到 `releases/pan4dex-<版本>-linux`。
 差异**只在“前置准备/过程”**（下 L2 多出来的 WSL 网络/CRLF 处理），产物字节一致。
@@ -52,10 +52,7 @@ sudo systemctl enable --now docker
 sudo usermod -aG docker "$USER"    # 重新登录生效；免 sudo 用 docker
 docker info >/dev/null && echo OK
 ```
-境外源慢/不可达时给 Docker 配代理（`~/.docker/config.json` 的 `proxies`，`--network=host` 已在构建脚本内）：
-```json
-{"proxies":{"default":{"httpProxy":"http://127.0.0.1:20170","httpsProxy":"http://127.0.0.1:20170","noProxy":"localhost,127.0.0.1,::1"}}}
-```
+网络有**直连 / 走本机代理**两种场景（见 L2 §2）：能直连就别配任何 Docker 代理；确实要走本机代理，就用**容器可达的地址**（`host.docker.internal` 或 WSL 端口转发），**永远别用 `127.0.0.1`**（容器到不了宿主机回环）。
 
 ### 构建
 ```bash
@@ -84,15 +81,45 @@ wsl --install -d Ubuntu-24.04 --no-launch
 ```
 `/etc/wsl.conf` 需 `[boot] systemd=true`（Docker 依赖），改后 `wsl --shutdown` 生效。
 
-### 2) 网络/代理（关键，否则境外源慢到不可用）
-WSL 默认 **NAT 不走** Windows 上只监听 `127.0.0.1` 的代理（如 v2rayA）。最省事：改 `%UserProfile%\.wslconfig`：
+### 2) 网络：两种场景都支持——直连 / 走本机代理
+一条铁律先记住：**容器（即使 `--network=host`）里的 `127.0.0.1` 是容器/WSL 自己的 loopback，不等于宿主机的 `127.0.0.1`**。所以把代理写成 `http://127.0.0.1:20170` 对容器**连不通** → `apt-get update` 超时、索引残缺 → `Unable to locate package` / `exit 100`（本仓踩过）。按场景选：
+
+**场景 A · 直连（默认，多数够用）**
+WSL 设 mirrored（或本就外网可达的 Linux）时，容器直连境外源一般够快（实测 `archive.debian.org` ~2.2 MB/s）。此时 `~/.docker/config.json` **不配任何代理**。`build-linux-docker.sh` 里的 `--network=host` 只是为了 DNS/网络稳，与代理无关。`.wslconfig`：
 ```ini
 [wsl2]
 networkingMode=mirrored
 dnsTunneling=true
-autoProxy=true
 ```
-然后 `wsl --shutdown` 再进。mirrored 让 WSL 共享宿主机回环 → WSL 与容器都能直连 `127.0.0.1:20170`，**不必把代理暴露到局域网、也不动防火墙**。并按 L1 给 `~/.docker/config.json` 配代理。**构建必须 `--network=host`**，否则容器里的 `127.0.0.1` 到不了宿主代理 → apt `exit 100`（`build-linux-docker.sh` 已带此参数）。
+
+**场景 B · 必须走本机代理（内网受限 / 需代理出口）**
+代理必须落在**容器可达的地址**、且代理端**确实在该地址监听**，二选一：
+1. **`host.docker.internal`**：让 v2rayA「允许来自局域网/LAN 的连接」（不再只听 127.0.0.1），容器指过去——
+   ```json
+   {"proxies":{"default":{"httpProxy":"http://host.docker.internal:20170","httpsProxy":"http://host.docker.internal:20170","noProxy":"localhost,127.0.0.1,::1"}}}
+   ```
+   前提：`host.docker.internal` 要能解析到宿主——Windows Docker Desktop 自带；**Docker Engine(Linux/WSL) 需** 在 build/run 加 `--add-host=host.docker.internal:host-gateway`（或 daemon.json 配 host-gateway），且走默认 bridge 网络（此场景下别用 `--network=host`）。
+2. **不暴露代理到 LAN 的折中**：在 WSL 里做端口转发，让代理仍只听回环——
+   ```bash
+   # WSL 内：把「Windows 回环代理」转发到 WSL 上一个容器可达的端口
+   socat TCP-LISTEN:20171,fork,reuseaddr TCP:127.0.0.1:20170 &
+   ```
+   容器指 `http://<宿主对容器可见的IP，如 host-gateway>:20171`。
+
+**绝对别做**：`http_proxy=http://127.0.0.1:20170`（容器到不了宿主机回环，必翻车）。A/B 任选其一，别混用 `--network=host` 又指望 `host.docker.internal`。
+
+**用 `build.py` 一键切换（三种都内建：直连 / 代理 / 自动）**：
+```bash
+python scripts/build.py linux                       # 场景A 直连（默认；会顺带清空继承来的坏代理）
+python scripts/build.py linux --net proxy           # 场景B 走代理，默认 http://host.docker.internal:20170
+python scripts/build.py linux --net proxy --proxy-url http://host.docker.internal:20170
+python scripts/build.py linux --net auto            # 场景C 自动：先试直连，不可达再走代理，都不行则退出
+# 直接调脚本等价： BUILD_NET=auto|direct|proxy [PROXY_URL=...] bash scripts/build-linux-docker.sh
+```
+`--net auto` 的判定：用 WSL 用户态探直连（默认目标 `deb.debian.org:80`，可用 `DIRECT_PROBE=host:port` 覆盖）→ 通则 direct；不通再用**容器视角**探代理 → 通则 proxy；都不通 → 报错退出。auto 选中 proxy 时已探过，会跳过重复预检。
+`build-linux-docker.sh` 里 `BUILD_NET` 决定给 `docker build` 加 `--network=host`（直连，且 `--build-arg http_proxy=` 清空）还是 `--add-host=host.docker.internal:host-gateway` + `--build-arg (HTTPS_)proxy=…`（走代理）。
+
+> **代理预检（`--net proxy` 时自动跑）**：构建前先从“容器同一网络视角”对代理做一次 TCP 连通探测；连不通就打印原因并 `exit 1`，**不会**再让 `apt` 卡到“残缺索引 / Unable to locate package”。实测：坏代理 `127.0.0.1:20170` 被判不可达并中止，可达地址判 `REACHABLE` 通过。确需跳过（代理其实可用、探测误判）：`python scripts/build.py linux --net proxy --no-proxy-preflight`（脚本层 `PROXY_PREFLIGHT=0`）。
 
 ### 3) Docker Engine（WSL 内）+ 默认不自启
 ```bash
