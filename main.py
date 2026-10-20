@@ -615,16 +615,20 @@ def main():
         QApplication.setHighDpiScaleFactorRoundingPolicy(
             Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
         )
-        # Linux 输入法：Qt6 必须加载输入法插件（ibus/fcitx5）才能输入中文。
-        # 插件由打包脚本打入 bundle（platforminputcontexts）；这里在 QApplication
-        # 创建前检测系统输入法并设置 QT_IM_MODULE（用户已显式配置则尊重）。
-        if sys.platform == "linux" and not os.environ.get("QT_IM_MODULE"):
+        # Linux 输入法：Qt6 必须加载输入法插件才能输入中文。本包（PyInstaller + PyQt6 wheel）
+        # 只自带 **ibus / compose** 两个 Qt6 platforminputcontext 插件；fcitx 的 Qt6 插件不在包内，
+        # 且系统 fcitx 插件常因 Qt 版本不符加载不了（尤其 Ubuntu 22.04 只有 fcitx-frontend-qt5）。
+        # 因此策略：只要 ibus 可用（守护在跑 + 有会话总线）就 **优先/纠正为 ibus**，覆盖桌面 im-config
+        # 可能注入的 fcitx，避免“设了 fcitx 却无 Qt6 插件”导致完全打不了中文；ibus 不可用时才退回 fcitx5。
+        if sys.platform == "linux":
             import shutil
-            if shutil.which("fcitx5"):
-                os.environ["QT_IM_MODULE"] = "fcitx"
-            elif shutil.which("ibus-daemon"):
+            _cur = os.environ.get("QT_IM_MODULE")
+            if shutil.which("ibus-daemon") and os.environ.get("DBUS_SESSION_BUS_ADDRESS"):
                 os.environ["QT_IM_MODULE"] = "ibus"
-            logger.info(f"Linux 输入法模块: QT_IM_MODULE={os.environ.get('QT_IM_MODULE', '(未设置)')}")
+            elif not _cur or _cur == "xim":
+                if shutil.which("fcitx5"):
+                    os.environ["QT_IM_MODULE"] = "fcitx"
+            logger.info(f"Linux 输入法模块: QT_IM_MODULE={os.environ.get('QT_IM_MODULE', '(未设置)')} (桌面原值={_cur or '(未设置)'})")
         app = QApplication(sys.argv)
         logger.info(f"[启动计时] QApplication 创建: {(time.perf_counter()-_t0)*1000:.1f}ms")
         app.setApplicationName(APP_NAME)
