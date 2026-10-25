@@ -6,7 +6,7 @@ import os
 import logging
 import time
 from collections import OrderedDict
-from PyQt6.QtWidgets import QListWidget, QListWidgetItem, QStyle, QApplication
+from PyQt6.QtWidgets import QListWidget, QListWidgetItem, QApplication
 from PyQt6.QtCore import QSize, Qt, QTimer, QRunnable, QThreadPool, QObject, pyqtSignal
 from PyQt6.QtGui import QPixmap, QIcon, QImage, QImageReader
 
@@ -192,10 +192,9 @@ class ThumbnailView(QListWidget):
 
                 if self._is_image(full_path) and full_path in self._thumbnail_cache:
                     item.setIcon(self._thumbnail_cache[full_path])
-                elif is_dir:
-                    item.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DirIcon))
                 else:
-                    item.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_FileIcon))
+                    from core.dir_model import type_icon
+                    item.setIcon(type_icon(full_path, is_dir))
 
                 self.addItem(item)
                 self._item_map[full_path] = item

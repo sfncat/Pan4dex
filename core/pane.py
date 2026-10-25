@@ -404,9 +404,10 @@ class Pane(QWidget):
         # （AnyKeyPressed/SelectedClicked）会导致按字母检索/单击误入行内编辑。
         # 行内改名统一由 F2 显式调用 tree_view.edit() 驱动。
         self.tree_view.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.tree_view.doubleClicked.connect(self.on_item_double_clicked)
-        # Enter 打开（Windows 习惯：Enter 等价于双击）：QTreeView 对 Enter 只发
-        # activated 不发 doubleClicked，旧版未连接导致 Enter 无反应；
+        # 注意：这里绝不能再连 doubleClicked —— Qt 双击会同时发 doubleClicked 和
+        # activated 两个信号，两条都连会把 exe/文件打开两次（实测 tinyMediaManager
+        # 启动两次，第二次被其单实例锁拒绝）。只连 activated 一条路径即可同时
+        # 覆盖双击与 Enter（旧版只连 doubleClicked 导致 Enter 无反应）；
         # Ctrl+Enter 是 Qt 内建的“打开持续编辑器”，不劫持
         self.tree_view.activated.connect(self._on_item_activated)
         self.tree_view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -1755,9 +1756,12 @@ class Pane(QWidget):
     
     def extract_to_current(self, archive):
         """解压到窗格当前目录"""
+        dest = self.current_path
+        if not self._confirm_extract_overwrite(archive, dest):
+            return
         self._run_archive_task(
-            "正在解压", lambda: archive_ops.extract(archive, self.current_path))
-    
+            "正在解压", lambda: archive_ops.extract(archive, dest))
+
     def extract_to_named(self, archive):
         """解压到压缩包所在目录的同名文件夹（解压到文件目录）"""
         base = os.path.basename(archive)
@@ -1769,8 +1773,28 @@ class Pane(QWidget):
         else:
             stem = os.path.splitext(base)[0]
         dest = os.path.join(os.path.dirname(archive) or '.', stem)
+        if not self._confirm_extract_overwrite(archive, dest):
+            return
         self._run_archive_task(
             "正在解压", lambda: archive_ops.extract(archive, dest))
+
+    def _confirm_extract_overwrite(self, archive, dest):
+        """目标位置存在同名文件/文件夹时询问是否覆盖，返回 True 才继续解压"""
+        entries = archive_ops.list_entries(archive)
+        if not entries:
+            return True  # 无法列出内容时保持原行为，直接解压
+        conflicts = [name for name, _ in entries
+                     if os.path.exists(os.path.join(dest, name))]
+        if not conflicts:
+            return True
+        sample = '\n'.join(conflicts[:5])
+        more = f'\n… 等共 {len(conflicts)} 项' if len(conflicts) > 5 else ''
+        ret = QMessageBox.question(
+            self, "解压",
+            f"目标位置已存在同名文件/文件夹，是否覆盖？\n\n{sample}{more}",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)
+        return ret == QMessageBox.StandardButton.Yes
     
     def compress_selected(self):
         """压缩选中项（目录/多选/单文件）"""

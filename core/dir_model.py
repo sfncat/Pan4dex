@@ -31,9 +31,9 @@ from core import mounts
 from PyQt6.QtCore import (
     QAbstractItemModel, QCoreApplication, QModelIndex, Qt, QDir,
     QFileSystemWatcher, QTimer, QRunnable, QThreadPool, QObject,
-    pyqtSignal, pyqtSlot,
+    pyqtSignal, pyqtSlot, QFileInfo,
 )
-from PyQt6.QtWidgets import QApplication, QStyle
+from PyQt6.QtWidgets import QApplication, QStyle, QFileIconProvider
 
 logger = logging.getLogger("pan4dex.dir_model")
 
@@ -1193,12 +1193,42 @@ class DirStoreModel(QAbstractItemModel):
             return ""
 
     _ICON_CACHE = {}
+    _ICON_PROVIDER = None
+    _ICON_CACHE_MAX = 1024  # 扩展名种类上限，防止病态目录无限膨胀
 
     @classmethod
     def _icon(cls, e):
-        from PyQt6.QtWidgets import QStyle
-        style = QApplication.style()
-        sp = QStyle.StandardPixmap.SP_DirIcon if e.is_dir else QStyle.StandardPixmap.SP_FileIcon
-        if sp not in cls._ICON_CACHE:
-            cls._ICON_CACHE[sp] = style.standardIcon(sp)
-        return cls._ICON_CACHE[sp]
+        return type_icon(e.path, e.is_dir)
+
+
+# ---- 文件类型图标（列表视图与超大图标视图共用）----
+
+def type_icon(path: str, is_dir: bool):
+    """按条目取显示图标：目录用文件夹图标，文件按扩展名取系统关联图标。
+
+    系统图标经 QFileIconProvider 查询（SHGetFileInfo），按扩展名缓存——
+    同一扩展名只在首次显示时查一次 shell，之后 O(1)。查询失败（无关联/
+    shell 异常）回退到 Qt 通用文件图标。
+    """
+    cache = DirStoreModel._ICON_CACHE
+    if is_dir:
+        sp = QStyle.StandardPixmap.SP_DirIcon
+        if sp not in cache:
+            cache[sp] = QApplication.style().standardIcon(sp)
+        return cache[sp]
+    ext = os.path.splitext(path)[1].lower()
+    key = ("ext", ext)
+    if key in cache:
+        return cache[key]
+    if DirStoreModel._ICON_PROVIDER is None:
+        DirStoreModel._ICON_PROVIDER = QFileIconProvider()
+    icon = DirStoreModel._ICON_PROVIDER.icon(QFileInfo(path))
+    if icon.isNull():
+        sp = QStyle.StandardPixmap.SP_FileIcon
+        if sp not in cache:
+            cache[sp] = QApplication.style().standardIcon(sp)
+        icon = cache[sp]
+    if len(cache) >= DirStoreModel._ICON_CACHE_MAX:
+        cache.clear()
+    cache[key] = icon
+    return icon
