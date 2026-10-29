@@ -195,10 +195,18 @@ total_size = sum(f.stat().st_size for f in dest_folder.rglob("*") if f.is_file()
 print(f"Size: {total_size} bytes ({total_size / 1024 / 1024:.1f} MB)")
 
 # 打包 zip 方便分发
+# 包内顶层目录固定为 pan4dex（不带版本号）：解压即得到 releases 里可直接运行
+# 的 pan4dex/ 目录；版本号只出现在压缩包文件名上
 zip_path = releases_dir / f"pan4dex-{VERSION}.zip"
 if zip_path.exists():
     zip_path.unlink()
-shutil.make_archive(str(zip_path.with_suffix("")), "zip", root_dir=releases_dir, base_dir=f"pan4dex-{VERSION}")
+import zipfile
+with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+    for file_path in sorted(dest_folder.rglob("*")):
+        if not file_path.is_file():
+            continue
+        arcname = pathlib.PurePosixPath("pan4dex") / file_path.relative_to(dest_folder).as_posix()
+        zf.write(file_path, str(arcname))
 zip_size = zip_path.stat().st_size
 print(f"Zip: {zip_path} ({zip_size / 1024 / 1024:.1f} MB)")
 print(f"\nBuild successful!")

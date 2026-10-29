@@ -1,6 +1,7 @@
 # 构建 Windows 版
 
-> 最后更新：2026-10-19 ｜ 产物：`releases/pan4dex-<版本>/`（onedir）+ `releases/pan4dex-<版本>.zip`
+> 最后更新：2026-10-30 ｜ 产物：`releases/pan4dex-<版本>/`（onedir）+ `releases/pan4dex-<版本>.zip`
+> zip 包内顶层目录固定为 `pan4dex`（不带版本号），解压即得到可直接运行的 `pan4dex/`；版本号只出现在压缩包文件名上。
 > 铁律：PyInstaller **不能跨平台**。`.exe` 及依赖 DLL 只能在 Windows 上生成。所谓“在 Linux 上编 Windows 版”，本质是**从 Linux 用 SSH 驱动一台 Windows 去编，再把产物拉回来**（见 W2）。
 
 ## 前置（所有 Windows 场景通用）
@@ -28,7 +29,7 @@ python scripts\build.py windows      # 或直接：python scripts\build_windows.
 `build.py windows` 只是转发到 `build_windows.py`，并会自读版本号。它做三件事：
 1. 把 `BUILD_TIME` 回写 `config/app_config.py`（构建时间进产物“关于”）；
 2. 临时移出 Linux 专用二进制（`resources/tools/exiftool-linux`、`7z/7zz`）后跑 PyInstaller `--onedir --windowed`；
-3. 产物拷到 `releases/pan4dex-<版本>/` 并压成 `releases/pan4dex-<版本>.zip`。
+3. 产物拷到 `releases/pan4dex-<版本>/`，并压成 `releases/pan4dex-<版本>.zip`（包内顶层目录为 `pan4dex`，不带版本号）。
 
 **验证**：
 ```powershell
