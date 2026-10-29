@@ -1104,8 +1104,20 @@ class MainWindow(QMainWindow):
             pane.new_file()
 
     def on_pane_activated(self, pane):
-        """窗格被激活（获得焦点）"""
+        """窗格被激活（获得焦点）：记账 + 活动窗格视觉指示（docs/ui-audit.md #1）
+
+        双窗格同时有选中项时，用户必须能分辨 Delete/Ctrl+C 会作用于哪个窗格：
+        新窗格点亮路径栏下的 2px 主色指示条，旧窗格熄灭。
+        """
         self._active_pane = pane
+        from PyQt6 import sip
+        prev = getattr(self, '_visually_active_pane', None)
+        if prev is pane:
+            return
+        if prev is not None and not sip.isdeleted(prev):
+            prev.set_active_visual(False)
+        self._visually_active_pane = pane
+        pane.set_active_visual(True)
 
     def target_pane(self):
         """快捷键、菜单项、侧边栏点击应当作用在**哪个窗格**
@@ -1231,6 +1243,12 @@ class MainWindow(QMainWindow):
             # “按 Ctrl+D 切了主题，重启又跳回上一个”（设置对话框早就在写这个键）
             self.settings.setValue("theme", name)
             self._sync_theme_actions(name)
+            # 主题切换后活动窗格指示条要换新主色（颜色是涂上去的字符串，需重涂）
+            prev = getattr(self, '_visually_active_pane', None)
+            if prev is not None:
+                from PyQt6 import sip
+                if not sip.isdeleted(prev):
+                    prev.set_active_visual(prev.is_active_visual())
 
     def _sync_theme_actions(self, name: str):
         """同步菜单里两个主题项的打勾状态（菜单在 `__init__` 里晚于主题应用才建，

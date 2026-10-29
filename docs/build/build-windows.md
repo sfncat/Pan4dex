@@ -62,13 +62,13 @@ Test-Path releases\pan4dex-<版本>\pan4dex.exe
 python scripts/build.py windows \
   --remote sshuser@192.168.5.54 \
   --remote-path 'C:\workspace\Pan4dex' \
-  --version 1.9.026
+  --version 1.9.027
 # 先加 --dry-run 可看到将执行的 ssh/scp 命令
 ```
 手工等价：
 ```bash
-ssh sshuser@192.168.5.54 'cmd /c "cd /d C:\workspace\Pan4dex && python scripts\build_windows.py 1.9.026"'
-scp 'sshuser@192.168.5.54:C:\workspace\Pan4dex\releases\pan4dex-1.9.026.zip' ./releases/
+ssh sshuser@192.168.5.54 'cmd /c "cd /d C:\workspace\Pan4dex && python scripts\build_windows.py 1.9.027"'
+scp 'sshuser@192.168.5.54:C:\workspace\Pan4dex\releases\pan4dex-1.9.027.zip' ./releases/
 ```
 
 ### W2.3 跨机传源码/产物的坑（务必知道）
@@ -81,7 +81,7 @@ scp 'sshuser@192.168.5.54:C:\workspace\Pan4dex\releases\pan4dex-1.9.026.zip' ./r
 
 ### W2.4 验证（拉回本机后）
 ```bash
-unzip -l releases/pan4dex-1.9.026.zip | grep pan4dex.exe   # 结构对
+unzip -l releases/pan4dex-1.9.027.zip | grep pan4dex.exe   # 结构对
 # 实际运行需在 Windows 上验证
 ```
 

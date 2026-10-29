@@ -25,6 +25,7 @@ from core.file_operations import (
 from core.file_op_runner import FileOpRunner
 from core import archive_ops
 from core.lifecycle import call_later, safe_event_filter
+from config.theme_manager import ThemeManager
 
 
 # 共享剪贴板：所有窗格（含四窗格/双窗格）共用一份，
@@ -359,6 +360,14 @@ class Pane(QWidget):
         # 导致 PathBar 被拉高（内部控件停在顶部、下方大片空白）
         self.path_bar.setFixedHeight(36)
 
+        # 活动窗格指示条（docs/ui-audit.md #1）：路径栏下 2px，活动=主题主色、
+        # 非活动=透明。双窗格同时有选中项时，用户靠它分辨操作作用于哪个窗格；
+        # 固定占位 2px，切换不引起布局抖动
+        self.active_indicator = QWidget()
+        self.active_indicator.setFixedHeight(2)
+        self.active_indicator.setStyleSheet("background-color: transparent;")
+        self.layout.addWidget(self.active_indicator)
+
         # 设置焦点策略，让 focusInEvent 能触发
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
@@ -431,6 +440,16 @@ class Pane(QWidget):
 
         self.file_list_layout.addWidget(self.tree_view)
 
+        # Tab 切换窗格（docs/ui-audit.md #2）：必须用 QShortcut 而不是重写
+        # keyPressEvent——QAbstractItemView 内建 Tab 处理（moveCursor）会先于
+        # keyPressEvent 生效，焦点被 Qt 默认导航拿走、重写永远不执行。
+        # QShortcut 走 ShortcutOverride，优先级高于 view 内建按键。
+        # 只拦无修饰 Tab；Ctrl+Tab 归主窗口「切换标签页」，Shift+Tab 走原生反向导航
+        from PyQt6.QtGui import QShortcut
+        tab_sc = QShortcut(QKeySequence(Qt.Key.Key_Tab), self.tree_view)
+        tab_sc.setContext(Qt.ShortcutContext.WidgetShortcut)
+        tab_sc.activated.connect(self._focus_sibling_pane)
+
         # 超大图标视图（独立于 QTreeView，安全处理大图标）
         from widgets.thumbnail_view import ThumbnailView
         self.thumbnail_view = ThumbnailView()
@@ -445,6 +464,10 @@ class Pane(QWidget):
         # 选中变化：预览 + 状态栏计数（与列表视图同一套出口）
         self.thumbnail_view.itemSelectionChanged.connect(
             self.on_thumbnail_selection_changed)
+        # 超大图标视图同样支持 Tab 切窗格（与上面 tree_view 的理由一致）
+        tab_sc_thumb = QShortcut(QKeySequence(Qt.Key.Key_Tab), self.thumbnail_view)
+        tab_sc_thumb.setContext(Qt.ShortcutContext.WidgetShortcut)
+        tab_sc_thumb.activated.connect(self._focus_sibling_pane)
         # 让图标视图的点击也能激活本窗格（同 tree_view.viewport 的 eventFilter）
         self.thumbnail_view.viewport().installEventFilter(self)
         self.file_list_layout.addWidget(self.thumbnail_view)
@@ -2724,16 +2747,18 @@ class Pane(QWidget):
         """拖拽经过/离开时高亮边框。
 
         旧实现 dragEnter 用 `self.setStyleSheet(self.styleSheet() + ...)` 累加、
-        dragLeave 调 init_ui_style()（内含硬编码 #1E1E1E 深色）恢复——浅色
-        主题下拖一次文件进来背景就变黑且累加不可控。改为进入前快照原
-        样式、离开时精确还原，不依赖主题、不重复累加。
+        dragLeave 调一个内含硬编码深色的"恢复"方法——浅色主题下拖一次文件
+        进来背景就变黑且累加不可控（那个方法已随 docs/ui-audit.md 清理删除）。
+        改为进入前快照原样式、离开时精确还原，不依赖主题、不重复累加。
         """
         if on:
             if getattr(self, '_drag_highlight_on', False):
                 return
             self._pre_drag_style = self.styleSheet()
             self._drag_highlight_on = True
-            self.setStyleSheet(self._pre_drag_style + "\nQTreeView { border: 2px solid #2196F3; }")
+            self.setStyleSheet(
+                self._pre_drag_style
+                + f"\nQTreeView {{ border: 2px solid {ThemeManager.color('accent')}; }}")
         else:
             if not getattr(self, '_drag_highlight_on', False):
                 return
@@ -2960,40 +2985,61 @@ class Pane(QWidget):
         self.drag_start_pos = None
         return True
     
-    def init_ui_style(self):
-        """恢复默认样式"""
-        self.setStyleSheet("""
-            QTreeView {
-                background-color: #1E1E1E;
-                color: #CCCCCC;
-                border: none;
-                selection-background-color: #2196F3;
-                outline: none;
-            }
-            QTreeView::item:hover {
-                background-color: #2A2A2A;
-            }
-            QTreeView::item:selected {
-                background-color: #2196F3;
-            }
-            QHeaderView::section {
-                background-color: #2D2D2D;
-                color: #CCCCCC;
-                border: 1px solid #404040;
-                padding: 5px;
-            }
-            QProgressBar {
-                background-color: #2D2D2D;
-                border: none;
-            }
-            QProgressBar::chunk {
-                background-color: #2196F3;
-            }
-            QLabel {
-                color: #888888;
-                font-size: 11px;
-            }
-        """)
+    # ---- 活动窗格视觉与键盘导航（docs/ui-audit.md #1/#2，2026-10-29）----
+    # （原 init_ui_style() 已删：内含硬编码深色 + outline:none 的"恢复"样式，
+    #   浅色主题下一旦被调用就把整个窗格刷成深色，且长期无调用点是死代码）
+
+    def set_active_visual(self, on: bool):
+        """点亮/熄灭本窗格的「活动窗格」指示条（路径栏下 2px 主色）。
+
+        颜色每次实时取令牌：切主题后主窗口重涂一次，指示条即换新主色。
+        """
+        self._active_visual = bool(on)
+        indicator = getattr(self, 'active_indicator', None)
+        if indicator is None:
+            return
+        accent = ThemeManager.color('accent') if on else 'transparent'
+        indicator.setStyleSheet(f"background-color: {accent};")
+
+    def is_active_visual(self) -> bool:
+        return getattr(self, '_active_visual', False)
+
+    def focus_file_list(self):
+        """把焦点交给本窗格的文件列表（大图标模式下是缩略图视图）"""
+        thumbs = getattr(self, 'thumbnail_view', None)
+        if thumbs is not None and thumbs.isVisible():
+            thumbs.setFocus()
+        else:
+            self.tree_view.setFocus()
+
+    def _focus_sibling_pane(self) -> bool:
+        """Tab：把焦点交给同窗口下一个可见窗格（按 pane 编号循环）。
+
+        只找 window() 上的 pane1..pane4 属性：别的标签页的窗格不可见，
+        天然排除；双窗格布局同样按编号循环（1→2→1）。
+        """
+        win = self.window()
+        if win is None:
+            return False
+        panes = []
+        for i in range(1, 5):
+            p = getattr(win, f"pane{i}", None)
+            if p is None or p is self or sip.isdeleted(p) or not p.isVisible():
+                continue
+            panes.append(p)
+        if not panes:
+            return False
+
+        def _no(p):
+            try:
+                return int(p.pane_id.rsplit("_", 1)[-1])
+            except (ValueError, AttributeError):
+                return 1
+
+        my_no = _no(self)
+        nxt = next((p for p in panes if _no(p) > my_no), panes[0])
+        nxt.focus_file_list()
+        return True
     
     def show_progress(self, percent: int):
         """显示进度"""

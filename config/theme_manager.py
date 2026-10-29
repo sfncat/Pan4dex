@@ -53,6 +53,28 @@ class ThemeManager:
             "Courier New": "Courier New",
         }
     
+    # ---- 语义颜色令牌（docs/ui-audit.md #3：交互色先收口）----
+    # 新样式一律从这里取色，不要在业务代码里写 hex；深浅两套取值
+    _COLOR_TOKENS = {
+        "dark": {
+            "accent": "#2196F3",              # 主交互色：选中/拖拽高亮/活动窗格指示
+            "inactive_selection_bg": "#505050",
+            "inactive_selection_fg": "#CCCCCC",
+        },
+        "light": {
+            "accent": "#1a73e8",
+            "inactive_selection_bg": "#E3E6EA",
+            "inactive_selection_fg": "#212529",
+        },
+    }
+
+    @classmethod
+    def color(cls, token: str) -> str:
+        """当前主题的语义色（hex）。未知令牌/未知主题回退深色表。"""
+        theme = getattr(cls(), "current_theme", "dark") or "dark"
+        table = cls._COLOR_TOKENS.get(theme) or cls._COLOR_TOKENS["dark"]
+        return table.get(token, cls._COLOR_TOKENS["dark"].get(token, "#2196F3"))
+
     def get_theme(self, name: str) -> Optional[dict]:
         """获取主题"""
         return self.themes.get(name)
@@ -200,6 +222,10 @@ QTreeView::item:selected {
 }
 QTreeView::branch {
     background: transparent;
+}
+/* 键盘焦点可见（docs/ui-audit.md #1）：只换边框色不改宽度，布局零抖动 */
+QTreeView:focus, QListWidget:focus {
+    border-color: #1a73e8;
 }
 
 /* 表头 */

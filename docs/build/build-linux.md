@@ -58,7 +58,7 @@ docker info >/dev/null && echo OK
 ```bash
 cd ~/pan4dex-build
 bash scripts/build-linux-docker.sh           # 或： python scripts/build.py linux --env bare
-bash scripts/build-linux-docker.sh 1.9.026   # 指定版本
+bash scripts/build-linux-docker.sh 1.9.027   # 指定版本
 ```
 首次会 `docker build` 镜像（拉 bookworm 基座 + apt + pip 装 PyQt6/PyInstaller，较慢）；之后 `pan4dex-builder-linux` 被缓存，重建只跑 PyInstaller，数分钟完成。
 
