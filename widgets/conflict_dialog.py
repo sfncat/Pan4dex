@@ -3,6 +3,7 @@
 
 复制/移动遇到目标同名项时询问"替换/跳过/保留两者"，对齐 Windows
 资源管理器语义（旧实现一律静默改名 (2)，用户以为覆盖了却被悄悄改名）。
+选「保留两份」时立即弹改名框（预填自动序号名），用户可直接改成想要的名字。
 由后台操作线程经 QMetaObject.invokeMethod 在主线程弹出，因此
 ``chosen`` 属性在 ``ask()`` 返回后即可被 worker 线程读取。
 """
@@ -11,8 +12,8 @@ from datetime import datetime
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
-    QDialog, QDialogButtonBox, QCheckBox, QLabel, QMessageBox, QPushButton,
-    QVBoxLayout, QHBoxLayout, QWidget,
+    QDialog, QDialogButtonBox, QCheckBox, QInputDialog, QLabel, QMessageBox,
+    QPushButton, QVBoxLayout, QHBoxLayout, QWidget,
 )
 
 
@@ -35,12 +36,15 @@ class ConflictDialog(QDialog):
         dlg = ConflictDialog(parent, info)
         dlg.exec()
         decision = dlg.chosen   # 'replace' / 'skip' / 'keep_both' / 'cancel'
+        new_name = dlg.rename_to  # keep_both 时用户可在改名框里指定的名字，否则 None
     """
 
     def __init__(self, parent, info: dict):
         super().__init__(parent)
         self.info = info
         self.chosen = 'cancel'
+        # 「保留两份」时用户改的新文件名（None = 沿用自动序号名 name (2).ext）
+        self.rename_to = None
         self.setWindowTitle("同名项目冲突")
         self.setMinimumWidth(440)
         self._apply_style()
@@ -112,12 +116,18 @@ class ConflictDialog(QDialog):
         # 必须在 addLayout 之后查找：按钮此前未 reparent，findChildren 找不到
         keep_btn = self.button("保留两份")
         if keep_btn is not None:
-            d = os.path.dirname(os.path.normpath(dst))
-            base, ext = os.path.splitext(name)
-            i = 2
-            while os.path.exists(os.path.join(d, f"{base} ({i}){ext}")):
-                i += 1
-            keep_btn.setToolTip(f"另存为：{base} ({i}){ext}")
+            keep_btn.setToolTip(f"可直接改名，默认：{self._suggested_name()}")
+
+    def _suggested_name(self) -> str:
+        """取首个不冲突的自动序号名：name (2).ext / name (3).ext …"""
+        dst = self.info.get('dst', '')
+        name = os.path.basename(os.path.normpath(dst)) or dst
+        d = os.path.dirname(os.path.normpath(dst))
+        base, ext = os.path.splitext(name)
+        i = 2
+        while os.path.exists(os.path.join(d, f"{base} ({i}){ext}")):
+            i += 1
+        return f"{base} ({i}){ext}"
 
     def _side_box(self, header, path, size, mtime, is_dir) -> QWidget:
         w = QWidget()
@@ -155,8 +165,39 @@ class ConflictDialog(QDialog):
         return None
 
     def _choose(self, key: str):
+        # 「保留两份」：先弹改名框，用户确认名字后才关闭本对话框；
+        # 取消改名则留在这里，让用户改选替换/跳过
+        if key == 'keep_both' and not self._ask_rename():
+            return
         self.chosen = key
         self.accept()
+
+    def _ask_rename(self) -> bool:
+        """弹改名框（预填自动序号名），返回用户是否确认了一个可用的名字"""
+        dst = self.info.get('dst', '')
+        folder = os.path.dirname(os.path.normpath(dst))
+        name = self._suggested_name()
+        while True:
+            text, ok = QInputDialog.getText(
+                self, "保留两份 — 另存为", "新文件名：", text=name)
+            if not ok:
+                return False
+            text = text.strip()
+            if not text:
+                QMessageBox.warning(self, "文件名无效", "文件名不能为空。")
+                continue
+            if text in ('.', '..') or os.path.basename(text) != text \
+                    or '/' in text or '\\' in text:
+                QMessageBox.warning(
+                    self, "文件名无效", "文件名不能包含路径分隔符。")
+                continue
+            if os.path.lexists(os.path.join(folder, text)):
+                QMessageBox.warning(
+                    self, "文件名已存在", f"目录里已经有「{text}」，请换一个名字。")
+                name = text
+                continue
+            self.rename_to = text
+            return True
 
     def reject(self):
         # 关闭窗口 = 取消整个操作

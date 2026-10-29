@@ -239,3 +239,56 @@ def test_pane_runs_its_operations_through_the_runner(qtbot, tmp_path, monkeypatc
 
     assert seen == [("正在复制", handler)]
     assert pane.file_ops is pane.op_runner.ops
+
+
+def test_keep_both_rename_is_passed_back_to_the_operation(env, monkeypatch):
+    """「保留两份」+ 改名：决策要连同用户起的名字一起回给 FileOperations"""
+    import widgets.conflict_dialog as cd
+
+    _, runner, _, _ = env
+
+    class FakeConflictDialog:
+        def __init__(self, parent, info):
+            self.chosen = "keep_both"
+            self.rename_to = "b.txt"
+            self.apply_all = None
+
+        def exec(self):
+            return 0
+
+    monkeypatch.setattr(cd, "ConflictDialog", FakeConflictDialog)
+    assert runner._on_conflict({"src": "s", "dst": "d", "is_dir": False}) == \
+        ("keep_both", "b.txt")
+
+
+def test_conflict_dialog_keep_both_opens_a_rename_box(qtbot, monkeypatch, tmp_path):
+    """点「保留两份」立刻弹改名框（预填首个不冲突的序号名）；取消改名不关冲突框"""
+    import widgets.conflict_dialog as cd
+
+    dst = tmp_path / "a.txt"
+    dst.write_text("old", encoding="utf-8")
+    (tmp_path / "a (2).txt").write_text("x", encoding="utf-8")   # 占掉自动序号名
+    info = {"src": str(tmp_path / "src.txt"), "dst": str(dst)}
+
+    dlg = cd.ConflictDialog(None, info)
+    qtbot.addWidget(dlg)
+    assert dlg._suggested_name() == "a (3).txt"
+
+    asked = {}
+
+    def fake_get_text(parent, title, label, text=""):
+        asked["text"] = text
+        return "b.txt", True
+
+    monkeypatch.setattr(cd.QInputDialog, "getText", staticmethod(fake_get_text))
+    dlg._choose("keep_both")
+    assert asked["text"] == "a (3).txt"
+    assert dlg.chosen == "keep_both" and dlg.rename_to == "b.txt"
+
+    dlg2 = cd.ConflictDialog(None, info)
+    qtbot.addWidget(dlg2)
+    monkeypatch.setattr(cd.QInputDialog, "getText",
+                        staticmethod(lambda *a, **k: ("", False)))
+    dlg2._choose("keep_both")
+    assert dlg2.chosen == "cancel" and dlg2.rename_to is None
+

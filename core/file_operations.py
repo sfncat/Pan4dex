@@ -191,16 +191,20 @@ class FileOperations:
         self._cancelled = False
         self._progress_callback: Optional[Callable[[int, str, int, int], None]] = None
         # 同名冲突询问回调：fn(info) -> 'replace'/'skip'/'keep_both'/'cancel'
+        # 需要自定义新名字时返回 ('keep_both', '新文件名')
         # info = {src, dst, src_size, src_mtime, dst_size, dst_mtime, is_dir}
         # None 时保持旧行为（自动改名“保留两者”），供无 UI 的调用方/测试使用
-        self._conflict_callback: Optional[Callable[[dict], str]] = None
+        self._conflict_callback: Optional[Callable[[dict], object]] = None
     
     def set_progress_callback(self, callback: Callable[[int, str, int, int], None]):
         """设置进度回调函数(percent, filename, copied_bytes, total_bytes)"""
         self._progress_callback = callback
     
-    def set_conflict_callback(self, callback: Optional[Callable[[dict], str]]):
-        """设置同名冲突处理回调（在后台操作线程被调用，UI 层需自行回主线程）"""
+    def set_conflict_callback(self, callback: Optional[Callable[[dict], object]]):
+        """设置同名冲突处理回调（在后台操作线程被调用，UI 层需自行回主线程）
+
+        返回值可以是决策字符串，也可以是 ('keep_both', 新文件名) 元组。
+        """
         self._conflict_callback = callback
     
     def cancel(self):
@@ -211,13 +215,16 @@ class FileOperations:
         """检查是否已取消"""
         return self._cancelled
     
-    def copy(self, sources: list[str], destination: str) -> FileOperationResult:
+    def copy(self, sources: list[str], destination: str,
+             dest_name: str = None) -> FileOperationResult:
         """
         复制文件/目录到目标目录
         
         Args:
             sources: 源文件/目录路径列表
             destination: 目标目录路径
+            dest_name: 单源复制时可指定目标名（冲突框「保留两份」的改名结果），
+                有值时不再询问同名冲突
         
         Returns:
             FileOperationResult: 操作结果
@@ -259,7 +266,9 @@ class FileOperations:
                 )
             
             try:
-                result = self._copy_single(source, destination, total_files, total_bytes, files_copied, copied_bytes)
+                result = self._copy_single(
+                    source, destination, total_files, total_bytes, files_copied, copied_bytes,
+                    dest_name=dest_name if len(sources) == 1 else None)
                 if isinstance(result, FileOperationResult):
                     return result
                 files_copied, copied_bytes = result
@@ -357,14 +366,15 @@ class FileOperations:
         except Exception:
             return False
 
-    def _resolve_conflict(self, src: str, dst: str) -> str:
-        """目标已存在时的处理：返回 'replace'/'skip'/'keep_both'。
+    def _resolve_conflict(self, src: str, dst: str) -> tuple:
+        """目标已存在时的处理：返回 ('replace'|'skip'|'keep_both'|'cancel', 新名字)。
 
-        旧行为一律静默改名 (2)；现在若设了冲突回调（UI 弹框询问）按其决策，
-        无回调/异常时回退旧行为，不改变无 UI 调用方的语义。
+        新名字仅「保留两份」时可能非空（用户在改名框里指定），None 表示沿用
+        自动序号名。旧行为一律静默改名 (2)；现在若设了冲突回调（UI 弹框询问）
+        按其决策，无回调/异常时回退旧行为，不改变无 UI 调用方的语义。
         """
         if self._conflict_callback is None:
-            return 'keep_both'
+            return 'keep_both', None
         try:
             is_dir = os.path.isdir(src)
             info = {
@@ -374,23 +384,33 @@ class FileOperations:
                 'dst_size': 0 if os.path.isdir(dst) else (os.path.getsize(dst) if os.path.isfile(dst) else 0),
                 'dst_mtime': os.path.getmtime(dst),
             }
-            decision = self._conflict_callback(info)
+            answer = self._conflict_callback(info)
+            # 回调可以只返回决策字符串，也可以返回 (决策, 新名字)
+            if isinstance(answer, (tuple, list)):
+                decision = answer[0]
+                rename_to = answer[1] if len(answer) > 1 else None
+            else:
+                decision, rename_to = answer, None
             if decision in ('replace', 'skip', 'keep_both', 'cancel'):
-                return decision
+                return decision, (rename_to or None)
         except _OperationCancelled:
             raise
         except Exception:
             pass
-        return 'keep_both'
+        return 'keep_both', None
 
     def _copy_single(self, source: str, destination: str, total_files: int, total_bytes: int,
-                    current_files: int, current_bytes: int):
-        """复制单个文件/目录，返回 (已复制文件数, 已复制字节数)；取消时返回 FileOperationResult"""
-        source_name = os.path.basename(source)
+                    current_files: int, current_bytes: int, dest_name: str = None):
+        """复制单个文件/目录，返回 (已复制文件数, 已复制字节数)；取消时返回 FileOperationResult
+
+        `dest_name`：调用方已确定的目标名（冲突框里用户改的名字），有值时不再询问冲突。
+        """
+        source_name = dest_name or os.path.basename(source)
         
         # 符号链接本身复制（与 Explorer 一致），不解引用目标内容
         if os.path.islink(source):
-            dest_link = self._unique_dest_path(destination, source_name)
+            dest_link = (os.path.join(destination, dest_name) if dest_name
+                         else self._unique_dest_path(destination, source_name))
             if os.path.exists(dest_link):
                 return current_files, current_bytes
             try:
@@ -405,14 +425,15 @@ class FileOperations:
         
         dest_path = os.path.join(destination, source_name)
         action = 'keep_both'
-        if os.path.exists(dest_path):
-            action = self._resolve_conflict(source, dest_path)
+        if dest_name is None and os.path.exists(dest_path):
+            action, rename_to = self._resolve_conflict(source, dest_path)
             if action == 'skip':
                 return current_files, current_bytes
             if action == 'cancel':
                 raise _OperationCancelled()
             if action == 'keep_both':
-                dest_path = self._unique_dest_path(destination, source_name)
+                dest_path = (os.path.join(destination, rename_to) if rename_to
+                             else self._unique_dest_path(destination, source_name))
         
         if os.path.isdir(source):
             # 复制目录：os.walk 扁平递归（避免深层递归栈风险），
@@ -630,16 +651,18 @@ class FileOperations:
                 # 合并（Explorer 会询问）；现在走统一的冲突决策
                 name = os.path.basename(os.path.normpath(source))
                 dest_path = os.path.join(destination, name)
+                rename_to = None
                 same_dir = os.path.normpath(os.path.dirname(os.path.abspath(source))) == \
                     os.path.normpath(os.path.abspath(destination))
                 if not same_dir and os.path.lexists(dest_path):
-                    action = self._resolve_conflict(source, dest_path)
+                    action, rename_to = self._resolve_conflict(source, dest_path)
                     if action == 'skip':
                         continue
                     if action == 'cancel':
                         raise _OperationCancelled()
                     if action == 'keep_both':
-                        dest_path = self._unique_dest_path(destination, name)
+                        dest_path = (os.path.join(destination, rename_to) if rename_to
+                                     else self._unique_dest_path(destination, name))
                     elif os.path.isdir(dest_path):
                         shutil.rmtree(dest_path)
                     else:
@@ -651,13 +674,14 @@ class FileOperations:
                     if os.path.normpath(dest_path) == os.path.normpath(source):
                         continue
                     if os.path.lexists(dest_path):
-                        action = self._resolve_conflict(source, dest_path)
+                        action, rename_to = self._resolve_conflict(source, dest_path)
                         if action == 'skip':
                             continue
                         if action == 'cancel':
                             raise _OperationCancelled()
                         if action == 'keep_both':
-                            dest_path = self._unique_dest_path(destination, name)
+                            dest_path = (os.path.join(destination, rename_to) if rename_to
+                                         else self._unique_dest_path(destination, name))
                         elif os.path.isdir(dest_path):
                             shutil.rmtree(dest_path)
                         else:
@@ -673,7 +697,7 @@ class FileOperations:
                     tmp_ops._cancelled = False
                     tmp_ops._progress_callback = self._progress_callback
                     tmp_ops._conflict_callback = self._conflict_callback
-                    cp = tmp_ops.copy([source], destination)
+                    cp = tmp_ops.copy([source], destination, dest_name=rename_to)
                     if tmp_ops._cancelled:
                         self._cancelled = True
                     if not cp.success:

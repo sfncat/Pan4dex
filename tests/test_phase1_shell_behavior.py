@@ -149,6 +149,18 @@ def test_conflict_keep_both(ops):
     assert os.path.exists(os.path.join(dst, "a (2).txt"))
 
 
+def test_conflict_keep_both_with_rename(ops):
+    """「保留两份」+ 用户改名：直接落到用户指定的名字，不再自动加序号"""
+    o, src, dst, f, old = ops
+    o.copy([f], dst)
+    o.set_conflict_callback(lambda info: ("keep_both", "b.txt"))
+    r = o.copy([f], dst)
+    assert r.success
+    assert os.path.exists(os.path.join(dst, "b.txt"))
+    assert os.path.exists(os.path.join(dst, "a.txt"))   # 原文件保留
+    assert not os.path.exists(os.path.join(dst, "a (2).txt"))
+
+
 def test_conflict_replace(ops):
     o, src, dst, f, old = ops
     # 目标放一个内容不同、mtime 很新的同名文件

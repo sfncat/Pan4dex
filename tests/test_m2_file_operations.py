@@ -566,9 +566,9 @@ class TestCrossVolumeMove:
         seen = []
         real_copy = fo.FileOperations.copy
 
-        def spy(self, sources, target):
+        def spy(self, sources, target, **kwargs):
             seen.append(([os.path.normpath(s) for s in sources], target))
-            return real_copy(self, sources, target)
+            return real_copy(self, sources, target, **kwargs)
 
         monkeypatch.setattr(fo.FileOperations, "copy", spy)
         monkeypatch.setattr(fo, "same_volume", lambda sources, target: False)

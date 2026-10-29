@@ -37,6 +37,8 @@ class _ConflictAsk:
     def __init__(self, info: dict):
         self.info = info
         self.decision = ""
+        # 「保留两份」时用户改的名字；None = 用自动序号名
+        self.rename_to = None
 
 
 class FileOpRunner(QObject):
@@ -144,7 +146,11 @@ class FileOpRunner(QObject):
                     Q_ARG(object, ask))
             except Exception:
                 logger.exception("冲突询问投递失败")
-        return ask.decision if ask.decision in _CONFLICT_DECISIONS else 'keep_both'
+        decision = ask.decision if ask.decision in _CONFLICT_DECISIONS else 'keep_both'
+        if decision == 'keep_both' and ask.rename_to:
+            # 「保留两份」+ 改名：把用户指定的名字一并带回去
+            return (decision, ask.rename_to)
+        return decision
 
     @pyqtSlot(object)
     def _ask_conflict_slot(self, ask):
@@ -172,8 +178,10 @@ class FileOpRunner(QObject):
             dlg = ConflictDialog(self.host, info)
             dlg.exec()
             ask.decision = dlg.chosen
+            ask.rename_to = getattr(dlg, 'rename_to', None)
             try:
                 if dlg.apply_all.isChecked():
+                    # 「对后续冲突执行相同操作」只记决策本身；逐个改名不能复用
                     self._policy = dlg.chosen
             except Exception:
                 pass
