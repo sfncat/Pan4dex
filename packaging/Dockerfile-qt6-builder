@@ -1,33 +1,28 @@
 # ============================================================================
-#  通用 PyQt6 Linux 构建基座（可共享）—— Debian 11 bullseye / glibc 2.31
+#  通用 PyQt6 Linux 构建基座（可共享）—— Debian 12 bookworm / glibc 2.36
 # ----------------------------------------------------------------------------
-#  目的：任何 PyQt6 项目都能 `FROM` 它，用**低 glibc(2.31)** 编 out onefile，
-#        而不必各自重搭 Qt6/xcb 运行库、也不必重复处理 bullseye EOL 的 archive 换源。
+#  目的：任何 PyQt6 项目都能 `FROM` 它，用**低 glibc(2.36)** 编 out onefile，
+#        而不必各自重搭 Qt6/xcb 运行库。
 #  只放“构建期通用”的东西；**项目专属依赖请放到各自的 Dockerfile 里 pip 安装**，别塞进基座。
+#
+#  glibc 基线为何从 2.31(bullseye) 抬到 2.36(bookworm)：PyQt6 6.12 起，Riverbank 的
+#  Linux wheel 只有 manylinux_2_34/2_39（要 glibc ≥ 2.34），bullseye(2.31) 装不上。
+#  bookworm 在支持期内，apt 源无需再走 archive.debian.org。
 #
 #  单独构建：
 #      docker build --network=host -f packaging/Dockerfile-qt6-builder \
-#                   -t qt6-builder-bullseye:py311 .
+#                   -t qt6-builder-bookworm:py311 .
 #  用法（新项目 Dockerfile 第一行）：
-#      FROM qt6-builder-bullseye:py311
+#      FROM qt6-builder-bookworm:py311
 #  详见 docs/build/qt6-builder-base.md
 # ============================================================================
-FROM python:3.11-bullseye
+FROM python:3.11-bookworm
 
 ENV QT_QPA_PLATFORM=offscreen \
     PIP_NO_CACHE_DIR=1
 
-# bullseye 已 EOL：官方包从 deb.debian.org 搬到 archive.debian.org，且 Release 过期需关
-# Check-Valid-Until；否则 apt-get update 一堆 +deb11uNN 404(exit 100)。把这套 EOL 处理收敛进基座。
-# archive 站点常限速/截断，会让 apt-get update 只拿到“部分索引”→ 反而 “Unable to locate package”。
-# 对策：精简索引(只取英文,少一半文件) + 有界重试，直到探测包可解析再进 install。
-RUN sed -i '/debian-security/d' /etc/apt/sources.list && \
-    sed -i 's|deb.debian.org/debian |archive.debian.org/debian |g' /etc/apt/sources.list && \
-    for i in 1 2 3 4 5; do \
-      apt-get update -o Acquire::Check-Valid-Until=false -o Acquire::Languages=none -o Acquire::Retries=5; \
-      if apt-cache policy xvfb libatk1.0-0 2>/dev/null | grep -q 'Candidate: [0-9]'; then break; fi; \
-      echo "apt-get update 索引不全，重试 ($i/5)…"; sleep 3; \
-    done && \
+# Qt6 运行/构建所需系统库 + 离屏显示（Xvfb）。bookworm 仍是受支持发行版，直接用官方源。
+RUN apt-get update -o Acquire::Retries=5 && \
     apt-get install -y --no-install-recommends \
       -o Acquire::Retries=5 \
       libgl1-mesa-dev libegl1-mesa-dev \
@@ -46,9 +41,9 @@ RUN sed -i '/debian-security/d' /etc/apt/sources.list && \
 # 且 wheel 内含 platforminputcontexts 插件(libibus/libcompose)——输入法“引擎”不在此列，属运行时。
 RUN python -m pip install --upgrade pip && \
     pip install --only-binary=:all: \
-      "PyQt6==6.9.1" \
-      "PyQt6-Qt6==6.9.2" \
-      "PyQt6-sip==13.12.0" \
+      "PyQt6==6.12.0" \
+      "PyQt6-Qt6==6.12.0" \
+      "PyQt6-sip==13.13.0" \
       "PyInstaller==6.22.3"
 
 # 离屏显示：PyInstaller 分析期会 import 一次 Qt，需要 display。entrypoint 起 Xvfb 后 exec 传入命令。

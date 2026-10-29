@@ -6,7 +6,7 @@
 ## 这是什么
 
 跨平台四窗格文件管理器（对标 Windows 的 Q-Dir）。Python 3.11+（开发机 3.13，依赖由 uv 管理）
-+ PyQt6，PyInstaller 打成单文件产物。当前版本 `1.9.023`，开发分支就是 `master`
++ PyQt6，PyInstaller 打成单文件产物。当前版本 `1.9.025`，开发分支就是 `master`
   （2026-09-24 起不再走 `dev/*`，动手前先 `git pull --ff-only`）。
 
 ## 去哪读

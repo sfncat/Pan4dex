@@ -1,5 +1,5 @@
 # Pan4dex RUNTIME image: turnkey Linux GUI app with CJK fonts + ibus Pinyin.
-# Base noble (glibc 2.39) runs the bullseye-built onefile fine.
+# Base noble (glibc 2.39) runs the glibc-2.36 bookworm-built onefile fine.
 FROM ubuntu:24.04
 ENV DEBIAN_FRONTEND=noninteractive
 

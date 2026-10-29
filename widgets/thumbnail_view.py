@@ -106,7 +106,10 @@ class ThumbnailView(QListWidget):
         self.setWordWrap(True)
         self.setWrapping(True)
         self.setMovement(QListWidget.Movement.Static)
-        self.setSelectionMode(QListWidget.SelectionMode.SingleSelection)
+        # 与文件列表一致：Shift/Ctrl 多选 + 空白处拖拽框选。
+        # 注意 setSelectionMode 必须在 setDragDropMode 之后调（Qt 会隐式改回单选），
+        # 本视图不开拖拽，所以这里直接设就行
+        self.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
         self.setUniformItemSizes(True)
         self.setGridSize(QSize(160, 190))
 
@@ -304,6 +307,11 @@ class ThumbnailView(QListWidget):
         """加载失败时清理 _loading，避免泄漏导致该路径永远不再重试"""
         self._loading.discard(path)
     
+    def selected_paths(self) -> list:
+        """选中项路径（按视觉行序），供窗格的复制/删除/右键菜单统一读取"""
+        items = sorted(self.selectedItems(), key=self.row)
+        return [p for p in (it.data(Qt.ItemDataRole.UserRole) for it in items) if p]
+
     def _is_image(self, path: str) -> bool:
         return os.path.splitext(path)[1].lower() in IMAGE_EXTENSIONS
     

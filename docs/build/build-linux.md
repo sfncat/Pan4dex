@@ -9,15 +9,15 @@
 
 PyInstaller 产物动态链接宿主 glibc。**主用发行版（Ubuntu 24.04 / Fedora / Debian 12 等）glibc 版本偏高**（如 2.39），直接在其上编出的 ELF 拿到老系统就 `GLIBC_x.y not found`。解决办法：把构建钉在**低 glibc 基座**里。
 
-Pan4dex 用 `packaging/Dockerfile-linux`，基座 `python:3.11-bullseye`（Debian 11，glibc 2.31）。产物 `file` 显示 `for GNU/Linux 3.2.0`，向后兼容性好。**这就是 Linux 版“必须用 Docker 编”的根本原因**，不是偏好。
+Pan4dex 用 `packaging/Dockerfile-linux`，基座 `python:3.11-bookworm`（Debian 12，glibc 2.36）。这是 PyQt6 6.12 能用的**最低** glibc 基线：Riverbank 的 6.12 Linux wheel 只有 `manylinux_2_34`/`manylinux_2_39`（要 glibc ≥ 2.34），Debian 11 bullseye（2.31）装不上。代价是产物要求目标机 **glibc ≥ 2.36**（Debian 12 / Ubuntu 23.04+ / Fedora 37+）；Ubuntu 22.04（2.35）及更老的系统不再支持。**这就是 Linux 版“必须用 Docker 编”的根本原因**，不是偏好。
 
-> 因为 bullseye 已 EOL，`packaging/Dockerfile-linux` 把 apt 源改到了 `archive.debian.org` 并关 `Check-Valid-Until`（否则 `apt-get update` 一堆 `+deb11uNN` 404 → exit 100）。archive 无 security 通道——**这是编译镜像不是运行环境，可接受**。
+> 基座发行版在支持期内，apt 直接用官方源，不再需要指向 `archive.debian.org`（那是 bullseye EOL 时期的补丁，来龙去脉见 gotchas #46）。
 
 ## 关键约束：Dockerfile 唯一
 
 L1 与 L2 **必须**用同一套东西，别为不同宿主复制：
 - 构建脚本（唯一入口）：`scripts/build-linux-docker.sh`
-- 镜像定义（唯一）：`packaging/Dockerfile-qt6-builder`（**通用基座**：bullseye/glibc2.31 + Qt6/xcb + PyInstaller，锁版本）+ `packaging/Dockerfile-linux`（`FROM` 基座，只加 Pan4dex 专属依赖）。基座可共享给其他 Qt6 项目，详见 [qt6-builder-base.md](qt6-builder-base.md)。
+- 镜像定义（唯一）：`packaging/Dockerfile-qt6-builder`（**通用基座**：bookworm/glibc2.36 + Qt6/xcb + PyInstaller，锁版本）+ `packaging/Dockerfile-linux`（`FROM` 基座，只加 Pan4dex 专属依赖）。基座可共享给其他 Qt6 项目，详见 [qt6-builder-base.md](qt6-builder-base.md)。
 
 `build-linux-docker.sh` 对宿主是 WSL 还是裸 Linux **完全无感**：它 `docker build -f packaging/Dockerfile-linux`（带 `--network=host`）→ 起容器跑 `pyinstaller --onefile --windowed` → 产物挪到 `releases/pan4dex-<版本>-linux`。
 差异**只在“前置准备/过程”**（下 L2 多出来的 WSL 网络/CRLF 处理），产物字节一致。
@@ -58,9 +58,9 @@ docker info >/dev/null && echo OK
 ```bash
 cd ~/pan4dex-build
 bash scripts/build-linux-docker.sh           # 或： python scripts/build.py linux --env bare
-bash scripts/build-linux-docker.sh 1.9.024   # 指定版本
+bash scripts/build-linux-docker.sh 1.9.025   # 指定版本
 ```
-首次会 `docker build` 镜像（拉 bullseye 基座 + apt + pip 装 PyQt6/PyInstaller，较慢）；之后 `pan4dex-builder-linux` 被缓存，重建只跑 PyInstaller，数分钟完成。
+首次会 `docker build` 镜像（拉 bookworm 基座 + apt + pip 装 PyQt6/PyInstaller，较慢）；之后 `pan4dex-builder-linux` 被缓存，重建只跑 PyInstaller，数分钟完成。
 
 ### 验证
 ```bash
@@ -85,7 +85,7 @@ wsl --install -d Ubuntu-24.04 --no-launch
 一条铁律先记住：**容器（即使 `--network=host`）里的 `127.0.0.1` 是容器/WSL 自己的 loopback，不等于宿主机的 `127.0.0.1`**。所以把代理写成 `http://127.0.0.1:20170` 对容器**连不通** → `apt-get update` 超时、索引残缺 → `Unable to locate package` / `exit 100`（本仓踩过）。按场景选：
 
 **场景 A · 直连（默认，多数够用）**
-WSL 设 mirrored（或本就外网可达的 Linux）时，容器直连境外源一般够快（实测 `archive.debian.org` ~2.2 MB/s）。此时 `~/.docker/config.json` **不配任何代理**。`build-linux-docker.sh` 里的 `--network=host` 只是为了 DNS/网络稳，与代理无关。`.wslconfig`：
+WSL 设 mirrored（或本就外网可达的 Linux）时，容器直连境外源一般够快（实测 `deb.debian.org` ~2.2 MB/s）。此时 `~/.docker/config.json` **不配任何代理**。`build-linux-docker.sh` 里的 `--network=host` 只是为了 DNS/网络稳，与代理无关。`.wslconfig`：
 ```ini
 [wsl2]
 networkingMode=mirrored

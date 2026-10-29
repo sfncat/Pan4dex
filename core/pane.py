@@ -288,8 +288,12 @@ class Pane(QWidget):
         # 只记录有意义的事件，过滤掉高频的 paint/move/resize 等
         et = event.type()
         
-        # 鼠标侧键导航（后退/前进）- viewport 上捕获
-        if obj == self.tree_view.viewport():
+        # 鼠标侧键导航（后退/前进）- viewport 上捕获；超大图标视图同样接，
+        # 否则在图标视图里点一下不会把本窗格设为活动窗格（Delete/F2 会打到别的窗格）
+        thumbs = getattr(self, 'thumbnail_view', None)
+        if obj == self.tree_view.viewport() or (
+                thumbs is not None and not sip.isdeleted(thumbs)
+                and obj == thumbs.viewport()):
             if et == QEvent.Type.MouseButtonPress:
                 self.activated.emit(self)
                 if hasattr(event, 'button'):
@@ -432,6 +436,17 @@ class Pane(QWidget):
         self.thumbnail_view = ThumbnailView()
         self.thumbnail_view.setVisible(False)
         self.thumbnail_view.itemDoubleClicked.connect(self.on_thumbnail_item_double_clicked)
+        # 右键菜单必须自己接：QListWidget 默认把 contextMenuEvent 向上抛，
+        # 最终落到主窗口的标签栏（pane 的祖先里有 QTabWidget），于是右键弹出
+        # 「新建标签页」——与本窗格的文件列表菜单完全无关
+        self.thumbnail_view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.thumbnail_view.customContextMenuRequested.connect(
+            self.show_thumbnail_context_menu)
+        # 选中变化：预览 + 状态栏计数（与列表视图同一套出口）
+        self.thumbnail_view.itemSelectionChanged.connect(
+            self.on_thumbnail_selection_changed)
+        # 让图标视图的点击也能激活本窗格（同 tree_view.viewport 的 eventFilter）
+        self.thumbnail_view.viewport().installEventFilter(self)
         self.file_list_layout.addWidget(self.thumbnail_view)
 
         self.h_container.addWidget(self.file_list_widget)
@@ -1298,7 +1313,7 @@ class Pane(QWidget):
         （且模型不缓存目录大小），异步统计待后续跟进。
         """
         try:
-            n = len([i for i in self.tree_view.selectedIndexes() if i.column() == 0])
+            n = len(self._paths_from_selection())
             base = (getattr(self, '_status_summary', '') or '') + self._filter_suffix()
             if n:
                 self.status_label.setText(f"{base}    已选 {n} 项" if base else f"已选 {n} 项")
@@ -1413,7 +1428,43 @@ class Pane(QWidget):
         menu.exec(self.tree_view.header().mapToGlobal(position))
 
     def show_context_menu(self, position):
-        """显示右键菜单"""
+        """文件列表右键菜单"""
+        self._show_file_context_menu(self._paths_from_selection())
+
+    def show_thumbnail_context_menu(self, position):
+        """超大图标视图右键菜单：与文件列表同一套菜单项
+
+        `customContextMenuRequested` 给的位置是控件坐标（含边框），
+        取项前先映射到 viewport。
+        """
+        view = self.thumbnail_view
+        # 位置可能是控件坐标（含边框）也可能已是 viewport 坐标，两种都试一次
+        item = view.itemAt(view.viewport().mapFrom(view, position))
+        if item is None:
+            item = view.itemAt(position)
+        if item is not None and not item.isSelected():
+            # 右键点在未选中项上：只选中它（与资源管理器一致）；
+            # 点在已选中的多项之内则保留整组选择
+            view.clearSelection()
+            item.setSelected(True)
+            view.setCurrentItem(item)
+        self._show_file_context_menu(self._paths_from_selection())
+
+    def on_thumbnail_selection_changed(self):
+        """超大图标视图选中变化：预览首项 + 状态栏计数"""
+        try:
+            paths = self.thumbnail_view.selected_paths()
+            if paths:
+                main_window = self.window()
+                if (hasattr(main_window, 'preview_panel')
+                        and main_window.preview_panel.isVisible()):
+                    main_window.preview_panel.preview_file(paths[0])
+            self._update_selection_status()
+        except Exception:
+            pass
+
+    def _show_file_context_menu(self, paths):
+        """按选中路径构造右键菜单（文件列表与超大图标视图共用）"""
         menu = QMenu()
         menu.setStyleSheet("""
             QMenu {
@@ -1426,12 +1477,8 @@ class Pane(QWidget):
             }
         """)
         
-        # 获取选中项
-        indexes = self.tree_view.selectedIndexes()
-        
-        if indexes:
+        if paths:
             # 有选中项
-            paths = self._paths_from_selection()
             single_path = paths[0] if len(paths) == 1 else None
             is_arc = (single_path is not None and os.path.isfile(single_path)
                       and archive_ops.is_archive(single_path))
@@ -1526,13 +1573,7 @@ class Pane(QWidget):
             menu.addSeparator()
             
             # 如果选中的是目录，添加到收藏夹
-            selected_path = None
-            for idx in indexes:
-                if idx.column() == 0:
-                    path = self.model.filePath(self._map_to_source(idx))
-                    if os.path.isdir(path):
-                        selected_path = path
-                        break
+            selected_path = next((p for p in paths if os.path.isdir(p)), None)
             
             if selected_path:
                 add_bookmark_action = QAction("添加到收藏夹(&B)", self)
@@ -1866,10 +1907,9 @@ class Pane(QWidget):
     
     def open_selected(self):
         """打开选中项"""
-        indexes = self.tree_view.selectedIndexes()
-        if indexes:
-            path = self.model.filePath(self._map_to_source(indexes[0]))
-            self._open_path(path)
+        paths = self._paths_from_selection()
+        if paths:
+            self._open_path(paths[0])
     
     def _open_path(self, path):
         """按路径打开：目录→导航，文件→关联应用"""
@@ -1920,14 +1960,29 @@ class Pane(QWidget):
             p = '\\' + p
         return p
     
+    def _thumbnail_active(self) -> bool:
+        """超大图标视图是否是当前显示的文件视图"""
+        thumbs = getattr(self, 'thumbnail_view', None)
+        return (thumbs is not None and not sip.isdeleted(thumbs)
+                and not thumbs.isHidden())
+
     def _paths_from_selection(self) -> list:
-        """从文件列表选中项提取路径列表"""
+        """从当前可见视图的选中项提取路径列表（超大图标视图没有 QModelIndex）"""
+        if self._thumbnail_active():
+            return self.thumbnail_view.selected_paths()
         paths = []
         for index in self.tree_view.selectedIndexes():
             if index.column() == 0:
                 paths.append(self.model.filePath(self._map_to_source(index)))
         return paths
     
+    def select_all_current_view(self):
+        """Ctrl+A：作用于当前显示的文件视图（超大图标视图没有 QTreeView）"""
+        if self._thumbnail_active():
+            self.thumbnail_view.selectAll()
+        else:
+            self.tree_view.selectAll()
+
     def copy_selected(self):
         """复制选中项"""
         self._copy_paths(self._paths_from_selection())
@@ -2309,6 +2364,9 @@ class Pane(QWidget):
     def rename_selected(self):
         """重命名选中项：F2 进入行内编辑（资源管理器习惯），
         提交由模型 setData 完成。"""
+        if self._thumbnail_active():
+            self._rename_thumbnail_selected()
+            return
         idx = self.tree_view.currentIndex()
         if not idx.isValid():
             sel = self.tree_view.selectedIndexes()
@@ -2319,6 +2377,24 @@ class Pane(QWidget):
         name_idx = idx.siblingAtColumn(0)
         self.tree_view.setCurrentIndex(name_idx)
         self.tree_view.edit(name_idx)
+
+    def _rename_thumbnail_selected(self):
+        """超大图标视图重命名（条目不可行内编辑，走对话框 + file_ops.rename）"""
+        paths = self.thumbnail_view.selected_paths()
+        if len(paths) != 1:
+            return
+        path = paths[0]
+        old_name = os.path.basename(path)
+        new_name, ok = QInputDialog.getText(
+            self, "重命名", "新名称:", text=old_name)
+        new_name = new_name.strip()
+        if not ok or not new_name or new_name == old_name:
+            return
+        result = self.file_ops.rename(path, new_name)
+        if result.success:
+            self._reload_after_mutation(self.current_path)
+        else:
+            QMessageBox.warning(self, "重命名失败", result.error)
 
     def _proxy_index_for(self, path):
         """把磁盘路径映射为视图（排序代理）索引；未加载/不在当前目录时返回无效索引。"""

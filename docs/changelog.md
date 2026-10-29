@@ -19,6 +19,33 @@
 
 ## 更新记录
 
+### v1.9.025 — 2026-10-29（master）
+
+> 工程版本：Qt/PyQt6 升级到 6.12；Linux 构建基座随之从 Debian 11 抬到 Debian 12，产物最低 glibc 要求升到 2.36。
+
+#### 🔧 工程：Qt 6.12 升级（Windows/开发 + Linux 构建链）
+- 依赖：`PyQt6>=6.12.0`，锁到 `pyqt6 6.12.0` / `pyqt6-qt6 6.12.0` / `pyqt6-sip 13.13.0`；`uv.lock`、`requirements.txt` 与 `.venv` 同步
+- Linux 构建基座 `python:3.11-bullseye`（glibc 2.31）→ `python:3.11-bookworm`（glibc 2.36），tag 改为 `qt6-builder-bookworm:py311`：PyQt6 6.12 的 Linux wheel 只有 `manylinux_2_34`/`manylinux_2_39`，bullseye 装不上
+- 代价：Linux 产物最低要求 **glibc ≥ 2.36**（Debian 12 / Ubuntu 23.04+ / Fedora 37+），**Ubuntu 22.04（2.35）及更老系统不再支持**
+- 构建脚本、`docs/build/*`、gotchas #46、linux-gap 3.3b 同步更新
+
+#### 🚀 功能增强
+- 同名文件/目录冲突对话框新增「保留两份」，自动追加序号（`report.txt` → `report (2).txt`），按钮悬浮提示显示实际将保存的文件名
+
+#### 🐛 缺陷修复
+- 修复超大图标视图不能用鼠标框选 / Shift / Ctrl 多选（写死 `SingleSelection`）；右键菜单改用窗格的文件菜单（此前冒泡到主窗口标签栏，弹出「新建标签页」）
+- 超大图标视图的复制/剪切/删除/重命名/压缩/批量重命名/Ctrl+A 改为统一读取当前视图的选中项
+- 修复双击文件触发两个打开动作（双开）
+- 修复从压缩包内读取文件时无图标；解压遇同名文件改为询问覆盖
+- 修复目录项 Shift 多选与拖拽失效（目录项缺少 `ItemIsDragEnabled`）
+- Linux：Qt6 输入法优先走 ibus，规避 fcitx4/无匹配插件导致打不出中文
+
+#### 🔧 工程
+- 新增统一构建编排器 `scripts/build.py`；Linux 构建支持 direct / proxy / auto 三种网络模式
+- 抽出可共享的 `qt6-builder` 基座；Linux 产物内置 CJK 字体；新增运行时 Docker 镜像
+
+---
+
 ### v1.9.023 — 2026-09-23（开发分支 dev/shell-behavior-smb-perf）
 
 > 修一个用户现场报的粘贴缺陷：**在系统文件管理器里复制了照片，回 pan4dex 粘贴，粘出来的却是早先在 pan4dex 里复制的文件**。

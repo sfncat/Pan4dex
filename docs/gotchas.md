@@ -934,10 +934,12 @@ GUI 就 exit 1，栈在 `main.py: install_signal_handlers`：
    当成 `--add-data` 的值吞掉；PyInstaller 只报 “Wrong syntax, should be --add-data=SOURCE:DEST”，
    **完全不提真正的错处**（参数在宿主侧就错了一个字）。同族：`for x in "a"⟨换行⟩"b"; do` 是
    语法错 —— `for` 的 in 列表里换行就是结束符，多行字面量必须用数组。
-3. **镜像不可重建：bullseye 的 LTS 刚结束**。`deb.debian.org` 上的 `bullseye-security`
-   归档已被搬走，Dockerfile 原样的 `apt-get update` 会拿到一堆 `+deb11uNN` 的 404（exit 100）。
-   改法：换 `archive.debian.org`、删掉 security 源那一行、`-o Acquire::Check-Valid-Until=false`
-   （EOL 发行版没有 security 通道，这是“还要兼容旧 glibc 目标机”的代价，不是能在这层修好的）。
+3. **镜像不可重建：基础镜像发行版会 EOL**。曾因 bullseye LTS 结束，`deb.debian.org` 上的
+   `bullseye-security` 被搬走，Dockerfile 原样的 `apt-get update` 拿到一堆 `+deb11uNN` 的 404（exit 100）；
+   当时的临时解法是换 `archive.debian.org` + `-o Acquire::Check-Valid-Until=false`。
+   **现状（PyQt6 6.12 起）已换 Debian 12 bookworm（glibc 2.36）**：6.12 的 Linux wheel 只有
+   manylinux_2_34/2_39，bullseye(2.31) 装不上；bookworm 在支持期内，apt 走官方源，那段换源补丁已删除。
+   这条的长期教训不变：**基础镜像的 EOL 会悄悄变成“构建不可重现”**。
 
 **方法论**：“镜像存在”不等于“Dockerfile 能构建”。构建脚本里的“镜像已存在就跳过构建”
 正好把这个坏状态藏住了 —— 只要不主动 `docker rmi`，没人会知道它早就建不出来了。
@@ -1269,6 +1271,27 @@ import 的那一刻才炸；`0f9e6e9`（v1.9.020）之后就没再跑过一次�
   `QMessageBox` 替掉。
 - 发布前跑完整 `tests/`；**跑不完就是跑不过**，不存在「只是挂住、跟本次改动无关」（第 44 条同源：
   基线是整场套件的状态，不是被单独点亮的那几条）。
+
+### 57. 子控件不接右键菜单，菜单会一路冒泡到主窗口的 QTabWidget
+
+**现象**：超大图标视图（`ThumbnailView`）里右键，弹出的是「新建标签页 / 隐藏标签栏」——主窗口
+标签栏的菜单；同时该视图写死 `SingleSelection`，鼠标框选、Shift/Ctrl 多选全部无效。
+
+**根因**：
+
+1. `QListWidget` 的默认 `contextMenuPolicy` 是 `DefaultContextMenu`，`QAbstractScrollArea` 不处理时
+   事件继续向上传给父控件；窗格又是主窗口 `QTabWidget` 页面的子控件，最终落到
+   `tab_widget` 的 `CustomContextMenu` → `show_tab_context_menu`。所以不是「窗格菜单选错了项」，
+   而是**根本没有走到窗格的菜单**。
+2. 选中项只从 `tree_view.selectedIndexes()` 取，大图标视图的条目没有 `QModelIndex`，即使菜单
+   弹出来也读不到选中的图。
+
+**修法**：图标视图自己设 `CustomContextMenu` 并接窗格的菜单实现；选中路径统一由
+`Pane._paths_from_selection()` 出口（按当前显示的视图分流）。右键点击未选中项时先只选它。
+顺带把 `Ctrl+A`、批量重命名、F2 重命名、Delete 都改成走这个出口。
+
+**规矩**：独立控件要自己声明右键策略，别指望「父控件会兜住」；「读选中项」这类能力只能有一个
+出口函数，否则每新增一个视图都要在七八处补一遍，漏一处就是静默失效。
 
 ---
 

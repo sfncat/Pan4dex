@@ -6,7 +6,7 @@ RELEASES_DIR="$(pwd)/releases"
 # 镜像可用 DOCKER_IMAGE 覆盖：改了 packaging/Dockerfile-linux 后想先拿新镜像做 A/B
 # （不动旧镜像）时，构一个 `pan4dex-builder-linux:py311` 之类的临时 tag 再传进来。
 DOCKER_IMAGE="${DOCKER_IMAGE:-pan4dex-builder-linux}"
-BASE_IMAGE="${BASE_IMAGE:-qt6-builder-bullseye:py311}"
+BASE_IMAGE="${BASE_IMAGE:-qt6-builder-bookworm:py311}"
 CONTAINER_NAME="pan4dex-build-linux"
 
 # 能直接访问 docker daemon 时不要 sudo（docker 在用户组里、或已在容器/root 环境下时，
@@ -27,7 +27,7 @@ NO_PROXY="${NO_PROXY:-localhost,127.0.0.1,::1}"
 
 # 从“构建容器同一网络视角”探某 host:port 的 TCP 可达性（bridge + host-gateway）
 _container_reachable() {
-    [ "$($DOCKER run --rm --add-host=host.docker.internal:host-gateway python:3.11-bullseye \
+    [ "$($DOCKER run --rm --add-host=host.docker.internal:host-gateway python:3.11-bookworm \
         bash -c "timeout 6 bash -c '</dev/tcp/$1/$2' 2>/dev/null && echo R || echo N" 2>/dev/null)" = "R" ]
 }
 
@@ -70,7 +70,7 @@ if [ "$BUILD_NET" = "proxy" ] && [ "${PROXY_PREFLIGHT:-1}" = "1" ]; then
     _hp=$(printf '%s' "$PROXY_URL" | sed -E 's#^[a-zA-Z][a-zA-Z0-9+.-]*://##; s#/.*##')
     _ph=${_hp%:*}; _pp=${_hp##*:}
     echo "[preflight] 从容器网络探测代理 ${_ph}:${_pp} 可达性…"
-    _r=$($DOCKER run --rm --add-host=host.docker.internal:host-gateway python:3.11-bullseye \
+    _r=$($DOCKER run --rm --add-host=host.docker.internal:host-gateway python:3.11-bookworm \
           bash -c "timeout 5 bash -c '</dev/tcp/${_ph}/${_pp}' 2>/dev/null && echo REACHABLE || echo UNREACHABLE" 2>/dev/null)
     if [ "$_r" != "REACHABLE" ]; then
         echo "✗ 预检失败：容器内连不到代理 ${_ph}:${_pp}（结果=${_r:-UNKNOWN}），已中止。"

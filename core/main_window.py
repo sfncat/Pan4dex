@@ -1057,7 +1057,7 @@ class MainWindow(QMainWindow):
         """全选操作"""
         pane = self.target_pane()
         if pane:
-            pane.tree_view.selectAll()
+            pane.select_all_current_view()
 
     def on_refresh(self):
         """刷新操作（F5）"""
@@ -1255,11 +1255,8 @@ class MainWindow(QMainWindow):
         if current_widget:
             pane = current_widget.get_active_pane()
             if pane:
-                indexes = pane.tree_view.selectedIndexes()
-                files = []
-                for index in indexes:
-                    if index.column() == 0:
-                        files.append(pane.model.filePath(pane._map_to_source(index)))
+                # 走窗格的选中路径出口：超大图标视图的选中项没有 QModelIndex
+                files = pane._paths_from_selection()
                 
                 if files:
                     dialog = BatchRenameDialog(files, self)

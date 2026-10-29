@@ -1,14 +1,14 @@
 # ============================================================================
 #  Pan4dex Linux 构建镜像 —— 基于通用基座，只补 Pan4dex 专属依赖
 # ----------------------------------------------------------------------------
-#  基座 packaging/Dockerfile-qt6-builder 提供：Debian 11 bullseye(glibc 2.31)、
-#  Qt6/xcb/X/GL 运行库、Xvfb/offscreen、PyQt6 6.9.1 与 PyInstaller 6.22.3（已锁版本）。
+#  基座 packaging/Dockerfile-qt6-builder 提供：Debian 12 bookworm(glibc 2.36)、
+#  Qt6/xcb/X/GL 运行库、Xvfb/offscreen、PyQt6 6.12 与 PyInstaller 6.22.3（已锁版本）。
 #  本文件只装 Pan4dex 自己的库；Qt6 与 PyInstaller 不要在这里重复安装。
 #
 #  构建入口：scripts/build-linux-docker.sh（会先确保基座镜像存在）
 #  基座 tag 可用 BASE_IMAGE 覆盖（脚本里同名变量），此处 ARG 与之默认一致。
 # ============================================================================
-ARG BASE_IMAGE=qt6-builder-bullseye:py311
+ARG BASE_IMAGE=qt6-builder-bookworm:py311
 FROM ${BASE_IMAGE}
 
 WORKDIR /app

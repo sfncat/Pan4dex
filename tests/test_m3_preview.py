@@ -153,3 +153,67 @@ class TestDeadCodeCheck:
         # grep 应该只找到定义本身
         assert len(found_lines) >= 1, f"Expected class definition line, got none"
         assert "class ThumbnailDelegate" in found_lines[0], "第一行必须是类定义"
+
+
+class TestThumbnailSelection:
+    """超大图标视图：多选与右键菜单必须走文件列表那一套
+
+    回归点（v1.9.026）：
+    - 大图标视图曾写死 SingleSelection，鼠标框选/Shift/Ctrl 多选全部失效
+    - 右键菜单曾向上冒泡到主窗口 QTabWidget，弹出的是「新建标签页」
+    """
+
+    def test_extended_selection_and_selected_paths(self, qtbot, tmp_path):
+        from widgets.thumbnail_view import ThumbnailView
+
+        for name in ("a.txt", "b.txt"):
+            (tmp_path / name).write_text("x", encoding="utf-8")
+        view = ThumbnailView()
+        qtbot.addWidget(view)
+        view.load_directory(str(tmp_path))
+
+        assert view.selectionMode() == view.SelectionMode.ExtendedSelection
+        assert view.count() == 2
+        view.item(0).setSelected(True)
+        view.item(1).setSelected(True)
+        names = sorted(os.path.basename(p) for p in view.selected_paths())
+        assert names == ["a.txt", "b.txt"]
+
+    def test_pane_context_menu_targets_thumbnail_selection(self, qtbot, tmp_path):
+        """右键点未选中项 → 只选它；点在已选中的多项内 → 保留整组"""
+        from core.pane import Pane
+        from PyQt6.QtCore import QPoint, Qt
+
+        for name in ("a.txt", "b.txt", "c.txt"):
+            (tmp_path / name).write_text("x", encoding="utf-8")
+        pane = Pane("t_thumb_menu", start_path=str(tmp_path))
+        qtbot.addWidget(pane)
+        pane.show()
+        pane.on_view_mode_changed("xlarge")
+        view = pane.thumbnail_view
+        qtbot.waitUntil(lambda: view.count() == 3, timeout=5000)
+
+        seen = {}
+        pane._show_file_context_menu = lambda paths: seen.setdefault("paths", list(paths))
+
+        first = view.item(0)
+        pane.show_thumbnail_context_menu(view.visualItemRect(first).center())
+        assert seen["paths"] == [first.data(Qt.ItemDataRole.UserRole)]
+        assert view.selectedItems() == [first]
+
+        # 多点一项后再在已选中的项上右键：整组保留
+        second = view.item(1)
+        second.setSelected(True)
+        seen.clear()
+        pane.show_thumbnail_context_menu(view.visualItemRect(second).center())
+        assert len(seen["paths"]) == 2
+
+        # 无选中时右键空白处 → 空列表（走「新建文件夹 / 粘贴」那一支）
+        view.clearSelection()
+        seen.clear()
+        pane.show_thumbnail_context_menu(
+            QPoint(view.viewport().width() - 2, view.viewport().height() - 2))
+        assert seen["paths"] == []
+
+        pane.deleteLater()
+

@@ -10,7 +10,7 @@ Pan4dex 有两个产物，受两条正交的约束决定“怎么编”：
 | 产物 | 只能在哪编译 | 为什么 |
 |---|---|---|
 | **Windows**（onedir + `.zip`） | **必须在 Windows** | PyInstaller 不能跨平台，Windows 的 `.exe`/DLL 只能在 Windows 生成 |
-| **Linux**（onefile ELF） | **用 Docker 在任何能跑 Docker 的宿主上** | 主用 Linux 发行版 glibc 版本偏高，直接编出的产物向后兼容差；Docker 把构建钉在 `python:3.11-bullseye`（glibc 2.31）上，产物兼容老系统 |
+| **Linux**（onefile ELF） | **用 Docker 在任何能跑 Docker 的宿主上** | 主用 Linux 发行版 glibc 版本偏高，直接编出的产物向后兼容差；Docker 把构建钉在 `python:3.11-bookworm`（glibc 2.36，PyQt6 6.12 wheel 的最低平台）上 |
 
 所以“四种场景”其实是 **{Windows, Linux} × {本机, 借另一台/另一环境}**：
 
@@ -34,7 +34,7 @@ Pan4dex 有两个产物，受两条正交的约束决定“怎么编”：
 
 L1（裸 Linux）与 L2（WSL）**共用完全相同的两份东西**：
 - 构建脚本 `scripts/build-linux-docker.sh`（唯一入口，对宿主是 WSL 还是裸 Linux 无感）
-- 镜像定义 `packaging/Dockerfile-linux`（唯一镜像，bullseye 老 glibc）
+- 镜像定义 `packaging/Dockerfile-linux`（唯一镜像，bookworm/glibc 2.36 基座）
 
 差异**只在“前置准备/过程”**：WSL 要多做“装 Docker Engine + 配代理/网络 + CRLF 处理”，裸 Linux 只要装好 Docker。产物字节、版本、命令完全一致。**不要因为环境不同去复制 Dockerfile**——需要区分的是过程脚本，不是镜像定义。
 
@@ -61,7 +61,7 @@ python scripts/build.py linux
 - [build-windows.md](build-windows.md)：W1 本机、W2 从 Linux 经 SSH 远程到 Windows。
 - [build-linux.md](build-linux.md)：L1 裸 Linux+Docker、L2 Windows+WSL+Docker，共用镜像，中文与验证。
 - [legacy-multimachine.md](legacy-multimachine.md)：退役多机编排与断链脚本归档。
-- [qt6-builder-base.md](qt6-builder-base.md)：通用 PyQt6 构建基座 `qt6-builder-bullseye`（可共享给其他 Qt6 项目）。
+- [qt6-builder-base.md](qt6-builder-base.md)：通用 PyQt6 构建基座 `qt6-builder-bookworm`（可共享给其他 Qt6 项目）。
 
 ## 相关源文件
 
