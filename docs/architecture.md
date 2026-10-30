@@ -71,7 +71,7 @@
 
 | 模块 | 职责 |
 |---|---|
-| `app_config.py` | 应用级常量与发布元数据（`APP_NAME` / `VERSION` / `BUILD_TIME` / 默认主题 / 窗口最小尺寸）；`BUILD_TIME` 由构建脚本写盘。**没有 QSettings 封装层**（旧表里的 `settings.py` 不存在）：主窗口、窗格、设置对话框各自直接 `QSettings(ORG_NAME, APP_NAME)` 读写自己的键 |
+| `app_config.py` | 应用级常量与发布元数据（`APP_NAME` / `VERSION` / `BUILD_TIME` / 默认主题 / 窗口最小尺寸）；`BUILD_TIME` 由构建脚本生成的 `config/_build_info.py` 提供（未入库，打包后删除），源码运行回落为空。**没有 QSettings 封装层**（旧表里的 `settings.py` 不存在）：主窗口、窗格、设置对话框各自直接 `QSettings(ORG_NAME, APP_NAME)` 读写自己的键 |
 | `paths.py` | `default_config_dir()`：用户级 JSON 存储的唯一落点（win `%APPDATA%/pan4dex`，其余 `~/.config/pan4dex`），文件关联、已保存搜索与收藏夹共用 |
 | `file_associations.py` | 文件类型 → 应用映射的增删改查（配置目录向 `paths.py` 委托） |
 | `saved_searches.py` | `SavedSearchStore`：已保存的搜索条件（清单 20.4）单文件 JSON，存的是真正喂给 worker 的 params；读坏当空表、逐条校验、上限 50 条、写失败返回 (False, 文本) 而不抛 |

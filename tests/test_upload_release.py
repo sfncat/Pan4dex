@@ -12,6 +12,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
+import upload_release  # noqa: E402
 from upload_release import AlreadyExists, UploadError, upload_artifact  # noqa: E402
 
 _CSRF = "csrf-test-token"
@@ -85,6 +86,12 @@ class _Handler(BaseHTTPRequestHandler):
         self._send(404, "not found")
 
 
+@pytest.fixture(autouse=True)
+def _isolate_dotenv(tmp_path, monkeypatch):
+    """别读到仓库里真实存在的 server/update-server/.env"""
+    monkeypatch.setattr(upload_release, "DOTENV_PATH", tmp_path / "missing.env")
+
+
 @pytest.fixture()
 def server(monkeypatch):
     _State.password = "secret"
@@ -137,3 +144,28 @@ def test_upload_requires_password_outside_tty(server, tmp_path, monkeypatch):
     with pytest.raises(UploadError, match="管理口令"):
         upload_artifact(_artifact(tmp_path), "windows", "1.9.028",
                         config={"server_url": server})
+
+
+def test_password_from_dotenv(server, tmp_path, monkeypatch):
+    """仓库里的 server/update-server/.env 与服务器共用，不另存明文到 json"""
+    monkeypatch.delenv("PAN4DEX_UPDATE_ADMIN_PASSWORD", raising=False)
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "# 注释\n"
+        'export PAN4DEX_UPDATE_ADMIN_PASSWORD="secret"\n'
+        "PAN4DEX_UPDATE_PUBLIC_BASE_URL=http://192.168.5.230:23011\n",
+        encoding="utf-8")
+    monkeypatch.setattr(upload_release, "DOTENV_PATH", env_file)
+    result = upload_artifact(_artifact(tmp_path), "windows", "1.9.028",
+                             config={"server_url": server, "timeout_seconds": 10})
+    assert result["ok"] is True
+
+
+def test_env_var_wins_over_dotenv(server, tmp_path, monkeypatch):
+    env_file = tmp_path / ".env"
+    env_file.write_text("PAN4DEX_UPDATE_ADMIN_PASSWORD=wrong\n", encoding="utf-8")
+    monkeypatch.setattr(upload_release, "DOTENV_PATH", env_file)
+    monkeypatch.setenv("PAN4DEX_UPDATE_ADMIN_PASSWORD", "secret")
+    result = upload_artifact(_artifact(tmp_path), "windows", "1.9.028",
+                             config={"server_url": server, "timeout_seconds": 10})
+    assert result["ok"] is True

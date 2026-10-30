@@ -6,8 +6,10 @@
     python scripts/upload_release.py --platform windows releases/pan4dex-1.9.028.zip
 
 服务器地址读 `scripts/update_server.json`；管理口令按优先级取
-环境变量 PAN4DEX_UPDATE_ADMIN_PASSWORD > `scripts/update_server.local.json`
-（本地私人文件，不入库）> 交互输入。只用标准库，构建机不需要额外依赖。
+环境变量 PAN4DEX_UPDATE_ADMIN_PASSWORD > `server/update-server/.env`
+（与服务器同一份格式，已被 server/.gitignore 排除）> 交互输入。
+口令只放在被 gitignore 的 .env 或环境变量里，不写入任何入库文件。
+只用标准库，构建机不需要额外依赖。
 """
 from __future__ import annotations
 
@@ -29,7 +31,8 @@ from http.cookiejar import CookieJar
 from pathlib import Path
 
 CONFIG_PATH = Path(__file__).with_name("update_server.json")
-LOCAL_CONFIG_PATH = Path(__file__).with_name("update_server.local.json")
+# 与更新服务器共用同一份 .env（server/.gitignore 已排除），口令不另存
+DOTENV_PATH = Path(__file__).resolve().parent.parent / "server" / "update-server" / ".env"
 
 DEFAULT_CONFIG = {
     "server_url": "http://192.168.5.230:23011",
@@ -61,26 +64,48 @@ class AlreadyExists(UploadError):
 
 def load_config() -> dict:
     config = dict(DEFAULT_CONFIG)
-    for path in (CONFIG_PATH, LOCAL_CONFIG_PATH):
-        if path.is_file():
-            try:
-                config.update(json.loads(path.read_text(encoding="utf-8")))
-            except (OSError, ValueError) as exc:
-                raise UploadError(f"配置文件读取失败 {path}: {exc}") from exc
+    if CONFIG_PATH.is_file():
+        try:
+            config.update(json.loads(CONFIG_PATH.read_text(encoding="utf-8")))
+        except (OSError, ValueError) as exc:
+            raise UploadError(f"配置文件读取失败 {CONFIG_PATH}: {exc}") from exc
     return config
+
+
+def _read_dotenv(path: Path) -> dict:
+    """读 KEY=VALUE 形式的 .env（支持注释、export、单双引号）"""
+    values = {}
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return values
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[7:].lstrip()
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        values[key.strip()] = value
+    return values
 
 
 def _admin_password(config: dict) -> str:
     password = os.environ.get("PAN4DEX_UPDATE_ADMIN_PASSWORD", "").strip()
     if password:
         return password
-    password = str(config.get("admin_password") or "").strip()
+    password = _read_dotenv(DOTENV_PATH).get("PAN4DEX_UPDATE_ADMIN_PASSWORD", "").strip()
     if password:
         return password
     if not sys.stdin or not sys.stdin.isatty():
         raise UploadError(
             "没有管理口令：请设置环境变量 PAN4DEX_UPDATE_ADMIN_PASSWORD，"
-            f"或写入 {LOCAL_CONFIG_PATH.name}")
+            f"或把 PAN4DEX_UPDATE_ADMIN_PASSWORD 写进 {DOTENV_PATH}")
     password = getpass.getpass("更新服务器管理口令: ")
     if not password:
         raise UploadError("管理口令为空")

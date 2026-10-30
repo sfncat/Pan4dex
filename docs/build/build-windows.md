@@ -27,7 +27,7 @@ python scripts\build.py windows      # 或直接：python scripts\build_windows.
 ```
 
 `build.py windows` 只是转发到 `build_windows.py`，并会自读版本号。它做三件事：
-1. 把 `BUILD_TIME` 回写 `config/app_config.py`（构建时间进产物“关于”）；
+1. 打包前生成 `config/_build_info.py`（编译时间，已 gitignore，打包后删除），时间戳随产物进「关于」；
 2. 临时移出 Linux 专用二进制（`resources/tools/exiftool-linux`、`7z/7zz`）后跑 PyInstaller `--onedir --windowed`；
 3. 产物拷到 `releases/pan4dex-<版本>/`，并压成 `releases/pan4dex-<版本>.zip`（包内顶层目录为 `pan4dex`，不带版本号）。
 

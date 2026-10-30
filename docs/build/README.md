@@ -38,8 +38,8 @@ Pan4dex 有两个产物，受两条正交的约束决定“怎么编”：
 `-U/--upload`（`build_windows.py`/`build-linux-docker.sh` 也认裸 `U`）：构建完成后经
 `scripts/upload_release.py` 走管理页同一条 `/admin/upload` 上传，`--replace` 覆盖同版本。
 
-- 服务器地址/超时：`scripts/update_server.json`（入库）。
-- 管理口令：环境变量 `PAN4DEX_UPDATE_ADMIN_PASSWORD` > `scripts/update_server.local.json`（已 gitignore）> 交互输入。
+- 服务器地址/超时：`scripts/update_server.json`（入库，不含口令）。
+- 管理口令：环境变量 `PAN4DEX_UPDATE_ADMIN_PASSWORD` > `server/update-server/.env`（已 gitignore，与服务器共用）> 交互输入。
 - 上传失败不会删产物，脚本以非零退出码收尾。
 
 ## 两个“版本”别混淆

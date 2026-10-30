@@ -6,8 +6,8 @@
 
 - Windows 构建必须在 Windows 上跑；Linux 构建走 scripts/build-linux-docker.sh
   （Windows 上通过 Git Bash 调起，需要 Docker Desktop 在运行）。
-- `-U` 会把两个平台的产物分别上传到更新服务器，地址/口令见
-  scripts/update_server.json 与 scripts/update_server.local.json。
+- `-U` 会把两个平台的产物分别上传到更新服务器，地址见
+  scripts/update_server.json，口令取环境变量或 server/update-server/.env。
 - 任一平台构建或上传失败，脚本以非零退出码结束；已成功的产物保留。
 """
 from __future__ import annotations

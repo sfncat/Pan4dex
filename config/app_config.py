@@ -5,18 +5,24 @@
 
 - 改版本号 / 应用名 / 组织名 / 默认窗口几何 / 默认主题，只需编辑本文件
 - 构建脚本 scripts/build_windows.py 从本文件读取 VERSION，
-  并在构建时自动更新 BUILD_TIME（不会再改写 main.py）
+  编译时间则由其在打包前生成 config/_build_info.py（未入库，打包后删除）
 - main.py / core/main_window.py / config/theme_manager.py 等仅从这里 import 使用
 
-注意：BUILD_TIME 在源码开发运行时应保持空字符串，
-由构建脚本在打包时写入实际编译时间。
+注意：BUILD_TIME 不在本文件写死，源码开发运行时为空（显示 dev），
+正式产物里是打包那一刻的编译时间。
 """
 
 # ---- 发布元数据 ----
 APP_NAME = "Pan4dex"                  # 应用英文名
 APP_NAME_CN = "万格"                    # 应用中文名
 VERSION = "1.9.027"                    # 版本号（开发分支 dev/shell-behavior-smb-perf 从 1.9.000 起每次发布末位 +1）
-BUILD_TIME = "2026-10-30 12:30:05"                      # 编译时间（YYYY-MM-DD HH:MM:SS），构建时自动写入；源码运行留空
+
+# 编译时间（YYYY-MM-DD HH:MM:SS）：构建脚本打包前生成 config/_build_info.py（已 gitignore，
+# 打包后删除），让时间戳随包内嵌又不弄脏工作区；源码运行没有该文件，按 dev 显示。
+try:
+    from ._build_info import BUILD_TIME
+except ImportError:
+    BUILD_TIME = ""
 
 # ---- 应用级常量 ----
 ORG_NAME = "sfncat"                    # QSettings 组织名（决定配置写入位置）

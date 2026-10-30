@@ -84,9 +84,9 @@ python scripts/build_windows.py -U      # 只 Windows
 bash scripts/build-linux-docker.sh -U   # 只 Linux
 ```
 
-服务器地址在 `scripts/update_server.json`；管理口令放
-`scripts/update_server.local.json`（已 gitignore）或环境变量
-`PAN4DEX_UPDATE_ADMIN_PASSWORD`。同版本重复上传会报 409，需要时加 `--replace`。
+服务器地址在 `scripts/update_server.json`；管理口令优先读环境变量
+`PAN4DEX_UPDATE_ADMIN_PASSWORD`，没有就用本目录的 `.env`（与服务器同一份，
+已 gitignore）。同版本重复上传会报 409，需要时加 `--replace`。
 
 ## 客户端接口
 

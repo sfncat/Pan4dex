@@ -38,17 +38,14 @@ print(f"Building Pan4dex {VERSION} for Windows...")
 print(f"Working dir: {os.getcwd()}")
 print(f"Script: {script_path}")
 
-# 更新全局配置 config/app_config.py 中的编译时间（不再改写 main.py）
-import re
+# 编译时间写进临时生成的 config/_build_info.py（已 gitignore，打包后删除）：
+# 不再改写受版本控制的 app_config.py，构建不再弄脏工作区。
 build_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-cfg_file = project_root / "config" / "app_config.py"
-raw = cfg_file.read_bytes()
-try:
-    content = raw.decode("utf-8")
-except UnicodeDecodeError:
-    content = raw.decode("gbk", errors="ignore")
-content = re.sub(r'^BUILD_TIME\s*=\s*"[^"]*"', f'BUILD_TIME = "{build_time}"', content, flags=re.M)
-cfg_file.write_text(content, encoding="utf-8", newline="")  # newline="" 保持原行尾，避免 CRLF 文件在 Windows 下累积 \r
+build_info = project_root / "config" / "_build_info.py"
+build_info.write_text(
+    f'# 由构建脚本生成，勿提交（见 .gitignore）\nBUILD_TIME = "{build_time}"\n',
+    encoding="utf-8",
+)
 print(f"Build time: {build_time}")
 
 # Find imageformats path dynamically
@@ -156,7 +153,10 @@ cmd = [
 ]
 
 print(f"Running: {' '.join(cmd)}")
-result = subprocess.run(cmd)
+try:
+    result = subprocess.run(cmd)
+finally:
+    build_info.unlink(missing_ok=True)
 if result.returncode != 0:
     print("Build failed!")
     sys.exit(1)

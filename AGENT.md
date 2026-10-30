@@ -86,8 +86,8 @@ python scripts/build_windows.py                 # Windows 本机 → releases/pa
 2. `docs/changelog.md` 新增分节；功能状态变了就同步 `docs/feature-checklist.md`（状态表）、
    `docs/todo.md`（销账那条改 ✅ 但**保留整行**）、`docs/linux-gap.md` / `docs/gotchas.md`——
    **状态改了正文没跟上，比没改更坏**。
-3. 出产物后由 `scripts/build_windows.py` 写回 `BUILD_TIME`，单独一条 `chore(build)` 提交，保持
-   「源码 BUILD_TIME == 已发布二进制」这条惯例。
+3. `BUILD_TIME` 不回写源码：构建脚本打包前生成 `config/_build_info.py`（已 gitignore），
+   打包后删除；仓库保持干净，也不再发 `chore(build)` 时间戳提交。
 4. 打 tag `v<版本>`。
 5. 前置条件是**完整 `tests/` 跑得出汇总行**（不是只跑本次改动相关的文件）：`pytest tests/ -q`
    跑不完就是跑不过（#56）。

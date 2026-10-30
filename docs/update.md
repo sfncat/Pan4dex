@@ -239,8 +239,9 @@ python scripts/upload_release.py --platform linux --file releases/pan4dex-1.9.02
 ```
 
 - 地址/超时/默认发布说明：`scripts/update_server.json`（入库）。
-- 管理口令：环境变量 `PAN4DEX_UPDATE_ADMIN_PASSWORD` 优先，其次
-  `scripts/update_server.local.json`（已 gitignore），都没有时交互输入。
+- 管理口令：环境变量 `PAN4DEX_UPDATE_ADMIN_PASSWORD` 优先，其次读
+  `server/update-server/.env`（与服务器共用同一份，已被 `server/.gitignore` 排除），
+  都没有时交互输入。口令不进 `scripts/update_server.json` 等入库文件。
 - 同平台同版本已存在 → 上传报 409 并提示；加 `--replace` 覆盖。
 - 上传失败时构建产物保留、退出码非零，发布流程不会把“构建成功”误报成“已发布”。
 

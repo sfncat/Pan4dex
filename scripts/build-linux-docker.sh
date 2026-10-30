@@ -27,6 +27,15 @@ find_python() {
 }
 
 VERSION=${ARG_VERSION:-$("$(find_python)" -c "import re; m=re.search(r'^VERSION\s*=\s*\"([^\"]+)\"', open('config/app_config.py', encoding='utf-8').read(), re.M); print(m.group(1))")}
+
+# 编译时间写进临时生成的 config/_build_info.py（已 gitignore，退出时删除）：
+# 不再 sed 改写受版本控制的 app_config.py，构建不再弄脏工作区。
+# 时间在宿主按东八区算（容器内 date 是 UTC，直接用会差 8 小时）。
+BUILD_TIME="$(TZ=Asia/Shanghai date '+%Y-%m-%d %H:%M:%S')"
+BUILD_INFO="config/_build_info.py"
+trap 'rm -f "$BUILD_INFO"' EXIT
+printf '# 由构建脚本生成，勿提交（见 .gitignore）\nBUILD_TIME = "%s"\n' "$BUILD_TIME" > "$BUILD_INFO"
+echo "编译时间: ${BUILD_TIME}"
 RELEASES_DIR="$(pwd)/releases"
 # 镜像可用 DOCKER_IMAGE 覆盖：改了 packaging/Dockerfile-linux 后想先拿新镜像做 A/B
 # （不动旧镜像）时，构一个 `pan4dex-builder-linux:py311` 之类的临时 tag 再传进来。
@@ -184,19 +193,15 @@ $DOCKER run --name ${CONTAINER_NAME} \
     -v "$(pwd):/app" \
     -e "VERSION=${VERSION}" \
     -e "DATA_ARGS=${DATA_ARGS[*]}" \
-    -e "PYBUILD_TIME=$(TZ=Asia/Shanghai date '+%Y-%m-%d %H:%M:%S')" \
     ${DOCKER_IMAGE} \
     bash -c "
         set -e
         cd /app
         
-        # 版本号 + 编译时间写入 config/app_config.py：
-        # - VERSION 必须用传入的版本号覆盖（构建现场源码可能滞后，否则
-        #   打包进程序的版本号与产物名不一致）
-        # - BUILD_TIME 由宿主按东八区算好传入（容器内 date 是 UTC，直接
-        #   取会差 8 小时）
+        # 版本号必须用传入的版本号覆盖：构建现场源码可能滞后，否则
+        # 打包进程序的版本号与产物名不一致。
+        # （编译时间不在这里改：_build_info.py 已由宿主生成，随包内嵌）
         sed -i \"s/^VERSION = \\\"[^\\\"]*\\\"/VERSION = \\\"\${VERSION}\\\"/\" config/app_config.py
-        sed -i \"s/^BUILD_TIME = \\\"[^\\\"]*\\\"/BUILD_TIME = \\\"\${PYBUILD_TIME}\\\"/\" config/app_config.py
         
         # 构建：资源清单由宿主算好、经 DATA_ARGS 环境变量传进来（上面那段「目录存在才
         # 带」）。下面故意写 \$DATA_ARGS：这块整体是个双引号字符串，不转义就会被宿主
@@ -207,13 +212,17 @@ $DOCKER run --name ${CONTAINER_NAME} \
         # 相对路径、无空格，依赖词分割是安全的。
         # 不带 --icon：Linux 下可执行文件本身不显示图标，任务栏图标是运行时
         # setWindowIcon 从 resources/icons 读的 —— 所以图标目录必须在，.ico 文件不必要。
+        # 中间产物放容器 /tmp：仓库里的 dist/ 是 Windows 构建的 onedir，
+        # 直接写 dist/pan4dex 会与它互顶（PyInstaller 报 output directory not empty）。
+        # 不给 --specpath：spec 里的 --add-data 相对路径要按 /app 解析，放到 /tmp 会找不到资源。
         pyinstaller --onefile --windowed --name=pan4dex \
+            --distpath /tmp/dist-linux --workpath /tmp/build-linux \
             \$DATA_ARGS \
             main.py
         
         # 移动到 releases
         mkdir -p /app/releases
-        mv dist/pan4dex /app/releases/pan4dex-${VERSION}-linux
+        mv /tmp/dist-linux/pan4dex /app/releases/pan4dex-${VERSION}-linux
         chmod +x /app/releases/pan4dex-${VERSION}-linux
     "
 

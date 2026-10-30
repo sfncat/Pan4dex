@@ -9,7 +9,7 @@
 | 状态 | 脚本 | 判定依据 |
 |---|---|---|
 | ✅ 现行入口 | `scripts/build.py` | 统一编排器：`linux`/`windows` 薄分发到下面两个真入口，带 `--dry-run`、CRLF 兼容、按需启动 Docker |
-| ✅ 现行入口 | `scripts/build-windows` → 实为 `scripts/build_windows.py` | Windows 本机真入口，onedir→`releases/pan4dex-<版本>/`+`.zip`，回写 `BUILD_TIME` |
+| ✅ 现行入口 | `scripts/build-windows` → 实为 `scripts/build_windows.py` | Windows 本机真入口，onedir→`releases/pan4dex-<版本>/`+`.zip`，打包前生成 `config/_build_info.py` 提供 `BUILD_TIME` |
 | ✅ 现行入口 | `scripts/build-linux-docker.sh` | Linux 唯一真入口，镜像 `packaging/Dockerfile-linux` |
 | ✅ 配套 | `packaging/Dockerfile-runtime`、`packaging/pan4dex-runtime-entry.sh`、`scripts/install-linux.sh`、`packaging/pan4dex.spec`(Linux 降级) | 运行时镜像 / 桌面集成 / 应急 spec |
 | ⚠️ 半旧，只在多机内网可用 | `scripts/build.sh` | 顶部自述“win54 构建 → win55 部署、Linux 转发 Docker”。第 1 步转发已对，但第 3 步仍在 win54 找 `releases/pan4dex-<版本>.exe`——**现行 Windows 产物是目录+zip，没有这个 exe**，那段必失败；54/55/58 也早不在流程里 |

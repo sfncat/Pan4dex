@@ -11,8 +11,8 @@
   python scripts/build.py windows [--version V] [-U] [--replace] [--dry-run]
   python scripts/build.py windows --remote user@host --remote-path "C:\\workspace\\Pan4dex" [--dry-run]
 
-`-U` 把产物上传到更新服务器（地址/口令见 scripts/update_server.json 与
-scripts/update_server.local.json）。
+`-U` 把产物上传到更新服务器（地址见 scripts/update_server.json，口令取
+环境变量或 server/update-server/.env）。
 
 设计约束：Dockerfile 唯一（packaging/Dockerfile-linux）。--env 只影响 Linux 的“前置检查/启动”，
 构建过程与产物完全一致；因此不需要、也不应该为不同 Linux 宿主复制 Dockerfile。

@@ -63,9 +63,9 @@ dist_onefile/
 # 取证/复现脚本与中间产物（本地跑完即弃，不入库；文档里引用它们时只写路径与结论）
 tmp/
 
+# 构建脚本打包前生成、打包后删除的编译时间（见 config/app_config.py）
+/config/_build_info.py
+
 # 例外：构建文档目录 docs/build/ 不是 PyInstaller 的 build/ 产物目录
 !docs/build/
 !docs/build/**
-
-# 本机更新服务器口令（构建 -U 上传用，不入库）
-scripts/update_server.local.json
