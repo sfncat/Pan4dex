@@ -374,6 +374,10 @@ class UpdateDialog(QDialog):
             return
         self.status_label.setText("新版本即将启动，当前窗口会关闭…")
         QApplication.processEvents()
+        # 手动「检查更新」打开的本对话框是模态 exec()：在嵌套事件循环里裸调
+        # quit() 退不出去，窗口会一直停在更新界面（安装脚本等满超时后替换失败
+        # 回滚）。先 accept() 让嵌套循环返回，再退出应用；非模态路径无副作用。
+        self.accept()
         QApplication.quit()
 
     def _show_manual_install(self, target):

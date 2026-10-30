@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 from PyQt6.QtGui import QAction
+from PyQt6.QtWidgets import QDialog
 
 from core import updater
 from core.updater import UpdateInfo
@@ -150,6 +151,29 @@ def test_dialog_reuses_verified_download(qtbot, monkeypatch, tmp_path):
     dialog._start_download()
     assert dialog._phase == "ready"
     dialog.reject()
+
+
+def test_install_accepts_before_quit(qtbot, monkeypatch):
+    """安装必须先 accept() 再退出应用：模态 exec() 的嵌套循环里裸调
+    QApplication.quit() 退不出去，窗口会停在更新界面直到安装脚本超时回滚"""
+    monkeypatch.setattr(updater, "can_install", lambda: True)
+    monkeypatch.setattr(updater, "prepare_windows_install",
+                        lambda *a, **k: ("C:/fake/install.ps1", None))
+    monkeypatch.setattr(updater, "launch_windows_installer", lambda script: None)
+
+    dialog = _make_dialog(qtbot, manual=True)
+    dialog._downloaded = "C:/fake/p.zip"
+
+    calls = []
+    monkeypatch.setattr(
+        "PyQt6.QtWidgets.QApplication.quit",
+        staticmethod(lambda: calls.append(
+            ("quit", dialog.result()))))
+
+    dialog._install()
+    assert dialog._phase == "installing"
+    # quit 执行时对话框已 accept（result == Accepted），嵌套循环能返回
+    assert calls == [("quit", int(QDialog.DialogCode.Accepted))]
 
 
 # ---------------------------------------------------------------- 设置页
