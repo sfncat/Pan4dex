@@ -95,6 +95,10 @@ class PathBar(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         
+        # 允许样式表背景真正绘制：QWidget 子类默认不画 QSS 的 background-color，
+        # 活动窗格的路径栏着色（Pane.set_active_visual）否则完全看不见
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        
         self.layout = QHBoxLayout(self)
         self.layout.setContentsMargins(2, 2, 2, 2)
         self.layout.setSpacing(2)

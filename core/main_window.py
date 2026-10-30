@@ -886,6 +886,9 @@ class MainWindow(QMainWindow):
         quad_widget.pane_activated.connect(self.on_pane_activated)
         index = self.tab_widget.addTab(quad_widget, "新标签页")
         self.tab_widget.setCurrentIndex(index)
+        # 新标签页的 pane1 立即标为活动窗格：否则启动后所有窗格都没有活动指示，
+        # 用户第一眼看不到这条视觉线索（docs/ui-audit.md C1）
+        self.on_pane_activated(quad_widget.pane1)
     
     def close_tab(self, index):
         """关闭标签页"""

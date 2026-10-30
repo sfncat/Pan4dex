@@ -58,11 +58,13 @@ class ThemeManager:
     _COLOR_TOKENS = {
         "dark": {
             "accent": "#2196F3",              # 主交互色：选中/拖拽高亮/活动窗格指示
+            "accent_soft": "rgba(33, 150, 243, 0.24)",   # 活动窗格路径栏底色
             "inactive_selection_bg": "#505050",
             "inactive_selection_fg": "#CCCCCC",
         },
         "light": {
             "accent": "#1a73e8",
+            "accent_soft": "rgba(26, 115, 232, 0.10)",
             "inactive_selection_bg": "#E3E6EA",
             "inactive_selection_fg": "#212529",
         },
@@ -94,6 +96,13 @@ class ThemeManager:
         if name == "dark":
             import qdarkstyle
             stylesheet = qdarkstyle.load_stylesheet(qt_api='pyqt6')
+            # 深色主题的键盘焦点：qdarkstyle 的焦点视觉在树/列表上几乎看不出来，
+            # 补一条边框规则（docs/ui-audit.md C1）；与浅色主题行为一致
+            accent = self._COLOR_TOKENS["dark"]["accent"]
+            stylesheet += (
+                "\nQTreeView:focus, QListWidget:focus {"
+                f" border: 1px solid {accent}; }}"
+            )
         elif name == "light":
             # 自定义现代浅色主题（比 qdarkstyle LightPalette 更美观）
             stylesheet = self._get_light_stylesheet()

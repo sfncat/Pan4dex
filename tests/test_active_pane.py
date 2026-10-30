@@ -78,6 +78,21 @@ def test_active_indicator_follows_the_switch(two_panes):
     assert "transparent" in p1.active_indicator.styleSheet()
 
 
+def test_active_pane_tints_path_bar_and_grays_inactive_selection(two_panes):
+    """活动窗格：路径栏着色；非活动窗格：选中项灰化（ui-audit C1 增强）"""
+    host, p1, p2 = two_panes
+
+    p1.set_active_visual(True)
+    assert "panePathBar" in p1.path_bar.styleSheet()
+    assert ThemeManager.color("accent_soft") in p1.path_bar.styleSheet()
+    assert p1.tree_view.styleSheet() == "", "活动窗格选中项应交给主题原色"
+
+    p1.set_active_visual(False)
+    assert p1.path_bar.styleSheet() == ""
+    assert ThemeManager.color("inactive_selection_bg") in p1.tree_view.styleSheet()
+    assert ThemeManager.color("inactive_selection_bg") in p1.thumbnail_view.styleSheet()
+
+
 def test_main_window_lights_up_only_the_active_pane(qapp, qtbot, tmp_path):
     """主窗口联动：新窗格点亮、旧窗格熄灭（真 MainWindow，pane2-4 强制建齐）"""
     from core.main_window import MainWindow

@@ -448,6 +448,6 @@ def test_current_pane_does_not_depend_on_focus_history(qtbot, tmp_path, monkeypa
     win = MainWindow()
     qtbot.addWidget(win)
     win.settings = QSettings(str(tmp_path / "prefs.ini"), QSettings.Format.IniFormat)
-    assert win._active_pane is None          # 前提：没记到任何活动窗格
+    assert win._active_pane is not None, "启动即把 pane1 标为活动窗格"
     assert win.current_pane() is not None
     assert win.current_pane() is win.tab_widget.currentWidget().pane1

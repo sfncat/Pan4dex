@@ -33,10 +33,13 @@ def first_pane(win):
 
 
 class TestTargetPaneResolution:
-    def test_falls_back_to_default_pane_when_never_activated(self, win):
-        assert win._active_pane is None, "前提：新 MainWindow 还没有任何窗格被激活过"
+    def test_falls_back_to_default_pane_without_active_pane(self, win):
+        # UI 审查修复后，新标签页的 pane1 在创建时就标为活动窗格（docs/ui-audit.md
+        # C1：启动即点亮，否则第一眼看不到任何活动指示）。这里显式清空来模拟
+        # 「记不到任何活动窗格」的状态，验证落点仍不缺失
+        win._active_pane = None
         pane = win.target_pane()
-        assert pane is not None, "从未激活过窗格时仍须给出落点，否则快捷键全部静默失灵"
+        assert pane is not None, "没有活动窗格时仍须给出落点，否则快捷键全部静默失灵"
         assert pane is first_pane(win)
 
     def test_keeps_the_last_activated_pane(self, win):

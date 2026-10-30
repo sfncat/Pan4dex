@@ -264,6 +264,11 @@ class Pane(QWidget):
         # 设置默认路径
         self.navigate_to(self.current_path)
 
+        # 初始一律按「非活动窗格」着色：pane2-4 是延迟创建的，创建时它从来
+        # 不会收到 activated，靠主窗口那一次回调也轮不到它——不在构造末尾
+        # 自涂，这些窗格就永远不会灰化（选中项会和活动窗格一个颜色）
+        self.set_active_visual(False)
+
         # 最后一步才入注册表：半途死的窗格（延迟建窗格的回调被拆窗打断等，
         # 实测现场：`init_ui` 中 `self.layout` 已被删）不得出现在跨窗格类级操作的
         # 迭代里 —— 它连 `model` 属性都没有，碰它就报 RuntimeError，会把后续每个
@@ -344,6 +349,8 @@ class Pane(QWidget):
 
         # 路径栏
         self.path_bar = PathBar()
+        # 供活动窗格着色用（QSS 按 id 只命中本容器，不波及子控件）
+        self.path_bar.setObjectName("panePathBar")
         logger.info(f"[启动计时] PathBar 创建: {(time.perf_counter()-_t0)*1000:.1f}ms")
         
         self.path_bar.path_entered.connect(self.on_path_entered)
@@ -2990,16 +2997,49 @@ class Pane(QWidget):
     #   浅色主题下一旦被调用就把整个窗格刷成深色，且长期无调用点是死代码）
 
     def set_active_visual(self, on: bool):
-        """点亮/熄灭本窗格的「活动窗格」指示条（路径栏下 2px 主色）。
+        """点亮/熄灭活动窗格视觉：路径栏底色 + 2px 主色指示条 + 非活动选中灰化。
 
-        颜色每次实时取令牌：切主题后主窗口重涂一次，指示条即换新主色。
+        颜色每次实时取令牌：切主题后主窗口重涂一次，即换新主色。
+        三层线索叠在一起，双窗格时一眼能分清 Delete/Ctrl+C 作用于哪个窗格。
         """
         self._active_visual = bool(on)
+
         indicator = getattr(self, 'active_indicator', None)
-        if indicator is None:
-            return
-        accent = ThemeManager.color('accent') if on else 'transparent'
-        indicator.setStyleSheet(f"background-color: {accent};")
+        if indicator is not None:
+            accent = ThemeManager.color('accent') if on else 'transparent'
+            indicator.setStyleSheet(f"background-color: {accent};")
+
+        # 路径栏底色：QSS 按 id 只命中容器本身，不影响按钮/输入框的既有主题样式
+        bar = getattr(self, 'path_bar', None)
+        if bar is not None:
+            if on:
+                soft = ThemeManager.color('accent_soft')
+                bar.setStyleSheet(
+                    f"QWidget#panePathBar {{ background-color: {soft}; }}")
+            else:
+                bar.setStyleSheet("")
+
+        self._apply_inactive_selection_tint(not on)
+
+    def _apply_inactive_selection_tint(self, inactive: bool):
+        """非活动窗格的选中项改用灰化令牌，避免与活动窗格的选中色抢注意力。
+
+        活动时清空 QSS，交还给主题（qdarkstyle / 浅色 CSS）的选中样式。
+        """
+        if not inactive:
+            qss = ""
+        else:
+            bg = ThemeManager.color('inactive_selection_bg')
+            fg = ThemeManager.color('inactive_selection_fg')
+            qss = (
+                f"QTreeView::item:selected {{ background-color: {bg}; color: {fg}; }}"
+                f"QTreeView::item:selected:hover {{ background-color: {bg}; }}"
+                f"QListWidget::item:selected {{ background-color: {bg}; color: {fg}; }}"
+            )
+        for view in (getattr(self, 'tree_view', None),
+                     getattr(self, 'thumbnail_view', None)):
+            if view is not None:
+                view.setStyleSheet(qss)
 
     def is_active_visual(self) -> bool:
         return getattr(self, '_active_visual', False)
