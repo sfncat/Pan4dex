@@ -426,18 +426,18 @@ def test_context_menu_has_open_with_only_for_a_single_file(
 
     selected_one()
     note = str(tmp_path / "note.txt")
-    monkeypatch.setattr(pane, "_paths_from_selection", lambda: [note])
-    pane.show_context_menu(pane.tree_view.viewport().rect().center())
+    monkeypatch.setattr(pane, "_paths_from_selection", lambda *_args: [note])
+    pane.show_file_context_menu(pane.tree_view, pane.tree_view.viewport().rect().center())
     assert any(t.startswith("打开方式") for t in submenu_titles(captured["menu"]))
 
     monkeypatch.setattr(pane, "_paths_from_selection",
-                        lambda: [str(tmp_path / "sub")])
-    pane.show_context_menu(pane.tree_view.viewport().rect().center())
+                        lambda *_args: [str(tmp_path / "sub")])
+    pane.show_file_context_menu(pane.tree_view, pane.tree_view.viewport().rect().center())
     assert not any(t.startswith("打开方式") for t in submenu_titles(captured["menu"])), \
         "目录没有「打开方式」"
 
-    monkeypatch.setattr(pane, "_paths_from_selection", lambda: [note, note])
-    pane.show_context_menu(pane.tree_view.viewport().rect().center())
+    monkeypatch.setattr(pane, "_paths_from_selection", lambda *_args: [note, note])
+    pane.show_file_context_menu(pane.tree_view, pane.tree_view.viewport().rect().center())
     assert not any(t.startswith("打开方式") for t in submenu_titles(captured["menu"])), \
         "多选暂不提供「打开方式」"
 

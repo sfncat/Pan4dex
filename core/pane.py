@@ -12,7 +12,7 @@ from PyQt6.QtWidgets import (
     QApplication, QSplitter, QDialog, QTableWidget, QHeaderView, QPushButton,
     QStyledItemDelegate
 )
-from PyQt6.QtCore import Qt, QDir, QMimeData, pyqtSignal, pyqtSlot, QThread, QPoint, QEvent, QSortFilterProxyModel, QModelIndex, QPersistentModelIndex, QUrl, QByteArray, QMetaObject, Q_ARG
+from PyQt6.QtCore import Qt, QDir, QMimeData, pyqtSignal, pyqtSlot, QThread, QPoint, QEvent, QSortFilterProxyModel, QModelIndex, QPersistentModelIndex, QItemSelectionModel, QUrl, QByteArray, QMetaObject, Q_ARG
 import os
 import sys
 
@@ -431,7 +431,9 @@ class Pane(QWidget):
         # Ctrl+Enter 是 Qt 内建的“打开持续编辑器”，不劫持
         self.tree_view.activated.connect(self._on_item_activated)
         self.tree_view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self.tree_view.customContextMenuRequested.connect(self.show_context_menu)
+        # 列表/小图标与超大图标共用同一个右键菜单入口（只是视图对象不同）
+        self.tree_view.customContextMenuRequested.connect(
+            lambda pos: self.show_file_context_menu(self.tree_view, pos))
         # 列标题右键：弹出列选择菜单，不触发窗格右键菜单
         self.tree_view.header().setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.tree_view.header().customContextMenuRequested.connect(self.show_column_menu)
@@ -460,6 +462,8 @@ class Pane(QWidget):
         # 超大图标视图（独立于 QTreeView，安全处理大图标）
         from widgets.thumbnail_view import ThumbnailView
         self.thumbnail_view = ThumbnailView()
+        # 拖拽负载要带源窗格 id，落点也要回到本窗格处理
+        self.thumbnail_view.set_drag_source_pane(self)
         self.thumbnail_view.setVisible(False)
         self.thumbnail_view.itemDoubleClicked.connect(self.on_thumbnail_item_double_clicked)
         # 右键菜单必须自己接：QListWidget 默认把 contextMenuEvent 向上抛，
@@ -467,7 +471,7 @@ class Pane(QWidget):
         # 「新建标签页」——与本窗格的文件列表菜单完全无关
         self.thumbnail_view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.thumbnail_view.customContextMenuRequested.connect(
-            self.show_thumbnail_context_menu)
+            lambda pos: self.show_file_context_menu(self.thumbnail_view, pos))
         # 选中变化：预览 + 状态栏计数（与列表视图同一套出口）
         self.thumbnail_view.itemSelectionChanged.connect(
             self.on_thumbnail_selection_changed)
@@ -986,17 +990,7 @@ class Pane(QWidget):
 
     def show_pane_tab_context_menu(self, position):
         """显示窗格标签栏右键菜单"""
-        menu = QMenu()
-        menu.setStyleSheet("""
-            QMenu {
-                background-color: #2D2D2D;
-                color: #CCCCCC;
-                border: 1px solid #404040;
-            }
-            QMenu::item:selected {
-                background-color: #404040;
-            }
-        """)
+        menu = QMenu(self)
 
         # 定位右键点中的标签
         tab_index = self.pane_tabs.tabBar().tabAt(position)
@@ -1430,16 +1424,6 @@ class Pane(QWidget):
     def show_column_menu(self, position):
         """列标题右键菜单：勾选要显示的列（名称/大小/类型/修改日期）"""
         menu = QMenu(self)
-        menu.setStyleSheet("""
-            QMenu {
-                background-color: #2D2D2D;
-                color: #CCCCCC;
-                border: 1px solid #404040;
-            }
-            QMenu::item:selected {
-                background-color: #404040;
-            }
-        """)
         model = self.tree_view.model()
         for col in range(model.columnCount()):
             title = model.headerData(col, Qt.Orientation.Horizontal, Qt.ItemDataRole.DisplayRole)
@@ -1457,28 +1441,28 @@ class Pane(QWidget):
             action.toggled.connect(_set_col_visible)
         menu.exec(self.tree_view.header().mapToGlobal(position))
 
-    def show_context_menu(self, position):
-        """文件列表右键菜单"""
-        self._show_file_context_menu(self._paths_from_selection())
+    def show_file_context_menu(self, view, position):
+        """文件视图右键菜单：列表、小图标（同一个 QTreeView）与超大图标共用一套。
 
-    def show_thumbnail_context_menu(self, position):
-        """超大图标视图右键菜单：与文件列表同一套菜单项
-
-        `customContextMenuRequested` 给的位置是控件坐标（含边框），
-        取项前先映射到 viewport。
+        菜单项只取决于当前选中项；这里只做「右键点中哪一项」的选择归一化——
+        点在未选中项上只选它，点在已选中的多项之内保留整组（与资源管理器一致）。
         """
-        view = self.thumbnail_view
-        # 位置可能是控件坐标（含边框）也可能已是 viewport 坐标，两种都试一次
-        item = view.itemAt(view.viewport().mapFrom(view, position))
-        if item is None:
-            item = view.itemAt(position)
-        if item is not None and not item.isSelected():
-            # 右键点在未选中项上：只选中它（与资源管理器一致）；
-            # 点在已选中的多项之内则保留整组选择
-            view.clearSelection()
-            item.setSelected(True)
-            view.setCurrentItem(item)
-        self._show_file_context_menu(self._paths_from_selection())
+        if view is self.thumbnail_view:
+            # customContextMenuRequested 给的是控件坐标（含边框），先映射到视口
+            item = view.itemAt(view.viewport().mapFrom(view, position))
+            if item is None:
+                item = view.itemAt(position)
+            if item is not None and not item.isSelected():
+                view.clearSelection()
+                item.setSelected(True)
+                view.setCurrentItem(item)
+        else:
+            index = view.indexAt(position)
+            if index.isValid() and not view.selectionModel().isSelected(index):
+                view.setCurrentIndex(index)
+                view.selectionModel().select(
+                    index, QItemSelectionModel.SelectionFlag.ClearAndSelect)
+        self._show_file_context_menu(self._paths_from_selection(view))
 
     def on_thumbnail_selection_changed(self):
         """超大图标视图选中变化：预览首项 + 状态栏计数"""
@@ -1494,19 +1478,13 @@ class Pane(QWidget):
             pass
 
     def _show_file_context_menu(self, paths):
-        """按选中路径构造右键菜单（文件列表与超大图标视图共用）"""
-        menu = QMenu()
-        menu.setStyleSheet("""
-            QMenu {
-                background-color: #2D2D2D;
-                color: #CCCCCC;
-                border: 1px solid #404040;
-            }
-            QMenu::item:selected {
-                background-color: #404040;
-            }
-        """)
-        
+        """按选中路径构造右键菜单（列表/小图标/超大图标共用）
+
+        配色交给 ThemeManager 的全局 QMenu 规则：在这里写死颜色会让浅色主题下
+        这些菜单仍是深色，切换主题也不跟随。
+        """
+        menu = QMenu(self)
+
         if paths:
             # 有选中项
             single_path = paths[0] if len(paths) == 1 else None
@@ -1670,17 +1648,7 @@ class Pane(QWidget):
         """目录树右键菜单：与文件列表右键菜单一致"""
         tree_view = self.pane_tree_view.tree_view
         index = tree_view.indexAt(position)
-        menu = QMenu()
-        menu.setStyleSheet("""
-            QMenu {
-                background-color: #2D2D2D;
-                color: #CCCCCC;
-                border: 1px solid #404040;
-            }
-            QMenu::item:selected {
-                background-color: #404040;
-            }
-        """)
+        menu = QMenu(self)
         
         if index.isValid():
             path = self.pane_tree_view.model.filePath(index)
@@ -1996,15 +1964,17 @@ class Pane(QWidget):
         return (thumbs is not None and not sip.isdeleted(thumbs)
                 and not thumbs.isHidden())
 
-    def _paths_from_selection(self) -> list:
-        """从当前可见视图的选中项提取路径列表（超大图标视图没有 QModelIndex）"""
-        if self._thumbnail_active():
-            return self.thumbnail_view.selected_paths()
-        paths = []
-        for index in self.tree_view.selectedIndexes():
-            if index.column() == 0:
-                paths.append(self.model.filePath(self._map_to_source(index)))
-        return paths
+    def _paths_from_selection(self, view=None) -> list:
+        """从视图的选中项提取路径列表（超大图标视图没有 QModelIndex）
+
+        `view` 省略时取当前显示的文件视图。
+        """
+        if view is None:
+            view = self.thumbnail_view if self._thumbnail_active() else self.tree_view
+        if view is self.thumbnail_view:
+            return view.selected_paths()
+        return [self.model.filePath(self._map_to_source(index))
+                for index in view.selectedIndexes() if index.column() == 0]
     
     def select_all_current_view(self):
         """Ctrl+A：作用于当前显示的文件视图（超大图标视图没有 QTreeView）"""
@@ -2765,7 +2735,7 @@ class Pane(QWidget):
             self._drag_highlight_on = True
             self.setStyleSheet(
                 self._pre_drag_style
-                + f"\nQTreeView {{ border: 2px solid {ThemeManager.color('accent')}; }}")
+                + f"\nQTreeView, QListWidget {{ border: 2px solid {ThemeManager.color('accent')}; }}")
         else:
             if not getattr(self, '_drag_highlight_on', False):
                 return
@@ -2783,22 +2753,28 @@ class Pane(QWidget):
         self._apply_drag_highlight(False)
         event.accept()
     
-    def dropEvent(self, event):
+    def dropEvent(self, event, view=None):
         """拖拽释放。
 
         动作怎么选见 `_drop_action`（与资源管理器一致：同卷移动、跨卷复制，
-        Ctrl/Shift 强制）。
+        Ctrl/Shift 强制）。`view` 是事件来源（列表或超大图标视图），缺省按
+        列表视图处理；落点若在文件夹项上，目标取该文件夹。
 
         - 跨窗格（pan4dex-drag）：同窗格内拖动总是移动，跨窗格按卷边界
         - 文件拖拽（urls）：拖到目录行则目标为该目录；源在当前目录
           （同窗格拖动）→ 移动；外部拖入按同卷/跨卷定默认动作
         """
         self._apply_drag_highlight(False)
+        view = view or self.tree_view
         target_dir = self.current_path
         pos = event.position().toPoint()
-        idx = self.tree_view.indexAt(pos)
+        idx = view.indexAt(pos)
         if idx.isValid():
-            p = self.model.filePath(self._map_to_source(idx))
+            if view is self.tree_view:
+                p = self.model.filePath(self._map_to_source(idx))
+            else:
+                item = view.itemFromIndex(idx)
+                p = item.data(Qt.ItemDataRole.UserRole) if item is not None else None
             if p and os.path.isdir(p):
                 target_dir = p
 

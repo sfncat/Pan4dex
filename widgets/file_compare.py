@@ -3,12 +3,14 @@ Pan4dex 万格 — 文件比较工具
 """
 import os
 import difflib
+import html as html_lib
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QWidget,
     QPushButton, QTextEdit, QFileDialog, QMessageBox,
     QSplitter, QGroupBox, QComboBox, QProgressBar, QTabWidget, QApplication
 )
 from PyQt6.QtCore import Qt, QDateTime
+from PyQt6.QtGui import QColor, QTextCharFormat, QTextCursor
 
 
 class FileCompareDialog(QDialog):
@@ -326,7 +328,40 @@ class FileCompareDialog(QDialog):
         except UnicodeDecodeError:
             QMessageBox.warning(self, "警告", "无法作为文本文件打开，请尝试二进制比较")
             self.binary_result.setPlainText("⚠ 此文件包含二进制数据，无法进行文本比较")
-    
+
+    def highlight_diffs(self, content1, content2):
+        """两栏文本中互不对应的行加底色
+
+        与 diff 统计同源（difflib 的行级比对），只标注哪几行不一样，
+        不做逐字符对齐。
+        """
+        lines1 = content1.splitlines()
+        lines2 = content2.splitlines()
+        matcher = difflib.SequenceMatcher(a=lines1, b=lines2, autojunk=False)
+        fmt = QTextCharFormat()
+        fmt.setBackground(QColor(255, 213, 79, 110))
+        for edit, lines, content in (
+                (self.file1_content, lines1, content1),
+                (self.file2_content, lines2, content2)):
+            offsets = [0]
+            for line in lines:
+                offsets.append(offsets[-1] + len(line) + 1)
+            selections = []
+            for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+                if tag == "equal":
+                    continue
+                start = min(offsets[i1], len(content))
+                end = min(offsets[i2], len(content)) if i2 > i1 else start
+                if end > start:
+                    cursor = QTextCursor(edit.document())
+                    cursor.setPosition(start)
+                    cursor.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
+                    sel = QTextEdit.ExtraSelection()
+                    sel.cursor = cursor
+                    sel.format = fmt
+                    selections.append(sel)
+            edit.setExtraSelections(selections)
+
     def compare_binary(self):
         """二进制比较 - 逐字节对比"""
         file1_size = os.path.getsize(self.file1)
@@ -410,6 +445,8 @@ class FileCompareDialog(QDialog):
         output.append(f"文件 2: {self.file2}")
         output.append(f"文件 1 大小：{self.format_size(size1)}")
         output.append(f"文件 2 大小：{self.format_size(size2)}")
+        if size1 != size2:
+            output.append("⚠ 文件大小不同，超出短文件范围的内容必为差异")
         output.append("")
         
         if not differences:
@@ -549,7 +586,11 @@ class FileCompareDialog(QDialog):
             QMessageBox.warning(self, "错误", f"导出失败：{e}")
     
     def _export_html(self, file_path: str):
-        """导出为 HTML 格式"""
+        """导出为 HTML 格式
+
+        模板里含 CSS 花括号，不能走 `str.format`（会把 `{ font-family` 当占位符），
+        用标记替换注入值。
+        """
         html_content = """<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -565,24 +606,26 @@ class FileCompareDialog(QDialog):
 <body>
 <h1>📄 文件比较报告</h1>
 <div class='summary'>
-<p><strong>文件 1:</strong> {}</p>
-<p><strong>文件 2:</strong> {}</p>
-<p><strong>比较模式:</strong> {}</p>
-<p><strong>生成时间:</strong> {}</p>
+<p><strong>文件 1:</strong> __FILE1__</p>
+<p><strong>文件 2:</strong> __FILE2__</p>
+<p><strong>比较模式:</strong> __MODE__</p>
+<p><strong>生成时间:</strong> __TIME__</p>
 </div>
-""".format(self.file1, self.file2, self.mode_combo.currentText(), 
-           QDateTime.currentDateTime().toString('yyyy-MM-dd HH:mm:ss'))
+""".replace("__FILE1__", html_lib.escape(self.file1 or "")
+            ).replace("__FILE2__", html_lib.escape(self.file2 or "")
+            ).replace("__MODE__", html_lib.escape(self.mode_combo.currentText())
+            ).replace("__TIME__", QDateTime.currentDateTime().toString('yyyy-MM-dd HH:mm:ss'))
         
         if self.compare_mode == self.MODE_BINARY:
             html_content += "<h2>二进制比较结果</h2>\n"
-            html_content += "<pre>{}</pre>".format(self.escape_html(self.binary_result.toPlainText()))
+            html_content += "<pre>{}</pre>".format(html_lib.escape(self.binary_result.toPlainText()))
         else:
             html_content += "<h2>文本差异统计</h2>\n"
             html_content += "<p>{}</p>\n".format(self.diff_stats.text())
             html_content += "<h3>文件 1 内容</h3>\n"
-            html_content += "<pre>{}</pre>\n".format(self.escape_html(self.file1_content.toPlainText()))
+            html_content += "<pre>{}</pre>\n".format(html_lib.escape(self.file1_content.toPlainText()))
             html_content += "<h3>文件 2 内容</h3>\n"
-            html_content += "<pre>{}</pre>\n".format(self.escape_html(self.file2_content.toPlainText()))
+            html_content += "<pre>{}</pre>\n".format(html_lib.escape(self.file2_content.toPlainText()))
         
         html_content += "</body>\n</html>\n"
         

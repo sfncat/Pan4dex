@@ -500,11 +500,16 @@ class TestUserOperationsDialog:
         
         dialog = UserOperationsDialog(self.config_manager)
         qtbot.addWidget(dialog)
-        
-        # 选择第一个操作
-        dialog.op_list.setCurrentRow(0)
+
+        # 列表里还有内置的默认操作，按 id 选中刚添加的那一行
+        from PyQt6.QtCore import Qt
+        for row in range(dialog.op_list.count()):
+            if (dialog.op_list.item(row).data(Qt.ItemDataRole.UserRole)
+                    == operation['id']):
+                dialog.op_list.setCurrentRow(row)
+                break
         qtbot.wait(100)
-        
+
         # 修改字段
         dialog.name_edit.setText("Edited Name")
         dialog.cmd_edit.setText("edited {}")
@@ -520,6 +525,7 @@ class TestUserOperationsDialog:
         """测试对话框删除操作"""
         from widgets.user_operations_dialog import UserOperationsDialog
         from PyQt6.QtWidgets import QMessageBox
+        from unittest.mock import patch
         
         # 先添加一个操作
         operation = {
@@ -532,14 +538,18 @@ class TestUserOperationsDialog:
         
         dialog = UserOperationsDialog(self.config_manager)
         qtbot.addWidget(dialog)
-        
-        # 选择要删除的操作
-        dialog.op_list.setCurrentRow(0)
-        
-        # Mock 确认对话框
-        with qtbot.waitSignal(QMessageBox.buttonClicked, timeout=1000) as signal:
-            # 模拟点击 Yes
-            QMessageBox.button = lambda self, parent, caption, standardButtons: QMessageBox.StandardButton.Yes
+
+        # 列表里还有内置的默认操作，按 id 选中刚添加的那一行
+        from PyQt6.QtCore import Qt
+        for row in range(dialog.op_list.count()):
+            if (dialog.op_list.item(row).data(Qt.ItemDataRole.UserRole)
+                    == operation['id']):
+                dialog.op_list.setCurrentRow(row)
+                break
+
+        # Mock 确认对话框（QMessageBox.question 是模态的，不替掉会挂死测试进程）
+        with patch('PyQt6.QtWidgets.QMessageBox.question',
+                   return_value=QMessageBox.StandardButton.Yes):
             dialog.delete_operation()
         
         # 验证操作已删除

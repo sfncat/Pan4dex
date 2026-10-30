@@ -197,7 +197,7 @@ class TestThumbnailSelection:
         pane._show_file_context_menu = lambda paths: seen.setdefault("paths", list(paths))
 
         first = view.item(0)
-        pane.show_thumbnail_context_menu(view.visualItemRect(first).center())
+        pane.show_file_context_menu(view, view.visualItemRect(first).center())
         assert seen["paths"] == [first.data(Qt.ItemDataRole.UserRole)]
         assert view.selectedItems() == [first]
 
@@ -205,14 +205,14 @@ class TestThumbnailSelection:
         second = view.item(1)
         second.setSelected(True)
         seen.clear()
-        pane.show_thumbnail_context_menu(view.visualItemRect(second).center())
+        pane.show_file_context_menu(view, view.visualItemRect(second).center())
         assert len(seen["paths"]) == 2
 
         # 无选中时右键空白处 → 空列表（走「新建文件夹 / 粘贴」那一支）
         view.clearSelection()
         seen.clear()
-        pane.show_thumbnail_context_menu(
-            QPoint(view.viewport().width() - 2, view.viewport().height() - 2))
+        pane.show_file_context_menu(
+            view, QPoint(view.viewport().width() - 2, view.viewport().height() - 2))
         assert seen["paths"] == []
 
         pane.deleteLater()

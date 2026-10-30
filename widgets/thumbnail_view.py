@@ -3,12 +3,13 @@
 Pan4dex 万格 - 超大图标视图
 """
 import os
+import json
 import logging
 import time
 from collections import OrderedDict
-from PyQt6.QtWidgets import QListWidget, QListWidgetItem, QApplication
-from PyQt6.QtCore import QSize, Qt, QTimer, QRunnable, QThreadPool, QObject, pyqtSignal
-from PyQt6.QtGui import QPixmap, QIcon, QImage, QImageReader
+from PyQt6.QtWidgets import QAbstractItemView, QListWidget, QListWidgetItem, QApplication
+from PyQt6.QtCore import QMimeData, QSize, Qt, QTimer, QUrl, QRunnable, QThreadPool, QObject, pyqtSignal
+from PyQt6.QtGui import QDrag, QPixmap, QIcon, QImage, QImageReader
 
 from core.lifecycle import call_later
 
@@ -106,10 +107,14 @@ class ThumbnailView(QListWidget):
         self.setWordWrap(True)
         self.setWrapping(True)
         self.setMovement(QListWidget.Movement.Static)
-        # 与文件列表一致：Shift/Ctrl 多选 + 空白处拖拽框选。
-        # 注意 setSelectionMode 必须在 setDragDropMode 之后调（Qt 会隐式改回单选），
-        # 本视图不开拖拽，所以这里直接设就行
+        # 与文件列表一致：Shift/Ctrl 多选 + 空白处拖拽框选 + 拖动选中项拖出。
+        # 注意 setSelectionMode 必须在 setDragDropMode 之后调（Qt 会隐式改回单选）
+        self.setDragDropMode(QAbstractItemView.DragDropMode.DragDrop)
+        self.setDragEnabled(True)
+        self.setAcceptDrops(True)
+        self.setDropIndicatorShown(True)
         self.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
+        self._drag_source_pane = None
         self.setUniformItemSizes(True)
         self.setGridSize(QSize(160, 190))
 
@@ -311,6 +316,62 @@ class ThumbnailView(QListWidget):
         """选中项路径（按视觉行序），供窗格的复制/删除/右键菜单统一读取"""
         items = sorted(self.selectedItems(), key=self.row)
         return [p for p in (it.data(Qt.ItemDataRole.UserRole) for it in items) if p]
+
+    def set_drag_source_pane(self, pane):
+        """注入窗格引用：拖拽负载要带 source_pane_id，动作由接收端按落点算"""
+        self._drag_source_pane = pane
+
+    def _drag_mime_data(self):
+        """与列表视图同一套负载：源窗格 + 全部选中项，另附 URL 供外部应用接收"""
+        if self._drag_source_pane is None:
+            return None
+        paths = self.selected_paths()
+        if not paths:
+            return None
+        mime = QMimeData()
+        mime.setData(
+            "application/x-pan4dex-drag",
+            json.dumps({
+                "source_pane_id": self._drag_source_pane.pane_id,
+                "files": paths,
+            }).encode(),
+        )
+        mime.setUrls([QUrl.fromLocalFile(p) for p in paths])
+        return mime
+
+    def startDrag(self, supportedActions):
+        mime = self._drag_mime_data()
+        if mime is None:
+            return
+        drag = QDrag(self)
+        drag.setMimeData(mime)
+        drag.exec(Qt.DropAction.CopyAction | Qt.DropAction.MoveAction)
+
+    # 拖放事件统一转交 Pane（与 FileListTreeView 同一套逻辑），
+    # 这样图标视图也能接外部拖入、以及拖到文件夹图标上
+    def dragEnterEvent(self, event):
+        if self._drag_source_pane is None:
+            event.ignore()
+            return
+        self._drag_source_pane.dragEnterEvent(event)
+
+    def dragMoveEvent(self, event):
+        mime = event.mimeData()
+        if mime.hasUrls() or mime.hasFormat("application/x-pan4dex-drag"):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragLeaveEvent(self, event):
+        if self._drag_source_pane is not None:
+            self._drag_source_pane._apply_drag_highlight(False)
+        event.accept()
+
+    def dropEvent(self, event):
+        if self._drag_source_pane is None:
+            event.ignore()
+            return
+        self._drag_source_pane.dropEvent(event, view=self)
 
     def _is_image(self, path: str) -> bool:
         return os.path.splitext(path)[1].lower() in IMAGE_EXTENSIONS

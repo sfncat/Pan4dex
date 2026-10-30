@@ -19,7 +19,7 @@
 
 ## 更新记录
 
-### v1.9.028 — 未发布
+### v1.9.028 — 2026-10-30（master）
 
 #### 🚀 版本更新（230 更新服务器 + 客户端自动更新，机制见 docs/update.md）
 - 新增更新服务器 `server/update-server/`（Flask + waitress + SQLite）：管理页手动上传 Windows zip / Linux ELF，自动识别平台与版本、校验包结构与 SHA-256、支持发布说明（纯文本）、撤下/恢复/删除、审计日志；公开下载页与 `GET /api/v1/latest`、`GET /api/v1/releases`、`/download/...`；单一管理口令 + CSRF + 登录限速（默认端口 23011，部署在 230：uv + systemd，Dockerfile 保留备用）
@@ -42,6 +42,16 @@
 - 延迟创建的 pane2–4 在构造末尾自涂「非活动」样式（此前它们永远收不到激活回调，选中色与活动窗格完全相同）
 - 深色主题补上树/列表获焦边框（此前只有浅色主题生效）
 - `PathBar` 开启 `WA_StyledBackground`，QSS 背景色才真正绘制（QWidget 子类默认不画）
+
+#### 🐛 缺陷修复
+- 修复文件比较工具一打开就报「比较失败：'FileCompareDialog' object has no attribute 'highlight_diffs'」（2026-09-18 起 `highlight_diffs` 一直未实现，弹窗后永远出不了结果）：补上文本差异高亮，两栏中互不对应的行加底色，与差异统计同源（difflib 行级比对）
+- 修复「文件比较 → 导出报告」必报错：HTML 模板用 `str.format` 把 CSS 花括号当占位符（`KeyError: ' font-family'`）、`escape_html` 从未定义；现在 HTML/文本报告都能正常导出，二进制报告补上「文件大小不同」提示
+- 修复「用户操作配置」对话框一打开就崩（引用了 PyQt6 里不存在的 `QKeySequenceValidator`）：去掉无效引用；添加/编辑/删除成功后不再弹「成功」模态框，列表刷新与选中即为反馈
+- 修复大图标视图多选后拖拽无效（视图没开拖拽，窗格的拖放路径也只认列表视图）：现在与列表一致——选中多项可直接拖出（负载同为 pan4dex-drag + 文件 URL），大图标视图本身也能作为落点
+
+#### 🎨 UI/UX
+- 列表、小图标、大图标三个文件视图的右键菜单合并为同一入口（`show_file_context_menu`），「右键点未选中项只选它、点在多选之内保留整组」三种视图行为一致
+- 窗格内各右键菜单不再各自写死 `#2D2D2D` 深色配色，统一交给主题——此前浅色主题下这些菜单仍是深色
 
 ### v1.9.027 — 2026-10-30（master）
 

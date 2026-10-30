@@ -2,10 +2,9 @@
 Pan4dex 万格 — 用户操作配置对话框
 """
 from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, 
+    QDialog, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QLineEdit, QTextEdit, QListWidget, QListWidgetItem,
-    QFileDialog, QMessageBox, QGroupBox, QComboBox, QCheckBox,
-    QKeySequenceValidator
+    QFileDialog, QMessageBox, QGroupBox, QComboBox, QCheckBox
 )
 from PyQt6.QtCore import Qt, pyqtSlot
 
@@ -56,7 +55,6 @@ class UserOperationsDialog(QDialog):
         cmd_layout.addWidget(QLabel("命令:"))
         self.cmd_edit = QLineEdit()
         self.cmd_edit.setPlaceholderText("命令格式：code {} 或 firefox {}")
-        self.cmd_edit.setValidator(QKeySequenceValidator())
         cmd_layout.addWidget(self.cmd_edit)
         detail_layout.addLayout(cmd_layout)
         
@@ -186,15 +184,13 @@ class UserOperationsDialog(QDialog):
         if self.config_manager:
             op_id = self.config_manager.add_operation(operation)
             self.load_operations()
-            
-            # 选中新添加的操作
+
+            # 选中新添加的操作（列表刷新即反馈，不再弹「成功」模态框打断操作）
             for i in range(self.op_list.count()):
                 item = self.op_list.item(i)
                 if item.data(Qt.ItemDataRole.UserRole) == op_id:
                     self.op_list.setCurrentItem(item)
                     break
-            
-            QMessageBox.information(self, "成功", f"操作 '{name}' 已添加")
     
     def edit_operation(self):
         """编辑当前选中的操作"""
@@ -230,7 +226,6 @@ class UserOperationsDialog(QDialog):
         if self.config_manager:
             if self.config_manager.update_operation(op_id, updates):
                 self.load_operations()
-                QMessageBox.information(self, "成功", f"操作 '{name}' 已更新")
     
     def delete_operation(self):
         """删除当前选中的操作"""
@@ -250,7 +245,6 @@ class UserOperationsDialog(QDialog):
             if self.config_manager:
                 if self.config_manager.delete_operation(op_id):
                     self.load_operations()
-                    QMessageBox.information(self, "成功", "操作已删除")
     
     def save_and_close(self):
         """保存并关闭"""

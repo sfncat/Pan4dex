@@ -295,3 +295,27 @@ class TestMainWindowTheme:
         
         window.set_theme("dark")
         assert window.theme_manager.current_theme == "dark"
+
+
+def test_file_view_context_menu_is_shared_and_theme_driven(qtbot, tmp_path, monkeypatch):
+    """列表/小图标与超大图标共用同一个右键菜单入口，且配色交给主题
+
+    写死 `#2D2D2D` 会让这三个视图的右键菜单在浅色主题下仍是深色。
+    """
+    from PyQt6.QtCore import QPoint
+    from PyQt6.QtWidgets import QMenu
+    from core.pane import Pane
+
+    (tmp_path / "a.txt").write_text("x", encoding="utf-8")
+    pane = Pane("t_menu", start_path=str(tmp_path))
+    qtbot.addWidget(pane)
+
+    captured = []
+    monkeypatch.setattr(QMenu, "exec", lambda menu, *args, **kwargs: captured.append(menu))
+    monkeypatch.setattr(pane, "_paths_from_selection", lambda *_args: [])
+
+    pane.show_file_context_menu(pane.tree_view, QPoint(2, 2))
+    pane.show_file_context_menu(pane.thumbnail_view, QPoint(2, 2))
+
+    assert len(captured) == 2, "两个文件视图都应走同一个菜单入口"
+    assert [m.styleSheet() for m in captured] == ["", ""], "菜单配色应跟随主题"
