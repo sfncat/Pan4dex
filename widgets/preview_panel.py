@@ -18,11 +18,10 @@ class PreviewPanel(QDockWidget):
         super().__init__("预览", parent)
         
         self.setAllowedAreas(
-            Qt.DockWidgetArea.RightDockWidgetArea | 
+            Qt.DockWidgetArea.RightDockWidgetArea |
             Qt.DockWidgetArea.LeftDockWidgetArea
         )
         self.setMinimumWidth(200)
-        self.setMaximumWidth(400)
         
         # 创建主容器
         self.main_widget = QWidget()
@@ -128,13 +127,21 @@ class PreviewPanel(QDockWidget):
             stat = os.stat(file_path)
             size = self.format_size(stat.st_size)
             modified = self.format_time(stat.st_mtime)
-            
+            mime_type = mimetypes.guess_type(file_path)[0]
+
             info = (
                 f"<b>{os.path.basename(file_path)}</b><br>"
                 f"大小: {size}<br>"
                 f"修改时间: {modified}<br>"
-                f"类型: {mimetypes.guess_type(file_path)[0] or '未知'}"
+                f"类型: {mime_type or '未知'}"
             )
+            if mime_type and mime_type.startswith("image/"):
+                # 列表预读通常已把本目录的拍摄日期填进缓存；缓存未命中时才起
+                # 一次 exiftool（结果入缓存，不会反复调用）
+                from core.media_metadata import get_shot_date
+                shot = get_shot_date(file_path)
+                if shot:
+                    info += f"<br>拍摄日期: {shot}"
             self.info_label.setText(info)
         except Exception as e:
             self.info_label.setText(f"无法获取文件信息: {e}")

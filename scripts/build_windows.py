@@ -103,6 +103,12 @@ def _restore_linux_binaries():
 
 _exclude_linux_binaries()
 
+# resources/tools/ 整体 gitignore（构建机本地部署），丢了构建照样成功但功能静默缺失
+# ——曾因此连续多个版本 Windows 包不含 ExifTool，拍摄日期列失效。打包前显式检查。
+if not (tools_dir / "exiftool" / "exiftool.exe").is_file():
+    print("!! 缺 resources/tools/exiftool/exiftool.exe：本包不含 ExifTool，"
+          "「拍摄日期」列将不可用（从 https://exiftool.org 下载 _64.zip 解压到该目录）")
+
 # Build with PyInstaller (onedir mode — faster startup, no extraction overhead)
 # --windowed：GUI 应用不显示控制台黑窗（原 --console 会让每次启动都带终端窗口）；
 # 子进程控制台程序（exiftool）通过 CREATE_NO_WINDOW 静默运行，见 core/media_metadata.py

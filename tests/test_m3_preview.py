@@ -55,6 +55,46 @@ class TestPreviewPanel:
         panel.preview_file("/nonexistent/path")
         assert "未找到" in panel.text_preview.toPlainText()
 
+    def test_preview_shows_shot_date_for_image(self, qtbot, tmp_path, monkeypatch):
+        """照片预览的信息区显示拍摄日期（取自 ExifTool 缓存链路）"""
+        from widgets.preview_panel import PreviewPanel
+
+        panel = PreviewPanel()
+        qtbot.addWidget(panel)
+
+        img = tmp_path / "photo.jpg"
+        img.write_bytes(b"\xff\xd8\xff\xd9")  # 最小 JPEG，走 image/ 分支即可
+        monkeypatch.setattr(
+            "core.media_metadata.get_shot_date", lambda p: "2024-06-15 10:30")
+
+        panel.preview_file(str(img))
+        assert "拍摄日期: 2024-06-15 10:30" in panel.info_label.text()
+
+    def test_preview_shot_date_absent_for_non_image(self, qtbot, tmp_path, monkeypatch):
+        """非照片不显示拍摄日期，也不触发 exiftool"""
+        from widgets.preview_panel import PreviewPanel
+
+        panel = PreviewPanel()
+        qtbot.addWidget(panel)
+
+        txt = tmp_path / "note.txt"
+        txt.write_text("hello")
+        monkeypatch.setattr(
+            "core.media_metadata.get_shot_date",
+            lambda p: pytest.fail("非图片不应查询拍摄日期"))
+
+        panel.preview_file(str(txt))
+        assert "拍摄日期" not in panel.info_label.text()
+
+    def test_preview_panel_resizable(self, qtbot):
+        """预览面板可拖宽：不得设固定最大宽度（曾写死 400px 拖不动）"""
+        from widgets.preview_panel import PreviewPanel
+        from PyQt6.QtWidgets import QWidget
+
+        panel = PreviewPanel()
+        qtbot.addWidget(panel)
+        assert panel.maximumWidth() == QWidget().maximumWidth()
+
 
 class TestThumbnailViewHEIC:
     """测试超大图标视图对 HEIC 的支持（真实靶子）"""
