@@ -20,6 +20,7 @@
 | 某功能做没做、还剩什么 | `docs/feature-checklist.md`（状态表）；**待办看 `docs/todo.md`**；Linux 半边另看 `docs/linux-gap.md` |
 | 为什么不能那么写（踩过一次的都在这） | `docs/gotchas.md`（#1–#56，第六/七节是模型与生命周期） |
 | 发布改了什么 | `docs/changelog.md` |
+| 版本更新机制（230 更新服务器 + 客户端自动更新） | `docs/update.md` |
 | 现在还挂着的问题 | `docs/unsolved-issues.md` |
 
 ## 代码怎么串起来
