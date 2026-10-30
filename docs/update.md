@@ -328,7 +328,7 @@ widgets/update_dialog.py   # 发现新版本 / 下载进度 / 安装确认
 3. 用 `zipfile` 预检条目：全部位于 `pan4dex/` 下、无 `..`/绝对路径、含 `pan4dex.exe`。
 4. 生成 `%TEMP%\pan4dex-update-<ver>\job.json`（UTF-8）与 `apply-update.ps1`（**UTF-8 with BOM**，否则 PowerShell 5.1 会把中文路径读成 ANSI 乱码）：
    - 参数文件含：父进程 PID、zip 路径、目标目录、exe 路径、旧版本、日志路径；
-   - 脚本逻辑：轮询等待父进程退出（最多 120 s）→ `Expand-Archive` 解到临时目录 → 旧目录改名为 `pan4dex.bak-<旧版本>` → 解压出的 `pan4dex` 移到目标路径 → 启动新 exe → 写 `update-ok.json`（含新版本）→ 删除 zip；
+   - 脚本逻辑：等待旧进程退出（宽限 15 s，超时强制结束——界面已提示「当前窗口会关闭」，避免旧进程卡住导致替换失败回滚）→ `Expand-Archive` 解到临时目录 → 旧目录改名为 `pan4dex.bak-<旧版本>` → 解压出的 `pan4dex` 移到目标路径 → 启动新 exe → 写 `update-ok.json`（含新版本）→ 删除 zip；
    - 任一步失败：把备份目录移回原路径，写日志，保留 zip 供手动重试。
 5. 用 `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP` 启动 `powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File …`，随后 `QApplication.quit()`。
 6. 新版本启动后，检测同目录 `update-ok.json`：版本与当前 `VERSION` 一致 → 延迟 10 s 删除 `pan4dex.bak-<旧版本>` 与标记文件；不一致则保留备份，便于人工回退。

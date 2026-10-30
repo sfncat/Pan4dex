@@ -370,7 +370,13 @@ $started = $false
 try {
     Write-Log ('等待旧进程退出 pid={0}' -f $job.pid)
     $proc = Get-Process -Id $job.pid -ErrorAction SilentlyContinue
-    if ($proc) { $proc.WaitForExit(120000) | Out-Null }
+    if ($proc -and (-not $proc.WaitForExit(15000))) {
+        # 界面已提示「当前窗口会关闭」：宽限 15 秒后强杀，避免旧进程卡住
+        # 导致 120 秒超时后替换失败回滚
+        Write-Log ('宽限超时，强制结束旧进程 pid={0}' -f $job.pid)
+        Stop-Process -Id $job.pid -Force -ErrorAction SilentlyContinue
+        $proc.WaitForExit(10000) | Out-Null
+    }
 
     Write-Log ('解压 {0}' -f $job.zip_path)
     if (Test-Path -LiteralPath $extract) { Remove-Item -LiteralPath $extract -Recurse -Force }

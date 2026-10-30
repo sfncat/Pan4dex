@@ -270,6 +270,9 @@ def test_prepare_windows_install_writes_script_and_job(tmp_path, monkeypatch):
         # PowerShell 5.1 需要 BOM，否则中文路径按 ANSI 解读
         assert script.read_bytes().startswith(b"\xef\xbb\xbf")
         assert "pan4dex.exe" in script.read_text(encoding="utf-8-sig")
+        # 宽限 15 秒后强杀旧进程：卡死的旧版本不能让安装等满超时后回滚
+        text = script.read_text(encoding="utf-8-sig")
+        assert "WaitForExit(15000)" in text and "Stop-Process" in text
         data = json.loads((script.parent / "job.json").read_text(encoding="utf-8"))
         assert data["target_dir"] == str(target)
         assert data["new_version"] == "1.9.028"
