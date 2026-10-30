@@ -491,8 +491,10 @@ def launch_windows_installer(script: Path | str) -> subprocess.Popen:
         "close_fds": True,
     }
     if sys.platform == "win32":
+        # PowerShell 是控制台程序：DETACHED_PROCESS 下初始化即死、脚本一行不执行
+        # （2026-10-30 实测：窗口关了但安装脚本根本没跑）；CREATE_NO_WINDOW 只藏窗口
         kwargs["creationflags"] = (
-            getattr(subprocess, "DETACHED_PROCESS", 0)
+            getattr(subprocess, "CREATE_NO_WINDOW", 0)
             | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
     else:
         kwargs["start_new_session"] = True

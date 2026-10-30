@@ -298,6 +298,27 @@ def test_prepare_windows_install_rejects_missing_exe_or_bad_zip(tmp_path):
         updater.prepare_windows_install(bad, "1.9.028", "1.9.027", target)
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows 安装器创建标志")
+def test_launch_windows_installer_uses_create_no_window(monkeypatch):
+    """PowerShell 是控制台程序：DETACHED_PROCESS 下初始化即死、脚本一行不执行，
+    表现为窗口关闭后安装/重启毫无动静；必须用 CREATE_NO_WINDOW"""
+    import subprocess
+    captured = {}
+
+    class FakePopen:
+        def __init__(self, args, **kwargs):
+            captured["args"] = args
+            captured["kwargs"] = kwargs
+
+    monkeypatch.setattr(updater.subprocess, "Popen", FakePopen)
+    updater.launch_windows_installer(r"C:\fake\apply-update.ps1")
+
+    assert captured["args"][-1] == r"C:\fake\apply-update.ps1"
+    flags = captured["kwargs"]["creationflags"]
+    assert flags & subprocess.CREATE_NO_WINDOW
+    assert not flags & subprocess.DETACHED_PROCESS
+
+
 # --------------------------------------------------------- Linux 安装预检
 
 
