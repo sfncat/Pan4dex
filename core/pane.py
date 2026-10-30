@@ -12,7 +12,7 @@ from PyQt6.QtWidgets import (
     QApplication, QSplitter, QDialog, QTableWidget, QHeaderView, QPushButton,
     QStyledItemDelegate
 )
-from PyQt6.QtCore import Qt, QDir, QMimeData, pyqtSignal, pyqtSlot, QThread, QPoint, QEvent, QSortFilterProxyModel, QModelIndex, QPersistentModelIndex, QItemSelectionModel, QUrl, QByteArray, QMetaObject, Q_ARG
+from PyQt6.QtCore import Qt, QDir, QMimeData, pyqtSignal, pyqtSlot, QThread, QPoint, QEvent, QSortFilterProxyModel, QModelIndex, QPersistentModelIndex, QItemSelectionModel, QUrl, QByteArray, QMetaObject, Q_ARG, QTimer
 import os
 import sys
 
@@ -598,6 +598,16 @@ class Pane(QWidget):
         # 恢复列显示状态（拍摄日期列默认隐藏；用户勾选后持久化）
         self._restore_column_visibility()
 
+        # 记忆列宽：初始化末尾恢复一次，此后拖动经 400ms 防抖保存。
+        # 不挂 directoryLoaded——同一目录被类级缓存命中时该信号不会再次发出
+        self._column_widths_loaded = False
+        self._restoring_widths = False
+        self._save_widths_timer = QTimer(self)
+        self._save_widths_timer.setSingleShot(True)
+        self._save_widths_timer.setInterval(400)
+        self._save_widths_timer.timeout.connect(self._do_save_column_widths)
+        self.tree_view.header().sectionResized.connect(self._on_section_resized)
+
         # 后台 prefetch 完成后刷新视图（信号跨线程自动 QueuedConnection，安全）
         self.shot_dates_ready.connect(self._refresh_shot_date_column)
         # 目录异步加载完成后：预读拍摄日期 + 恢复待恢复的选中/滚动
@@ -610,6 +620,9 @@ class Pane(QWidget):
 
         # 设置根索引
         self._set_root_index(self.current_path)
+
+        # 恢复列宽（事件循环下一拍执行，确保 header 已就绪）
+        QTimer.singleShot(0, self._restore_column_widths_once)
 
     # ---- 列显示状态（QSettings 持久化，按窗格独立）----
     _COLUMN_VISIBILITY_KEY = "pane/column_visibility"  # 形如 "1,1,1,1,0"，按窗格加后缀区分
@@ -647,6 +660,46 @@ class Pane(QWidget):
                 for c in range(n)
             )
             self._get_settings().setValue(self._column_visibility_key(), vis)
+        except Exception:
+            pass
+
+    # ---- 列宽（QSettings 持久化，按窗格独立）----
+    _COLUMN_WIDTHS_KEY = "pane/column_widths"  # 形如 "180,64,80,140,120"
+
+    def _column_widths_key(self):
+        return f"{self._COLUMN_WIDTHS_KEY}_{self.pane_id}"
+
+    def _restore_column_widths_once(self, *_args):
+        if self._column_widths_loaded:
+            return
+        self._column_widths_loaded = True
+        try:
+            raw = self._get_settings().value(self._column_widths_key(), "")
+            if not raw:
+                return
+            widths = [int(x) for x in str(raw).split(",")]
+            self._restoring_widths = True
+            try:
+                for col, w in enumerate(widths):
+                    if w > 0:
+                        self.tree_view.setColumnWidth(col, w)
+            finally:
+                self._restoring_widths = False
+        except Exception:
+            pass
+
+    def _on_section_resized(self, *_args):
+        if not self._column_widths_loaded or self._restoring_widths:
+            return
+        self._save_widths_timer.start()
+
+    def _do_save_column_widths(self):
+        try:
+            model = self.tree_view.model()
+            n = model.columnCount() if model else 0
+            header = self.tree_view.header()
+            widths = ",".join(str(header.sectionSize(c)) for c in range(n))
+            self._get_settings().setValue(self._column_widths_key(), widths)
         except Exception:
             pass
 

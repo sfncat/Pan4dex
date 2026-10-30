@@ -17,6 +17,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 
 logger = logging.getLogger("pan4dex.media_metadata")
@@ -130,20 +131,44 @@ def _clean_date(v):
 
 
 def _run_exiftool(paths):
-    """调用 exiftool 批量读取，返回 JSON 列表。"""
-    cmd = _exiftool_cmd(['-json', '-d', '%Y-%m-%d %H:%M', '-DateTimeOriginal', '-CreateDate'] + paths)
+    """调用 exiftool 批量读取，返回 JSON 列表。
+
+    文件名走 UTF-8 参数文件（-@ + -charset filename=utf8）：Windows 上命令行
+    参数按系统 ANSI 代码页解读，中文文件名会变成 "No matching files"。
+    输出按 UTF-8 解码（exiftool 的 -json 恒为 UTF-8，text=True 的 locale 解码
+    遇中文会 UnicodeDecodeError 使整批失败）。
+    """
+    cmd = _exiftool_cmd(['-charset', 'filename=utf8', '-json',
+                         '-d', '%Y-%m-%d %H:%M',
+                         '-DateTimeOriginal', '-CreateDate'])
     if not cmd:
         return None
+    args_file = None
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30, creationflags=_NO_WINDOW)
+        with tempfile.NamedTemporaryFile(
+                mode='w', encoding='utf-8', suffix='.args',
+                prefix='pan4dex-exif-', delete=False) as fh:
+            args_file = fh.name
+            for p in paths:
+                fh.write(p + '\n')
+        cmd = cmd + ['-@', args_file]
+        proc = subprocess.run(cmd, capture_output=True, timeout=30,
+                              creationflags=_NO_WINDOW)
         if proc.returncode != 0:
             logger.debug(f"exiftool rc={proc.returncode}: {proc.stderr[:200]}")
-        if not proc.stdout.strip():
+        out = proc.stdout.decode('utf-8', errors='replace')
+        if not out.strip():
             return []
-        return json.loads(proc.stdout)
+        return json.loads(out)
     except Exception as e:
         logger.warning(f"exiftool failed ({len(paths)} files): {e}")
         return None
+    finally:
+        if args_file:
+            try:
+                os.unlink(args_file)
+            except OSError:
+                pass
 
 
 def _norm(path: str) -> str:
