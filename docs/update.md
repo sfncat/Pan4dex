@@ -231,7 +231,8 @@ SQLite 表 `releases`：
 `/admin/upload` 通道（自动登录 + CSRF + multipart + SHA-256 由服务端计算）：
 
 ```bash
-python scripts/build_all.py -U            # 两平台；Linux 走 Docker，Windows 上经 Git Bash
+build_all.bat -U                          # Windows：两平台（Linux 走 Docker/Git Bash）
+./build_all.sh -U                         # Linux/Git Bash：同上（薄封装 scripts/build_all.py）
 python scripts/build_windows.py -U        # 只 Windows
 bash scripts/build-linux-docker.sh -U     # 只 Linux
 python scripts/upload_release.py --platform linux --file releases/pan4dex-1.9.028-linux

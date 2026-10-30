@@ -22,9 +22,15 @@ Pan4dex 有两个产物，受两条正交的约束决定“怎么编”：
 | Windows 版 | 人在 Linux，用 SSH 连到某台 Windows 编 | `python scripts/build.py windows --remote U@WIN --remote-path 'C:\workspace\Pan4dex'` | [build-windows.md](build-windows.md) · W2 |
 | Linux 版 | 就在 Linux 机器上 | `bash scripts/build-linux-docker.sh`（或 `build.py linux`） | [build-linux.md](build-linux.md) · L1 |
 | Linux 版 | 在 Windows 上，走 WSL2 + Docker | `python scripts/build.py linux`（WSL 里） | [build-linux.md](build-linux.md) · L2 |
-| **两平台一起** | Windows（Linux 走 Docker，经 Git Bash 调起） | `python scripts/build_all.py [-U] [--replace]` | 本页下文 |
+| **两平台一起** | Windows（Linux 走 Docker，经 Git Bash 调起） | `build_all.bat` / `./build_all.sh`（薄封装 `scripts/build_all.py`） | 本页下文 |
 
 退役的多机内网编排（win54/win55/gti/230、`build.sh`、断链脚本）见 [legacy-multimachine.md](legacy-multimachine.md)——**不要再当入口用**（`build_all.py` 已重写为双平台入口，不再是退役件）。
+
+## 双平台入口
+
+根目录 `build_all.bat`（Windows）与 `build_all.sh`（Linux/Git Bash）只是薄封装：
+选好解释器后执行 `scripts/build_all.py`，参数原样透传（版本号、`-U`、`--replace`、
+`--windows-only` / `--linux-only`）。双击 `.bat` 且不带参数时会停住窗口。
 
 ## 构建后上传更新服务器（`-U`）
 
@@ -76,4 +82,4 @@ python scripts/build.py linux
 
 ## 相关源文件
 
-`scripts/build.py`、`scripts/build_windows.py`、`scripts/build-linux-docker.sh`、`packaging/Dockerfile-qt6-builder`（通用基座）、`packaging/Dockerfile-linux`、`packaging/Dockerfile-runtime`、`packaging/pan4dex.spec`（Linux 降级路线）、`resources/fonts/`、`main.py`（内置字体注册 + 输入法探测）。
+`build_all.bat` / `build_all.sh`（双平台薄封装）、`scripts/build_all.py`、`scripts/build.py`、`scripts/build_windows.py`、`scripts/build-linux-docker.sh`、`scripts/upload_release.py`（`-U` 上传）、`packaging/Dockerfile-qt6-builder`（通用基座）、`packaging/Dockerfile-linux`、`packaging/Dockerfile-runtime`、`packaging/pan4dex.spec`（Linux 降级路线）、`resources/fonts/`、`main.py`（内置字体注册 + 输入法探测）。

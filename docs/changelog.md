@@ -32,7 +32,7 @@
 #### 🛠 构建与发布
 - 构建脚本新增 `-U`：`build_windows.py -U`、`build-linux-docker.sh -U` 构建完成后直接把产物传到更新服务器（管理页同一条 `/admin/upload`，自动登录 + CSRF + multipart，支持 `--replace` 覆盖同版本）
 - 服务器地址集中在 `scripts/update_server.json`；管理口令放 `scripts/update_server.local.json`（已 gitignore）或环境变量 `PAN4DEX_UPDATE_ADMIN_PASSWORD`，构建机不入库口令
-- 新增 `scripts/build_all.py`：一次调用 Windows / Linux 两个构建脚本（Linux 走 Docker，Windows 上经 Git Bash 调起），统一透传版本号与 `-U`，构建后校验 zip 顶层与 ELF 头再汇总结果
+- 新增双平台构建入口：`build_all.bat` / `build_all.sh` 薄封装 `scripts/build_all.py`，一次调用 Windows / Linux 两个构建脚本（Linux 走 Docker，Windows 上经 Git Bash 调起），统一透传版本号与 `-U`，构建后校验 zip 顶层与 ELF 头再汇总结果
 
 #### 🎨 活动窗格视觉增强（docs/ui-audit.md C1）
 - 活动窗格改为三层线索：「路径栏底色着色（主色 10%-24% 半透明）+ 路径栏下 2px 主色条 + 非活动窗格选中项灰化」，双窗格时一眼能分清 Delete/Ctrl+C 作用于哪个窗格

@@ -18,6 +18,10 @@ Dockerfile*   text eol=lf
 *.yaml        text eol=lf
 *.json        text eol=lf
 *.md          text eol=lf
+
+# Windows 批处理必须 CRLF：cmd.exe 解析 LF 的括号块/引号会报“不是内部或外部命令”
+*.bat         text eol=crlf
+*.cmd         text eol=crlf
 *.txt         text eol=lf
 
 # Windows 批处理保留 CRLF
