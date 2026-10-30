@@ -7,9 +7,12 @@
   - Windows 远程（在 Linux 上经 SSH 到 Windows 机器构建，再回拉 zip）-> ssh + build_windows.py + scp
 
 用法：
-  python scripts/build.py linux   [--version V] [--env auto|wsl|bare] [--dry-run]
-  python scripts/build.py windows [--version V] [--dry-run]
+  python scripts/build.py linux   [--version V] [--env auto|wsl|bare] [-U] [--replace] [--dry-run]
+  python scripts/build.py windows [--version V] [-U] [--replace] [--dry-run]
   python scripts/build.py windows --remote user@host --remote-path "C:\\workspace\\Pan4dex" [--dry-run]
+
+`-U` 把产物上传到更新服务器（地址/口令见 scripts/update_server.json 与
+scripts/update_server.local.json）。
 
 设计约束：Dockerfile 唯一（packaging/Dockerfile-linux）。--env 只影响 Linux 的“前置检查/启动”，
 构建过程与产物完全一致；因此不需要、也不应该为不同 Linux 宿主复制 Dockerfile。
@@ -84,6 +87,7 @@ def build_linux(args) -> int:
     print("   wsl / bare 共用同一入口与镜像：scripts/build-linux-docker.sh + packaging/Dockerfile-linux")
     if not _ensure_docker_running(args.dry_run, env):
         return 1
+    upload_flags = (["-U"] if args.upload else []) + (["--replace"] if args.replace else [])
 
     sub_env = {**os.environ, "BUILD_NET": args.net}
     if args.net in ("proxy", "auto"):
@@ -97,7 +101,7 @@ def build_linux(args) -> int:
         pre = f"BUILD_NET={args.net}"
         if sub_env.get("PROXY_URL"):
             pre += f" PROXY_URL={sub_env['PROXY_URL']}"
-        print("$", pre, show(["bash", str(script)] + ([ver] if ver else [])))
+        print("$", pre, show(["bash", str(script)] + ([ver] if ver else []) + upload_flags))
         return 0
     # 兼容 Windows CRLF 工作树：必要时用去 CR 的同目录临时副本执行，执行后删除
     data = script.read_bytes()
@@ -108,7 +112,8 @@ def build_linux(args) -> int:
         tmp.write_bytes(data.replace(b"\r\n", b"\n"))
         target = tmp
     try:
-        return subprocess.run(["bash", str(target)] + ([ver] if ver else []), cwd=str(ROOT), env=sub_env).returncode
+        return subprocess.run(["bash", str(target)] + ([ver] if ver else []) + upload_flags,
+                              cwd=str(ROOT), env=sub_env).returncode
     finally:
         if tmp is not None and tmp.exists():
             tmp.unlink()
@@ -119,6 +124,10 @@ def build_windows_local(args) -> int:
     cmd = [sys.executable, str(ROOT / "scripts" / "build_windows.py")]
     if args.version:
         cmd.append(ver)  # 仅在显式指定时传版本；否则由脚本自读 config
+    if args.upload:
+        cmd.append("-U")
+    if args.replace:
+        cmd.append("--replace")
     print(f"== Windows 本机构建 (scripts/build_windows.py)  version={ver} ==")
     return run(cmd, args.dry_run, cwd=str(ROOT))
 
@@ -130,7 +139,12 @@ def build_windows_remote(args) -> int:
     ver = args.version or read_version() or "<version>"
     rp = args.remote_path.rstrip("\\")
     # 在远端 Windows 上执行本机构建脚本；OpenSSH 下用 cmd /c 切目录再跑 python
-    build = f'cmd /c "cd /d {rp} && python scripts\\build_windows.py"'
+    remote_flags = ""
+    if args.upload:
+        remote_flags += " -U"
+    if args.replace:
+        remote_flags += " --replace"
+    build = f'cmd /c "cd /d {rp} && python scripts\\build_windows.py{remote_flags}"'
     zip_rel = f"{rp}\\releases\\pan4dex-{ver}.zip"
     print(f"== Windows 远程构建：从本机 SSH 到 {args.remote} 执行 build_windows.py，再回拉 zip ==")
     rc = run(["ssh", args.remote, build], args.dry_run)
@@ -153,6 +167,10 @@ def main() -> None:
                     help="配合 --net proxy：跳过“容器能否连到代理”的预检")
     ap.add_argument("--remote", help="windows：远端 Windows 的 user@host，经 SSH 远程构建")
     ap.add_argument("--remote-path", help="windows：远端仓库绝对路径，如 C:\\workspace\\Pan4dex")
+    ap.add_argument("-U", "--upload", action="store_true",
+                    help="构建后上传到更新服务器（地址/口令见 scripts/update_server.json）")
+    ap.add_argument("--replace", action="store_true",
+                    help="上传时覆盖服务器上的同平台同版本")
     ap.add_argument("--dry-run", action="store_true", help="只打印将执行的命令，不真正构建")
     args = ap.parse_args()
 

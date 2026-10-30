@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}{{ code }} · Pan4dex 更新源{% endblock %}
+{% block content %}
+<section class="auth-wrap">
+  <div class="panel auth-card">
+    <h1 class="auth-title">{{ code }}</h1>
+    <p class="muted">{{ message }}</p>
+    <a class="btn btn-primary" href="{{ url_for('public_index') }}">返回下载页</a>
+  </div>
+</section>
+{% endblock %}

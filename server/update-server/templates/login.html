@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}管理员登录 · Pan4dex 更新源{% endblock %}
+{% block content %}
+<section class="auth-wrap">
+  <div class="panel auth-card">
+    <h1 class="auth-title">管理登录</h1>
+    <p class="muted">上传与撤下发布版本需要管理口令。</p>
+    {% if error %}
+      <div class="alert alert-error" role="alert">{{ error }}</div>
+    {% endif %}
+    <form method="post" action="{{ url_for('login') }}" class="stack">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="field">
+        <label for="password">管理口令</label>
+        <input id="password" name="password" type="password" autocomplete="current-password" required autofocus>
+      </div>
+      <button type="submit" class="btn btn-primary btn-block">登录</button>
+    </form>
+  </div>
+</section>
+{% endblock %}

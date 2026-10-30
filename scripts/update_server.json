@@ -1,0 +1,6 @@
+{
+  "server_url": "http://192.168.5.230:23011",
+  "notes_template": "Pan4dex {version} 自动构建",
+  "timeout_seconds": 900,
+  "replace": false
+}

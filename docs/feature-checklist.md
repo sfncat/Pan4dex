@@ -259,6 +259,19 @@
 16.1 / 16.3 的 🔴 对应 **T4**，21.1 / 21.2 对应 **T2**，22.2 的 🟡 对应 **T3**，
 「全量测试跑不完」是 **T5**。做与不做、验收判据、销账规矩都去那边改，本文件只留功能状态表。
 
+## 24. 版本更新
+
+| # | 功能 | 优先级 | 状态 | 验证方式 | 说明 | 实现情况 |
+|---|---|---|---|---|---|---|
+| 24.1 | 更新服务器 | P1 | 🟢 | 管理页上传产物后 `/api/v1/latest?platform=windows` 返回新版本；下载头带 SHA-256 | Flask + waitress + SQLite，单管理口令 + CSRF + 登录限速 | `server/update-server/`；测试 17 项；已部署 230（`/home/kali/runSpace/pan4dex`，uv + systemd，`/healthz` 与登录已验证） |
+| 24.2 | 管理页手动上传 | P1 | 🟢 | 选择文件自动带出平台/版本，上传显示进度；重复版本需勾选替换 | 服务端校验 zip 顶层 `pan4dex/`、含 `pan4dex.exe`、ELF x86-64 头 | `server/update-server/templates/admin.html`、`static/app.js` |
+| 24.3 | 客户端检查更新 | P1 | 🟢 | 启动 3 秒后后台检查；帮助菜单可手动检查；失败不打断启动 | 标准库 urllib（Windows 包无 QtNetwork） | `core/updater.py`、`core/update_runner.py`、`core/main_window.py` |
+| 24.4 | 客户端下载与校验 | P1 | 🟢 | 进度/速度/取消；哈希或大小不符自动清理临时文件并提示重试 | `.part` 下载 → 校验 → 改名 | `core/updater.py:download_update` |
+| 24.5 | Windows 自动安装 | P1 | 🟡 | 1.9.028 → 1.9.029 真机升级一次并重启，失败可回滚 | PowerShell 脚本等旧进程退出后替换目录 | 已实现（`prepare_windows_install`），真机升级/回滚待做 |
+| 24.6 | Linux 自动安装 | P1 | 🟡 | 230 上从 releases 目录升级一次；`/opt` 只读目录给出手动命令 | 同目录 `.part` + `os.replace` | 已实现（`apply_linux_update`），真机升级待做 |
+| 24.7 | 设置「更新」页 | P2 | 🟢 | 服务器地址、启动检查、自动下载/安装、清除已跳过版本 | 保存前校验 http(s) 地址 | `widgets/settings_dialog.py`、`core/main_window.py:open_settings` |
+| 24.8 | 构建一键上传 | P2 | 🟢 | `build_all.py -U` 一次构建两平台并在服务器看到新版本 | `-U` 走管理页同一条 `/admin/upload`；地址在 `scripts/update_server.json`，口令在 `.local.json`/环境变量 | `scripts/upload_release.py`、`scripts/build_all.py`、`scripts/build_windows.py`、`scripts/build-linux-docker.sh`；上传通道测试 4 项 |
+
 ---
 
 ## 优先级说明
@@ -294,8 +307,9 @@
 | 2026-09-22 | **L2（万条目真共享）在用户真 NAS 上逐条量完，🔴 → 🟡**：三条判据两条不成立（产品**没有**枚举取消入口 / 切走窗格后仍把盘扫完并在主线程阻塞 1388ms）；「不闪」靠本地 ext4 **同条数** A/B 对照才能归因（两边最大停摆都是 1256ms，与 SMB 无关）；源码版（offscreen 探针）与 v1.9.020 产物版（`:10` 真 X + xdotool 真键鼠）各一轮，1.8 列头排序至此才算在万条目规模上真验过。本轮两次「产品缺陷」误判都是探针取样错（见 gotchas 53） | - |
 | 2026-09-23 | **全仓文档审计（AGENT.md 索引化那一轮）+ 跑代码复核，回写本表**：①**16.1 文本比较 🟢→🔴、16.3 HTML 导出 🟢→🔴**（`file_compare.py:316` 调不存在的 `highlight_diffs()`、`:578` 等调不存在的 `escape_html()`，`0f9e6e9` 起就没跑过；16.2 二进制实测可用，留 🟢）；②**21.1 🟢→🔴**、21.2 🟢→🔴 —— `widgets/user_operations_dialog.py:4` 从 `PyQt6.QtWidgets` 导入不存在的 `QKeySequenceValidator`，模块 import 即 `ImportError`，配套 5 条用例全红，且全仓除测试外零引用；③新增待办 **T2**（先修 import 再谈接入入口与快捷键）、**T4**（file_compare 两个幽灵方法）、**T5**（全量测试自 v1.9.020 起跑不完，最后一条全量绿记录停在 v1.9.019）；④审计中另查到 **T3**：`widgets/tree_sidebar.py:121`、`:180` 仍直接判 `_active_pane`，是 gotchas 47/49 那一类在 Linux/X11 上会静默失灵的落点，22.2 因此从 🟢 改 🟡；⑤第 22 节补齐自初版就缺的表标题、把行首多出来的那截竖线规范成普通表格行，13.11 改号 13.10（13.10 从未存在过，纯编号断档）。**产品代码与测试本轮一行未动**，全部是登记与回写 | - |
 | 2026-09-24 | **第 23 节「待办事项」整表搬出本文件，独立成 `docs/todo.md`**：清单从此只保留功能状态表 + 优先级说明 + 本更新记录，第 23 节改为一节指路占位（编号 L/T 不变，历史引用不断链）。全仓原先写「清单第 23 节 T4/T5」的引用统一改指 `docs/todo.md`。本文件的既有账目不迁移，仍留在上面几行 | - |
+| 2026-10-30 | 新增第 24 节「版本更新」：更新服务器（管理页 + API）与客户端检查/下载/安装已实现并各有测试，Windows/Linux 真机升级与回滚演练仍为 🟡 | - |
 
 ---
 
 **文档版本**：v1.9  
-**最后更新**：2026-09-23
+**最后更新**：2026-10-30

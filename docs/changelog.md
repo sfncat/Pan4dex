@@ -21,6 +21,19 @@
 
 ### v1.9.028 — 未发布
 
+#### 🚀 版本更新（230 更新服务器 + 客户端自动更新，机制见 docs/update.md）
+- 新增更新服务器 `server/update-server/`（Flask + waitress + SQLite）：管理页手动上传 Windows zip / Linux ELF，自动识别平台与版本、校验包结构与 SHA-256、支持发布说明（纯文本）、撤下/恢复/删除、审计日志；公开下载页与 `GET /api/v1/latest`、`GET /api/v1/releases`、`/download/...`；单一管理口令 + CSRF + 登录限速（默认端口 23011，部署在 230：uv + systemd，Dockerfile 保留备用）
+- 客户端新增更新链路：启动 3 秒后后台检查（设置页可关）、帮助 →「检查更新」手动检查、发现新版本弹非模态对话框（版本对比 / 发布说明 / 大小），下载带进度与速度、可取消、SHA-256 与大小双重校验
+- 安装：Windows 生成 PowerShell 替换脚本（UTF-8 BOM，等旧进程退出 → 备份旧目录 → 解压替换 → 重启 → 失败回滚）；Linux 下载到目标同目录、`os.replace` 原子替换并重启；目标目录不可写时给出手动 `sudo install` 命令
+- 安装目录不可写、源码运行模式、服务器离线、坏包、下载取消都不会影响当前版本可启动；「跳过此版本」「自动下载 / 自动安装」可在设置「更新」页配置
+- 新增无界面冒烟入口 `python main.py --check-update [--server URL]`（退出码 0 最新 / 3 有更新 / 1 失败）
+- 测试：服务器 17 项（登录/限速/CSRF/上传校验/撤下/删除/下载头/路径穿越），客户端核心 20 项（版本比较、契约校验、下载校验与清理、取消、zip/ELF 预检、PowerShell 脚本生成、Linux 原子替换），UI 13 项（对话框状态机与按钮去向、设置页、跳过逻辑），上传通道 4 项（登录/CSRF/multipart/409）
+
+#### 🛠 构建与发布
+- 构建脚本新增 `-U`：`build_windows.py -U`、`build-linux-docker.sh -U` 构建完成后直接把产物传到更新服务器（管理页同一条 `/admin/upload`，自动登录 + CSRF + multipart，支持 `--replace` 覆盖同版本）
+- 服务器地址集中在 `scripts/update_server.json`；管理口令放 `scripts/update_server.local.json`（已 gitignore）或环境变量 `PAN4DEX_UPDATE_ADMIN_PASSWORD`，构建机不入库口令
+- 新增 `scripts/build_all.py`：一次调用 Windows / Linux 两个构建脚本（Linux 走 Docker，Windows 上经 Git Bash 调起），统一透传版本号与 `-U`，构建后校验 zip 顶层与 ELF 头再汇总结果
+
 #### 🎨 活动窗格视觉增强（docs/ui-audit.md C1）
 - 活动窗格改为三层线索：「路径栏底色着色（主色 10%-24% 半透明）+ 路径栏下 2px 主色条 + 非活动窗格选中项灰化」，双窗格时一眼能分清 Delete/Ctrl+C 作用于哪个窗格
 - 新标签页创建时立即把 pane1 标为活动窗格（此前启动后全部窗格都无指示，第一眼看不到任何变化）

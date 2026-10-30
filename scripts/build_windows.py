@@ -11,7 +11,20 @@ script_path = pathlib.Path(__file__).resolve()
 project_root = script_path.parent.parent
 os.chdir(project_root)
 
-VERSION = sys.argv[1] if len(sys.argv) > 1 else None
+VERSION = None
+UPLOAD = False
+REPLACE = False
+for _arg in sys.argv[1:]:
+    if _arg in ("-U", "--upload", "U"):
+        UPLOAD = True
+    elif _arg == "--replace":
+        REPLACE = True
+    elif not _arg.startswith("-"):
+        VERSION = _arg
+    else:
+        print(f"未知参数: {_arg}", file=sys.stderr)
+        print("用法: build_windows.py [版本号] [-U|--upload] [--replace]")
+        sys.exit(2)
 if not VERSION:
     # 从全局配置 config/app_config.py 读取版本号（不再解析 main.py）
     cfg_file = project_root / "config" / "app_config.py"
@@ -213,3 +226,18 @@ print(f"\nBuild successful!")
 print(f"  Folder: {dest_folder}")
 print(f"  Zip:    {zip_path}")
 print(f"  Run:    {dest_folder / 'pan4dex.exe'}")
+
+# -U：构建完直接上传到更新服务器（地址/口令见 scripts/update_server.json）
+if UPLOAD:
+    sys.path.insert(0, str(script_path.parent))
+    from upload_release import AlreadyExists, UploadError, upload_artifact
+
+    try:
+        upload_artifact(zip_path, "windows", VERSION,
+                        replace=True if REPLACE else None)
+    except AlreadyExists as exc:
+        print(f"\n未上传：{exc}\n如需覆盖请重新构建并加 --replace", file=sys.stderr)
+        sys.exit(2)
+    except UploadError as exc:
+        print(f"\n上传失败：{exc}", file=sys.stderr)
+        sys.exit(1)

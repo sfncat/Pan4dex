@@ -11,22 +11,26 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtGui import QFont, QColor
 from PyQt6.QtCore import Qt, QSettings
 
-from config.app_config import DEFAULT_THEME, DEFAULT_LAUNCHER_APPS, ORG_NAME, APP_NAME
+from config.app_config import (
+    DEFAULT_THEME, DEFAULT_LAUNCHER_APPS, ORG_NAME, APP_NAME, VERSION)
+from core.updater import DEFAULT_SERVER_URL, normalize_server_url
 
 
 class SettingsDialog(QDialog):
     """设置对话框"""
-    
+
     def __init__(self, parent=None):
         super().__init__(parent)
         
         self.setWindowTitle("设置")
         self.setMinimumSize(400, 300)
-        
+
         # 当前设置
         self.current_theme = DEFAULT_THEME
         self.current_font_family = "系统默认"
         self.current_font_size = 9
+        self.check_requested_flag = False
+        self._clear_skipped = False
         
         self.init_ui()
     
@@ -57,6 +61,10 @@ class SettingsDialog(QDialog):
         # 应用启动器设置
         launcher_tab = self.create_launcher_tab()
         tabs.addTab(launcher_tab, "启动器")
+
+        # 版本更新设置
+        update_tab = self.create_update_tab()
+        tabs.addTab(update_tab, "更新")
 
         # 按钮
         btn_layout = QHBoxLayout()
@@ -307,6 +315,90 @@ class SettingsDialog(QDialog):
         del self.launcher_apps[row]
         self._reload_launcher_list()
 
+    def create_update_tab(self) -> QWidget:
+        """创建「更新」设置标签页（更新服务器 / 启动检查 / 自动模式）"""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        s = QSettings(ORG_NAME, APP_NAME)
+
+        version_group = QGroupBox("当前版本")
+        vg = QVBoxLayout(version_group)
+        version_label = QLabel(f"Pan4dex {VERSION}")
+        version_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse)
+        vg.addWidget(version_label)
+        self.update_check_btn = QPushButton("立即检查更新")
+        self.update_check_btn.clicked.connect(self._on_check_update_clicked)
+        vg.addWidget(self.update_check_btn)
+        layout.addWidget(version_group)
+
+        server_group = QGroupBox("更新服务器")
+        sf = QFormLayout(server_group)
+        self.update_server_edit = QLineEdit(
+            str(s.value("update/server_url", DEFAULT_SERVER_URL) or DEFAULT_SERVER_URL))
+        self.update_server_edit.setPlaceholderText(DEFAULT_SERVER_URL)
+        sf.addRow("服务器地址:", self.update_server_edit)
+        server_hint = QLabel("局域网更新源，例如 http://192.168.5.230:23011")
+        server_hint.setWordWrap(True)
+        sf.addRow("", server_hint)
+        layout.addWidget(server_group)
+
+        behavior_group = QGroupBox("检查与安装")
+        bl = QVBoxLayout(behavior_group)
+        self.update_startup_cb = QCheckBox("启动时在后台检查新版本")
+        self.update_startup_cb.setChecked(
+            s.value("update/startup_check", True, type=bool))
+        self.update_auto_download_cb = QCheckBox("发现新版本后自动下载")
+        self.update_auto_download_cb.setChecked(
+            s.value("update/auto_download", False, type=bool))
+        self.update_auto_install_cb = QCheckBox("下载完成后自动安装并重启")
+        self.update_auto_install_cb.setChecked(
+            s.value("update/auto_install", False, type=bool))
+        self.update_auto_install_cb.setEnabled(
+            self.update_auto_download_cb.isChecked())
+        self.update_auto_download_cb.toggled.connect(
+            self.update_auto_install_cb.setEnabled)
+        self.update_auto_download_cb.toggled.connect(
+            lambda on: on or self.update_auto_install_cb.setChecked(False))
+        bl.addWidget(self.update_startup_cb)
+        bl.addWidget(self.update_auto_download_cb)
+        bl.addWidget(self.update_auto_install_cb)
+        layout.addWidget(behavior_group)
+
+        skip_group = QGroupBox("已跳过的版本")
+        sg = QHBoxLayout(skip_group)
+        self.skipped_label = QLabel(
+            str(s.value("update/skipped_version", "") or "") or "（无）")
+        sg.addWidget(self.skipped_label)
+        sg.addStretch()
+        self.clear_skipped_btn = QPushButton("清除")
+        self.clear_skipped_btn.clicked.connect(self._on_clear_skipped)
+        sg.addWidget(self.clear_skipped_btn)
+        layout.addWidget(skip_group)
+
+        layout.addStretch()
+        return widget
+
+    def _on_check_update_clicked(self):
+        """保存设置并立即执行一次手动检查（由主窗口接管）"""
+        self.check_requested_flag = True
+        self.accept()
+
+    def _on_clear_skipped(self):
+        self._clear_skipped = True
+        self.skipped_label.setText("（保存后清除）")
+
+    def accept(self):
+        """保存前校验服务器地址，避免把写坏的地址存进 QSettings"""
+        url = self.update_server_edit.text().strip() or DEFAULT_SERVER_URL
+        try:
+            self.update_server_edit.setText(normalize_server_url(url))
+        except ValueError as exc:
+            QMessageBox.warning(self, "地址不合法", str(exc))
+            self.update_server_edit.setFocus()
+            return
+        super().accept()
+
     def on_theme_changed(self, index):
         """主题变化"""
         self.current_theme = self.theme_combo.itemData(index)
@@ -340,4 +432,15 @@ class SettingsDialog(QDialog):
         # 应用启动器配置
         if hasattr(self, 'launcher_apps'):
             settings['launcher_apps'] = list(self.launcher_apps)
+        # 更新设置
+        if hasattr(self, 'update_server_edit'):
+            auto_download = self.update_auto_download_cb.isChecked()
+            settings.update({
+                'update_server_url': self.update_server_edit.text().strip(),
+                'update_startup_check': self.update_startup_cb.isChecked(),
+                'update_auto_download': auto_download,
+                'update_auto_install': (
+                    auto_download and self.update_auto_install_cb.isChecked()),
+                'update_clear_skipped': self._clear_skipped,
+            })
         return settings

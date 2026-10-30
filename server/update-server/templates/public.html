@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% block title %}下载 · Pan4dex 更新源{% endblock %}
+{% block content %}
+<section class="hero">
+  <h1>Pan4dex 更新源</h1>
+  <p class="muted">Windows 与 Linux 的最新版本。客户端会自动检查这里；也可以手动下载后覆盖安装。</p>
+</section>
+
+<section class="stats" aria-label="最新版本">
+  {% for platform in platforms %}
+    <article class="stat-card latest-card">
+      <span class="stat-label">{{ 'Windows' if platform == 'windows' else 'Linux' }}</span>
+      {% if latest[platform] %}
+        <strong class="stat-value">{{ latest[platform].version }}</strong>
+        <span class="muted">发布于 {{ latest[platform].uploaded_at[:10] }}</span>
+        <div class="latest-actions">
+          <a class="btn btn-primary btn-sm" href="{{ url_for('download', platform=platform, filename=latest[platform].filename) }}">下载</a>
+          <span class="mono sha" title="{{ latest[platform].sha256 }}">{{ latest[platform].sha256[:12] }}…</span>
+        </div>
+        {% if latest[platform].notes %}
+          <p class="notes">{{ latest[platform].notes }}</p>
+        {% endif %}
+      {% else %}
+        <strong class="stat-value stat-empty">暂无</strong>
+        <span class="muted">还没有上传版本</span>
+      {% endif %}
+    </article>
+  {% endfor %}
+</section>
+
+{% for platform in platforms %}
+  <section class="panel" aria-labelledby="public-{{ platform }}">
+    <div class="panel-head">
+      <h2 id="public-{{ platform }}">{{ 'Windows' if platform == 'windows' else 'Linux' }} 全部版本</h2>
+      <p class="muted">{{ grouped[platform]|length }} 个可下载版本</p>
+    </div>
+    {% if grouped[platform] %}
+      <div class="table-wrap">
+        <table class="table">
+          <thead>
+            <tr>
+              <th scope="col">版本</th>
+              <th scope="col">大小</th>
+              <th scope="col">SHA-256</th>
+              <th scope="col">发布时间</th>
+              <th scope="col">下载</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for r in grouped[platform] %}
+              <tr>
+                <td data-label="版本">
+                  <strong class="mono">{{ r.version }}</strong>
+                  {% if not r.yanked and latest[platform] and r.id == latest[platform].id %}
+                    <span class="badge badge-accent">最新</span>
+                  {% elif r.yanked %}
+                    <span class="badge badge-muted">已撤下</span>
+                  {% endif %}
+                </td>
+                <td data-label="大小">{{ r.size|filesizeformat }}</td>
+                <td data-label="SHA-256">
+                  <span class="mono sha" title="{{ r.sha256 }}">{{ r.sha256[:12] }}…</span>
+                  <button type="button" class="icon-button" data-copy="{{ r.sha256 }}" aria-label="复制 {{ r.version }} 的 SHA-256">
+                    <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                      <rect x="9" y="9" width="11" height="11" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"></rect>
+                      <path d="M5 15V5a2 2 0 0 1 2-2h10" fill="none" stroke="currentColor" stroke-width="1.8"></path>
+                    </svg>
+                  </button>
+                </td>
+                <td data-label="发布时间">{{ r.uploaded_at[:16].replace('T', ' ') }}</td>
+                <td data-label="下载"><a class="btn btn-ghost btn-sm" href="{{ url_for('download', platform=r.platform, filename=r.filename) }}">下载</a></td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <p class="empty">还没有 {{ 'Windows' if platform == 'windows' else 'Linux' }} 版本。</p>
+    {% endif %}
+  </section>
+{% endfor %}
+{% endblock %}

@@ -337,6 +337,8 @@ def _cli_output():
             f"  --version, -V   显示版本信息\n"
             f"  --info          显示详细版本和构建信息\n"
             f"  --install-menu  Linux: 注册应用到开始菜单/应用菜单（安装 .desktop + 图标）\n"
+            f"  --check-update  检查更新服务器上的新版本（不启动界面）\n"
+            f"  --server URL    配合 --check-update 指定更新服务器\n"
             f"  --help, -h      显示此帮助信息\n"
             f"  --verbose, -v   保留控制台窗口显示日志（调试用）\n"
         )
@@ -566,6 +568,45 @@ def _test_open_file(path: str):
         sys.exit(2)
 
 
+def _check_update_cli() -> int:
+    """无界面检查更新：--check-update [--server URL]
+
+    退出码：0 = 已是最新，3 = 有新版本，1 = 检查失败（供发布/230 冒烟脚本判断）。
+    """
+    from core import updater
+
+    # 管道/重定向时 Python 会按 ANSI 代码页编码，中文输出直接抛 UnicodeEncodeError
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, OSError):
+        pass
+    server = updater.DEFAULT_SERVER_URL
+    if "--server" in sys.argv:
+        index = sys.argv.index("--server")
+        if index + 1 < len(sys.argv):
+            server = sys.argv[index + 1]
+    platform = updater.current_platform()
+    try:
+        info = updater.check_for_update(
+            server, current_version=VERSION, platform=platform)
+    except Exception as exc:
+        print(f"检查更新失败: {exc}")
+        print(f"服务器: {server}")
+        return 1
+    print(f"当前版本: {VERSION} ({platform})")
+    print(f"服务器: {server}")
+    if info is None:
+        print("已是最新版本。")
+        return 0
+    print(f"发现新版本: {info.version}")
+    print(f"文件: {info.filename} ({info.size} 字节)")
+    print(f"SHA-256: {info.sha256}")
+    if info.notes:
+        print("发布说明:")
+        print(info.notes)
+    return 3
+
+
 def main():
     """程序入口"""
     import sys
@@ -583,6 +624,9 @@ def main():
     if "--test-open" in sys.argv:
         _test_open_file(sys.argv[sys.argv.index("--test-open") + 1])
         sys.exit(0)
+    # 无界面检查更新（更新服务器冒烟测试用）
+    if "--check-update" in sys.argv:
+        sys.exit(_check_update_cli())
     free_console_in_gui_mode()
     # 安装全局异常处理器
     install_crash_handler()
@@ -703,12 +747,17 @@ def main():
             font.setHintingPreference(QFont.HintingPreference.PreferFullHinting)
             app.setFont(font)
         from core.main_window import MainWindow
-        from core.lifecycle import exec_and_drain
+        from core.lifecycle import exec_and_drain, call_later
 
         logger.info(f"[启动计时] MainWindow 导入: {(time.perf_counter()-_t0)*1000:.1f}ms")
         window = MainWindow()
         logger.info(f"[启动计时] MainWindow 实例化: {(time.perf_counter()-_t0)*1000:.1f}ms")
         window.show()
+        # 启动后台检查更新（默认开，设置「更新」页可关）；放在入口而不是 MainWindow
+        # 构造里，避免测试建窗口时也去连更新服务器
+        call_later(window, 3000, window.startup_update_check)
+        # Windows 更新后清理旧目录备份（update-ok.json 版本对得上才删）
+        call_later(window, 10000, window.cleanup_update_backup)
         # Windows 任务栏图标加固（三重保险）：
         # 1) app/window 级 QIcon（已设置）
         # 2) show 后立即 + 延迟 200ms 再重设 Qt 窗口图标

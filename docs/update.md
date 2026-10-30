@@ -1,8 +1,14 @@
 # Pan4dex 版本更新机制（更新服务器 + 客户端更新）
 
-> 状态：**设计评审稿（2026-10-30），尚未实现**
+> 状态：**已实现（2026-10-30）**；服务器已部署到 230（uv + systemd），两平台真机升级联调待做（见第 10 节）
 > 范围：Windows（onedir + zip）、Linux（onefile ELF）
 > 本文是该机制的单一真相：服务器 API、客户端行为、部署、安全边界都只写在这里。实现落地后本文继续作为机制文档维护，不另开一份设计稿。
+>
+> 实现落点：`server/update-server/`（Flask + waitress + SQLite）、`core/updater.py`（纯标准库）、
+> `core/update_runner.py`（后台线程）、`widgets/update_dialog.py`（状态机对话框）、
+> `widgets/settings_dialog.py`「更新」页、`core/main_window.py` 帮助菜单入口与启动检查调度、
+> `main.py --check-update`（无界面冒烟）。测试：`server/update-server/tests/test_app.py`、
+> `tests/test_updater.py`、`tests/test_update_ui.py`。
 
 ---
 
@@ -210,26 +216,32 @@ SQLite 表 `releases`：
 
 ### 4.7 部署（230）
 
-推荐 Docker Compose：
+现网：**uv 管虚拟环境 + systemd 托管**，目录 `/home/kali/runSpace/pan4dex`。
 
-```yaml
-services:
-  update-server:
-    build: .
-    ports: ["23011:23011"]
-    environment:
-      PAN4DEX_UPDATE_ADMIN_PASSWORD: "${PAN4DEX_UPDATE_ADMIN_PASSWORD}"
-      PAN4DEX_UPDATE_DATA_DIR: /data
-      PAN4DEX_UPDATE_PUBLIC_BASE_URL: "http://192.168.5.230:23011"
-      PAN4DEX_UPDATE_MAX_UPLOAD_MB: "500"
-    volumes: ["./data:/data"]
-    restart: unless-stopped
+- 依赖：`uv sync`（`pyproject.toml` 里 Flask + waitress；测试用 `uv sync --extra dev`）。
+- 服务：`/etc/systemd/system/pan4dex-update.service`，`EnvironmentFile=.env`、`PAN4DEX_UPDATE_DATA_DIR=<目录>/data`、`ExecStart=.venv/bin/python app.py`、`Restart=always`；`systemctl enable --now pan4dex-update`。
+- 数据：`<目录>/data/`（SQLite、产物、`secret.key`、`logs/admin.log`），备份拷这个目录即可。
+- 防火墙只放行局域网：`ufw allow from 192.168.5.0/24 to any port 23011`（Kali 若用 nftables，按同义规则；本机 ufw 关闭时无需配置）。
+- 备选：仓库内 `Dockerfile` / `docker-compose.yml` 仍可用；230 曾因拉不到 Docker Hub 基础镜像改走 uv 方案。
+- 反向代理/域名不在本次范围；以后上 HTTPS 只需在客户端改 `update/server_url`。
+
+### 4.7.1 构建一键上传（构建机）
+
+构建脚本带 `-U` 时，产物构建完直接调用 `scripts/upload_release.py` 走管理页同一条
+`/admin/upload` 通道（自动登录 + CSRF + multipart + SHA-256 由服务端计算）：
+
+```bash
+python scripts/build_all.py -U            # 两平台；Linux 走 Docker，Windows 上经 Git Bash
+python scripts/build_windows.py -U        # 只 Windows
+bash scripts/build-linux-docker.sh -U     # 只 Linux
+python scripts/upload_release.py --platform linux --file releases/pan4dex-1.9.028-linux
 ```
 
-- 230 上：`docker compose up -d --build`；数据落在 `server/update-server/data/`（或 `/opt/pan4dex-update-server/data`）。
-- 防火墙只放行局域网：`ufw allow from 192.168.5.0/24 to any port 23011`（Kali 若用 nftables，按同义规则）。
-- 备选（不用 Docker）：`python -m venv` + `waitress-serve --listen=0.0.0.0:23011 app:app` + systemd unit（README 给出）。
-- 反向代理/域名不在本次范围；以后上 HTTPS 只需在客户端改 `update/server_url`。
+- 地址/超时/默认发布说明：`scripts/update_server.json`（入库）。
+- 管理口令：环境变量 `PAN4DEX_UPDATE_ADMIN_PASSWORD` 优先，其次
+  `scripts/update_server.local.json`（已 gitignore），都没有时交互输入。
+- 同平台同版本已存在 → 上传报 409 并提示；加 `--replace` 覆盖。
+- 上传失败时构建产物保留、退出码非零，发布流程不会把“构建成功”误报成“已发布”。
 
 ### 4.8 运维
 
@@ -245,17 +257,22 @@ services:
 
 ```
 core/updater.py            # 版本比较、检查、下载、校验、安装（不含 UI）
+core/update_runner.py      # 后台线程 → 信号回主线程（检查 / 下载 / 取消）
 widgets/update_dialog.py   # 发现新版本 / 下载进度 / 安装确认
 ```
 
 不新建包；沿用 `core/` + `widgets/` 的扁平结构（`AGENT.md:27-41`）。
 
-`core/updater.py` 只依赖标准库 + `config.app_config`，**不 import Qt**；线程封装放在 UI 层，便于单元测试。
+`core/updater.py` 只依赖标准库 + `config.app_config`，**不 import Qt**；线程封装在
+`core/update_runner.py`（信号接收者就是目标 QObject），便于核心逻辑单测。安装阶段启动
+新进程也用标准库 `subprocess`（`start_new_session` / `DETACHED_PROCESS`），不在核心层引入 Qt。
 
 ### 5.2 检查流程
 
 1. 平台：`sys.platform == "win32"` → `windows`，否则 `linux`。
-2. `GET <server_url>/api/v1/latest?platform=…`，`urllib.request`，连接 5 s / 读 15 s，UA `Pan4dex/<VERSION> (<platform>)`。
+2. `GET <server_url>/api/v1/latest?platform=…`，`urllib.request`，单值 15 s 超时（urllib 不支持
+   分别设置连接/读取超时），UA `Pan4dex/<VERSION> (<platform>)`。
+   服务器用 `404 + {"error": "no_release"}` 表示该平台还没有版本，客户端按「无更新」处理。
 3. 校验 JSON 必填字段、版本号格式、`sha256` 为 64 位十六进制、`size > 0`。
 4. 版本比较：按 `.` 拆成整数元组逐段比较；相等或本地更高 → 无更新。
 5. 结果：`UpdateInfo`（version/filename/size/sha256/notes/download_url）。
@@ -329,7 +346,7 @@ widgets/update_dialog.py   # 发现新版本 / 下载进度 / 安装确认
    `sudo install -m 755 <下载文件> <目标路径>`，不尝试提权。
 2. 下载到目标目录内 `.pan4dex-<ver>.part`（同文件系统才能原子替换），校验大小/SHA-256 与 ELF 头。
 3. `chmod 0o755` → `os.replace(part, target)`（Linux 允许替换正在运行的可执行文件）。
-4. `QProcess.startDetached(target)`，随后退出当前进程。
+4. `QProcess.startDetached` 等价的 `subprocess.Popen(start_new_session=True)`（核心层不 import Qt），随后退出当前进程。
 5. 失败（磁盘满、权限、校验不符）：删除临时文件，保留旧文件，对话框说明原因。
 
 注意：onefile 运行时会解压到 `/tmp`，替换原文件不影响当前进程；`.desktop` 的 `Exec` 路径不变，无需重装菜单。
@@ -353,6 +370,12 @@ widgets/update_dialog.py   # 发现新版本 / 下载进度 / 安装确认
 - 下载可取消，取消后清理 `.part`；
 - 任何安装异常都必须让旧版本保持可启动；
 - 服务器返回的 notes 只当文本，不当 HTML/脚本。
+
+### 5.9 无界面检查（`--check-update`）
+
+`python main.py --check-update [--server URL]` 只做检查并打印当前版本、服务器、新版本与
+SHA-256（不初始化 Qt）。退出码：`0` 已是最新、`3` 有新版本、`1` 检查失败，供 230 部署与
+发布脚本冒烟。
 
 ---
 
@@ -490,13 +513,13 @@ widgets/update_dialog.py   # 发现新版本 / 下载进度 / 安装确认
 
 ## 10. 实施拆分
 
-| 阶段 | 内容 | 验收 |
-|---|---|---|
-| 1 | 服务器：Flask 应用、SQLite、上传/撤下/删除、API、Docker、测试 | 230 上容器可起，API 返回正确 manifest |
-| 2 | 客户端核心：`core/updater.py`（检查/下载/校验/安装），无 UI | 单元测试全绿 |
-| 3 | 客户端 UI：菜单项、`UpdateDialog`、设置页、启动检查、CLI `--check-update` | 手工走查第 8 节 1-6、10 |
-| 4 | Windows/Linux 安装器联调 + 回滚演练 | 两平台各完成一次真实升级 |
-| 5 | 文档与发布：changelog、AGENT.md 索引、feature-checklist、版本号 1.9.029（当前工作树已有 1.9.028 的 UI 改动，版本号届时按发布流程统一） | 完整 `tests/` 出汇总行 |
+| 阶段 | 内容 | 验收 | 状态 |
+|---|---|---|---|
+| 1 | 服务器：Flask 应用、SQLite、上传/撤下/删除、API、部署、测试 | 230 上服务可起，API 返回正确 manifest | ✅ 已部署 230（uv + systemd，`/healthz`、登录、`latest` 404 已验证） |
+| 2 | 客户端核心：`core/updater.py`（检查/下载/校验/安装），无 UI | 单元测试全绿 | ✅ `tests/test_updater.py` 20 项 |
+| 3 | 客户端 UI：菜单项、`UpdateDialog`、设置页、启动检查、CLI `--check-update` | 手工走查第 8 节 1-6、10 | ✅ `tests/test_update_ui.py` 11 项 + 本机真实 HTTP 下载链路冒烟 |
+| 4 | Windows/Linux 安装器联调 + 回滚演练 | 两平台各完成一次真实升级 | ⏳ 待做 |
+| 5 | 文档与发布：changelog、AGENT.md 索引、feature-checklist、版本号 1.9.029（当前工作树已有 1.9.028 的 UI 改动，版本号届时按发布流程统一） | 完整 `tests/` 出汇总行 | ⏳ 文档已同步，版本号/产物待发布流程 |
 
 预估：服务器半天到一天；客户端核心 + UI 一天；两平台联调与回滚半天。合计约 2-3 个工作日。
 

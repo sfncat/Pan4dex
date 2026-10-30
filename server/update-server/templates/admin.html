@@ -1,0 +1,155 @@
+{% extends "base.html" %}
+{% block title %}控制台 · Pan4dex 更新源{% endblock %}
+{% block content %}
+<section class="page-head">
+  <div>
+    <h1>更新控制台</h1>
+    <p class="muted">上传 Windows / Linux 产物，客户端会从 <code>/api/v1/latest</code> 获取最新版本。</p>
+  </div>
+</section>
+
+<section class="stats" aria-label="发布概况">
+  {% for platform in platforms %}
+    <article class="stat-card">
+      <span class="stat-label">{{ 'Windows' if platform == 'windows' else 'Linux' }} 最新版本</span>
+      {% if latest[platform] %}
+        <strong class="stat-value">{{ latest[platform].version }}</strong>
+        <span class="muted">{{ latest[platform].uploaded_at[:10] }}</span>
+      {% else %}
+        <strong class="stat-value stat-empty">暂无</strong>
+        <span class="muted">还没有上传版本</span>
+      {% endif %}
+    </article>
+  {% endfor %}
+  <article class="stat-card">
+    <span class="stat-label">版本总数</span>
+    <strong class="stat-value">{{ release_count }}</strong>
+    <span class="muted">占用 {{ total_size|filesizeformat }}</span>
+  </article>
+  <article class="stat-card">
+    <span class="stat-label">数据盘余量</span>
+    <strong class="stat-value">{{ (disk_free / 1073741824)|round(1) }} GB</strong>
+    <span class="muted">230 本机存储</span>
+  </article>
+</section>
+
+<section class="panel" aria-labelledby="upload-title">
+  <div class="panel-head">
+    <h2 id="upload-title">上传新版本</h2>
+    <p class="muted">Windows 传 <code>pan4dex-x.y.z.zip</code>，Linux 传 <code>pan4dex-x.y.z-linux</code>；服务端会自动校验包结构并计算 SHA-256。</p>
+  </div>
+  <form id="upload-form" method="post" action="{{ url_for('upload') }}" enctype="multipart/form-data" class="upload-form" novalidate>
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <div class="form-grid">
+      <div class="field">
+        <label for="platform">平台</label>
+        <select id="platform" name="platform">
+          <option value="windows">Windows</option>
+          <option value="linux">Linux</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="version">版本号</label>
+        <input id="version" name="version" type="text" inputmode="numeric" placeholder="1.9.028" pattern="\d+\.\d+\.\d+" required>
+        <p class="help">建议由文件名自动带出，可手动修正。</p>
+      </div>
+    </div>
+
+    <div class="field">
+      <label for="artifact">产物文件</label>
+      <div id="drop-zone" class="drop-zone">
+        <svg width="28" height="28" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path d="M12 16V4m0 0L7 9m5-5 5 5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path>
+          <path d="M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"></path>
+        </svg>
+        <label for="artifact" class="drop-label">拖入产物，或点击选择文件</label>
+        <input id="artifact" name="artifact" type="file" required>
+        <p class="help">单文件上限 {{ max_upload_mb }} MB</p>
+      </div>
+    </div>
+
+    <div class="field">
+      <label for="notes">发布说明（纯文本）</label>
+      <textarea id="notes" name="notes" rows="4" maxlength="4000" placeholder="客户端更新提示里显示的说明，纯文本，不渲染 Markdown。"></textarea>
+    </div>
+
+    <label class="checkline">
+      <input type="checkbox" name="replace" value="1">
+      <span>替换同版本（仅在重复上传时勾选）</span>
+    </label>
+
+    <div class="upload-actions">
+      <button id="upload-submit" type="submit" class="btn btn-primary">开始上传</button>
+      <progress id="upload-progress" max="100" value="0" hidden></progress>
+      <p id="upload-status" class="upload-status" role="status" aria-live="polite"></p>
+    </div>
+  </form>
+</section>
+
+{% for platform in platforms %}
+  <section class="panel" aria-labelledby="versions-{{ platform }}">
+    <div class="panel-head">
+      <h2 id="versions-{{ platform }}">{{ 'Windows' if platform == 'windows' else 'Linux' }} 版本</h2>
+      <p class="muted">{{ grouped[platform]|length }} 个版本</p>
+    </div>
+    {% if grouped[platform] %}
+      <div class="table-wrap">
+        <table class="table">
+          <thead>
+            <tr>
+              <th scope="col">版本</th>
+              <th scope="col">大小</th>
+              <th scope="col">SHA-256</th>
+              <th scope="col">上传时间</th>
+              <th scope="col">状态</th>
+              <th scope="col">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for r in grouped[platform] %}
+              <tr>
+                <td data-label="版本"><strong class="mono">{{ r.version }}</strong></td>
+                <td data-label="大小">{{ r.size|filesizeformat }}</td>
+                <td data-label="SHA-256">
+                  <span class="mono sha">{{ r.sha256[:12] }}…</span>
+                  <button type="button" class="icon-button" data-copy="{{ r.sha256 }}" aria-label="复制 {{ r.version }} 的 SHA-256">
+                    <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                      <rect x="9" y="9" width="11" height="11" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"></rect>
+                      <path d="M5 15V5a2 2 0 0 1 2-2h10" fill="none" stroke="currentColor" stroke-width="1.8"></path>
+                    </svg>
+                  </button>
+                </td>
+                <td data-label="上传时间">{{ r.uploaded_at[:16].replace('T', ' ') }}</td>
+                <td data-label="状态">
+                  {% if r.yanked %}
+                    <span class="badge badge-muted">已撤下</span>
+                  {% elif latest[platform] and r.id == latest[platform].id %}
+                    <span class="badge badge-accent">最新</span>
+                  {% else %}
+                    <span class="badge">可下载</span>
+                  {% endif %}
+                </td>
+                <td data-label="操作">
+                  <div class="row-actions">
+                    <a class="btn btn-ghost btn-sm" href="{{ url_for('download', platform=r.platform, filename=r.filename) }}">下载</a>
+                    <form method="post" action="{{ url_for('release_action', release_id=r.id, action='unyank' if r.yanked else 'yank') }}" class="inline-form">
+                      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                      <button type="submit" class="btn btn-ghost btn-sm">{{ '恢复' if r.yanked else '撤下' }}</button>
+                    </form>
+                    <form method="post" action="{{ url_for('release_action', release_id=r.id, action='delete') }}" class="inline-form" data-confirm="确定删除 {{ r.version }}（{{ r.platform }}）？文件和记录都会删除，不可恢复。">
+                      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                      <button type="submit" class="btn btn-danger btn-sm">删除</button>
+                    </form>
+                  </div>
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <p class="empty">还没有 {{ 'Windows' if platform == 'windows' else 'Linux' }} 版本。</p>
+    {% endif %}
+  </section>
+{% endfor %}
+{% endblock %}

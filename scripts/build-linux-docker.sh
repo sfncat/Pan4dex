@@ -1,7 +1,32 @@
 #!/bin/bash
 set -e
 
-VERSION=${1:-$(python3 -c "import re; m=re.search(r'^VERSION\s*=\s*\"([^\"]+)\"', open('config/app_config.py', encoding='utf-8').read(), re.M); print(m.group(1))")}
+# 参数：版本号（可选）、-U/--upload（构建后上传）、--replace（覆盖同版本）
+UPLOAD=0
+REPLACE=0
+ARG_VERSION=""
+for arg in "$@"; do
+    case "$arg" in
+        -U|--upload|U) UPLOAD=1 ;;
+        --replace) REPLACE=1 ;;
+        -*) echo "未知参数: $arg" >&2; echo "用法: build-linux-docker.sh [版本号] [-U] [--replace]" >&2; exit 2 ;;
+        *) ARG_VERSION="$arg" ;;
+    esac
+done
+
+# 选一个真能跑的 python：Windows 的 WindowsApps 里可能有 python3 占位程序（一跑就弹商店）
+find_python() {
+    for candidate in python3 python; do
+        if command -v "$candidate" >/dev/null 2>&1 && \
+           "$candidate" -c "pass" >/dev/null 2>&1; then
+            echo "$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+
+VERSION=${ARG_VERSION:-$("$(find_python)" -c "import re; m=re.search(r'^VERSION\s*=\s*\"([^\"]+)\"', open('config/app_config.py', encoding='utf-8').read(), re.M); print(m.group(1))")}
 RELEASES_DIR="$(pwd)/releases"
 # 镜像可用 DOCKER_IMAGE 覆盖：改了 packaging/Dockerfile-linux 后想先拿新镜像做 A/B
 # （不动旧镜像）时，构一个 `pan4dex-builder-linux:py311` 之类的临时 tag 再传进来。
@@ -205,6 +230,19 @@ if [ -f "${RELEASES_DIR}/pan4dex-${VERSION}-linux" ]; then
 else
     echo "  ✗ 构建失败"
     exit 1
+fi
+
+# -U：构建完直接上传到更新服务器（地址/口令见 scripts/update_server.json）
+if [ "$UPLOAD" = "1" ]; then
+    if ! PY=$(find_python); then
+        echo "✗ 找不到可用的 python，无法上传产物" >&2
+        exit 1
+    fi
+    UPLOAD_ARGS=(--platform linux --file "${RELEASES_DIR}/pan4dex-${VERSION}-linux")
+    [ "$REPLACE" = "1" ] && UPLOAD_ARGS+=(--replace)
+    echo ""
+    echo "[上传] $PY scripts/upload_release.py ${UPLOAD_ARGS[*]}"
+    "$PY" scripts/upload_release.py "${UPLOAD_ARGS[@]}"
 fi
 
 echo ""

@@ -1,0 +1,15 @@
+services:
+  update-server:
+    build: .
+    image: pan4dex-update-server:latest
+    container_name: pan4dex-update-server
+    restart: unless-stopped
+    ports:
+      - "23011:23011"
+    environment:
+      PAN4DEX_UPDATE_ADMIN_PASSWORD: "${PAN4DEX_UPDATE_ADMIN_PASSWORD:?请先复制 .env.example 为 .env 并设置管理口令}"
+      PAN4DEX_UPDATE_PUBLIC_BASE_URL: "${PAN4DEX_UPDATE_PUBLIC_BASE_URL:-http://192.168.5.230:23011}"
+      PAN4DEX_UPDATE_DATA_DIR: /data
+      PAN4DEX_UPDATE_MAX_UPLOAD_MB: "${PAN4DEX_UPDATE_MAX_UPLOAD_MB:-500}"
+    volumes:
+      - ./data:/data

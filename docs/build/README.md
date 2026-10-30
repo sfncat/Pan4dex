@@ -22,8 +22,19 @@ Pan4dex 有两个产物，受两条正交的约束决定“怎么编”：
 | Windows 版 | 人在 Linux，用 SSH 连到某台 Windows 编 | `python scripts/build.py windows --remote U@WIN --remote-path 'C:\workspace\Pan4dex'` | [build-windows.md](build-windows.md) · W2 |
 | Linux 版 | 就在 Linux 机器上 | `bash scripts/build-linux-docker.sh`（或 `build.py linux`） | [build-linux.md](build-linux.md) · L1 |
 | Linux 版 | 在 Windows 上，走 WSL2 + Docker | `python scripts/build.py linux`（WSL 里） | [build-linux.md](build-linux.md) · L2 |
+| **两平台一起** | Windows（Linux 走 Docker，经 Git Bash 调起） | `python scripts/build_all.py [-U] [--replace]` | 本页下文 |
 
-退役的多机内网编排（win54/win55/gti/230、`build.sh`、`build_all.py`、断链脚本）见 [legacy-multimachine.md](legacy-multimachine.md)——**不要再当入口用**。
+退役的多机内网编排（win54/win55/gti/230、`build.sh`、断链脚本）见 [legacy-multimachine.md](legacy-multimachine.md)——**不要再当入口用**（`build_all.py` 已重写为双平台入口，不再是退役件）。
+
+## 构建后上传更新服务器（`-U`）
+
+`build.py`、`build_all.py`、`build_windows.py`、`build-linux-docker.sh` 都接受
+`-U/--upload`（`build_windows.py`/`build-linux-docker.sh` 也认裸 `U`）：构建完成后经
+`scripts/upload_release.py` 走管理页同一条 `/admin/upload` 上传，`--replace` 覆盖同版本。
+
+- 服务器地址/超时：`scripts/update_server.json`（入库）。
+- 管理口令：环境变量 `PAN4DEX_UPDATE_ADMIN_PASSWORD` > `scripts/update_server.local.json`（已 gitignore）> 交互输入。
+- 上传失败不会删产物，脚本以非零退出码收尾。
 
 ## 两个“版本”别混淆
 

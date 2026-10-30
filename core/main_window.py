@@ -126,6 +126,12 @@ class MainWindow(QMainWindow):
         
         self._active_pane = None
 
+        # 版本更新：后台检查运行器 / 当前展示的更新对话框（非模态时须握住引用）
+        self._update_runner = None
+        self._update_check_manual = False
+        self._update_server = ""
+        self._update_dialog = None
+
         # 已关闭、等事件循环销毁的标签页。必须握住它们的 Python 引用，否则
         # 包装器被回收时会当场 delete C++ 对象（销毁时机落进 GC 手里，见 `close_tab`）
         self._closed_tabs = []
@@ -718,7 +724,12 @@ class MainWindow(QMainWindow):
         
         # 帮助菜单
         help_menu = menubar.addMenu("帮助(&H)")
-        
+
+        update_action = QAction("检查更新(&U)...", self)
+        update_action.triggered.connect(lambda: self.check_updates(manual=True))
+        help_menu.addAction(update_action)
+        help_menu.addSeparator()
+
         settings_action = QAction("设置(&S)...", self)
         settings_action.triggered.connect(self.open_settings)
         help_menu.addAction(settings_action)
@@ -1510,6 +1521,23 @@ class MainWindow(QMainWindow):
             )
             self._apply_startup_sidebars()
 
+            # 版本更新设置
+            from core.updater import DEFAULT_SERVER_URL
+            self.settings.setValue(
+                "update/server_url",
+                settings.get('update_server_url') or DEFAULT_SERVER_URL)
+            self.settings.setValue(
+                "update/startup_check",
+                bool(settings.get('update_startup_check', True)))
+            self.settings.setValue(
+                "update/auto_download",
+                bool(settings.get('update_auto_download', False)))
+            self.settings.setValue(
+                "update/auto_install",
+                bool(settings.get('update_auto_install', False)))
+            if settings.get('update_clear_skipped'):
+                self.settings.remove("update/skipped_version")
+
             # 应用主题
             theme = settings.get('theme', DEFAULT_THEME)
             self.theme_manager.apply_theme(theme)
@@ -1530,6 +1558,110 @@ class MainWindow(QMainWindow):
             self.refresh_launcher_buttons()
             
             self.status_bar.showMessage("设置已应用")
+
+            # 设置页点了「立即检查更新」：保存完再查，避免对话框挡住结果
+            if getattr(dialog, 'check_requested_flag', False):
+                call_later(self, 0, self._manual_update_check)
+
+    def _manual_update_check(self):
+        self.check_updates(manual=True)
+
+    # ------------------------------------------------------------ 版本更新
+
+    def _update_server_url(self) -> str:
+        """读取并校验更新服务器地址；配置被写坏时退回默认地址"""
+        from core.updater import DEFAULT_SERVER_URL, normalize_server_url
+        raw = str(self.settings.value("update/server_url", DEFAULT_SERVER_URL) or "")
+        try:
+            return normalize_server_url(raw or DEFAULT_SERVER_URL)
+        except ValueError:
+            logger.warning("更新服务器地址不合法（%r），本次使用默认地址", raw)
+            return DEFAULT_SERVER_URL
+
+    def _ensure_update_runner(self):
+        if self._update_runner is None:
+            from core.update_runner import UpdateRunner
+            self._update_runner = UpdateRunner(self)
+            self._update_runner.check_done.connect(self._on_update_checked)
+        return self._update_runner
+
+    def startup_update_check(self):
+        if not self.settings.value("update/startup_check", True, type=bool):
+            return
+        self.check_updates(manual=False)
+
+    def cleanup_update_backup(self):
+        try:
+            from core import updater
+            updater.cleanup_after_update(VERSION)
+        except Exception:
+            logger.warning("清理旧版本备份失败", exc_info=True)
+
+    def check_updates(self, manual: bool = False):
+        """检查更新：manual 时反馈失败/无更新，自动检查只在发现新版本后提示"""
+        from core import updater
+
+        dialog = self._update_dialog
+        if dialog is not None and dialog.isVisible():
+            dialog.raise_()
+            dialog.activateWindow()
+            return
+        runner = self._ensure_update_runner()
+        if runner.busy:
+            if manual:
+                self.status_bar.showMessage("正在检查更新，请稍候…", 4000)
+            return
+        self._update_check_manual = bool(manual)
+        self._update_server = self._update_server_url()
+        if manual:
+            self.status_bar.showMessage("正在检查更新…")
+        runner.check(self._update_server, VERSION, updater.current_platform())
+
+    def _on_update_checked(self, info, error):
+        from PyQt6.QtWidgets import QMessageBox
+
+        manual = self._update_check_manual
+        if manual:
+            self.status_bar.clearMessage()
+        if error:
+            logger.info("检查更新失败: %s", error)
+            if manual:
+                QMessageBox.warning(
+                    self, "检查更新失败",
+                    f"无法完成更新检查。\n\n服务器：{self._update_server}\n"
+                    f"原因：{error}")
+            return
+        if info is None:
+            if manual:
+                QMessageBox.information(
+                    self, "检查更新", f"当前已是最新版本（{VERSION}）。")
+            else:
+                logger.info("自动检查：已是最新版本 %s", VERSION)
+            return
+        skipped = str(self.settings.value("update/skipped_version", "") or "")
+        if not manual and skipped == info.version:
+            logger.info("自动检查：版本 %s 已被用户跳过", info.version)
+            return
+        self._show_update_dialog(info, manual)
+
+    def _show_update_dialog(self, info, manual: bool):
+        from widgets.update_dialog import UpdateDialog
+
+        auto_download = self.settings.value("update/auto_download", False, type=bool)
+        auto_install = self.settings.value("update/auto_install", False, type=bool)
+        dialog = UpdateDialog(
+            self, info, VERSION, manual=manual,
+            auto_download=auto_download, auto_install=auto_install,
+            server_url=self._update_server_url())
+        self._update_dialog = dialog
+        dialog.finished.connect(self._on_update_dialog_closed)
+        if manual:
+            dialog.exec()
+        else:
+            dialog.show()
+
+    def _on_update_dialog_closed(self, _result):
+        self._update_dialog = None
     
     def apply_toolbar_buttons(self, config: dict):
         """应用工具栏按钮可见性"""

@@ -1,0 +1,15 @@
+[project]
+name = "pan4dex-update-server"
+version = "1.0.0"
+description = "Pan4dex 局域网更新服务器（管理页 + 最新版本 API + 产物下载）"
+requires-python = ">=3.10"
+dependencies = [
+    "Flask>=3.0,<4",
+    "waitress>=3.0,<4",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[tool.uv]
+package = false
