@@ -7,9 +7,12 @@ import json
 import logging
 import time
 from collections import OrderedDict
-from PyQt6.QtWidgets import QAbstractItemView, QListWidget, QListWidgetItem, QApplication
-from PyQt6.QtCore import QMimeData, QSize, Qt, QTimer, QUrl, QRunnable, QThreadPool, QObject, pyqtSignal
-from PyQt6.QtGui import QDrag, QPixmap, QIcon, QImage, QImageReader
+from PyQt6.QtWidgets import (QAbstractItemView, QListWidget, QListWidgetItem,
+                             QApplication, QStyledItemDelegate, QStyle,
+                             QStyleOptionViewItem)
+from PyQt6.QtCore import (QMimeData, QSize, Qt, QTimer, QUrl, QRunnable,
+                          QThreadPool, QObject, pyqtSignal)
+from PyQt6.QtGui import QDrag, QPixmap, QIcon, QImage, QImageReader, QFontMetrics, QFont
 
 from core.lifecycle import call_later
 
@@ -17,6 +20,105 @@ logger = logging.getLogger("pan4dex.thumbnail_view")
 
 IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.ico', '.tiff', '.tif', '.svg', '.heic', '.heif', '.avif', '.apng'}
 CACHE_SIZE = 200
+
+# ---- 平铺模式（Windows 资源管理器「平铺」式：图标左、名称+两行附注右）----
+TILE_SIZE = QSize(288, 64)          # 单个瓦片的网格尺寸
+TILE_ICON = QSize(48, 48)           # 瓦片图标尺寸
+PE_EXTENSIONS = {'.exe', '.dll'}    # 有版本资源可读的扩展名（瓦片第二/三行换版本+说明）
+
+
+def _tile_type_text(name: str, is_dir: bool) -> str:
+    """类型附注，与列表视图「类型」列同一份实现（DirStoreModel._type_text）"""
+    from core.dir_model import DirStoreModel
+    from types import SimpleNamespace
+    return DirStoreModel._type_text(SimpleNamespace(name=name, is_dir=is_dir))
+
+
+def _tile_size_text(size: int) -> str:
+    """大小附注，与列表视图「大小」列同一份实现（DirStoreModel._fmt_size）"""
+    from core.dir_model import DirStoreModel
+    return DirStoreModel._fmt_size(size)
+
+
+class TileItemDelegate(QStyledItemDelegate):
+    """平铺瓦片绘制：图标在左，右侧名称加粗 + 两行小字附注。
+
+    背景（选中/悬停）仍走样式表的 PE_PanelItemViewItem，保证与主题、
+    非活动窗格灰化令牌一致；文本部分自己画，颜色取自调色板。
+    """
+
+    MARGIN = 6
+    TEXT_GAP = 8  # 图标与文本的间距
+
+    def paint(self, painter, option, index):
+        opt = QStyleOptionViewItem(option)
+        self.initStyleOption(opt, index)
+        widget = opt.widget
+        style = widget.style() if widget else QApplication.style()
+        style.drawPrimitive(
+            QStyle.PrimitiveElement.PE_PanelItemViewItem, opt, painter, widget)
+
+        rect = opt.rect
+        isz = opt.decorationSize
+        icon_x = rect.x() + self.MARGIN
+        icon_y = rect.y() + (rect.height() - isz.height()) // 2
+        opt.icon.paint(painter,
+                       icon_x, icon_y, isz.width(), isz.height())
+
+        tx = icon_x + isz.width() + self.TEXT_GAP
+        tw = rect.right() - tx - self.MARGIN + 1
+        if tw <= 0:
+            return
+
+        palette = opt.palette
+        selected = bool(opt.state & QStyle.StateFlag.State_Selected)
+        main_color = (palette.color(palette.ColorRole.HighlightedText) if selected
+                      else palette.color(palette.ColorRole.Text))
+        sub_color = (palette.color(palette.ColorRole.HighlightedText) if selected
+                     else palette.color(palette.ColorRole.PlaceholderText))
+
+        name = index.data(Qt.ItemDataRole.DisplayRole) or ""
+        line2 = index.data(Qt.ItemDataRole.UserRole + 2) or ""
+        line3 = index.data(Qt.ItemDataRole.UserRole + 3) or ""
+        lines = [name, line2, line3]
+        n = len(lines)
+        row_h = rect.height() / n
+        # 逐行用 drawText(QPoint) 画：Qt 的 drawText(QRect,…) 重载在多列
+        # QListView 里第 2 列起静默不渲染（2026-10-31 实测，QPoint 重载正常）
+        for i, text in enumerate(lines):
+            if not text:
+                continue
+            font = QFont(opt.font)
+            font.setBold(i == 0)
+            painter.setFont(font)
+            painter.setPen(main_color if i == 0 else sub_color)
+            fm = QFontMetrics(font)
+            elided = fm.elidedText(text, Qt.TextElideMode.ElideRight,
+                                   tw if i == 0 else int(tw * 0.95))
+            baseline = int(rect.y() + (i + 0.62) * row_h)
+            painter.drawText(tx, baseline, elided)
+
+
+class VersionInfoSignals(QObject):
+    loaded = pyqtSignal(str, object)  # (path, (version, desc) 或 None)
+
+
+class VersionInfoLoader(QRunnable):
+    """后台读 PE 版本资源（GetFileVersionInfo，单文件毫秒级）"""
+
+    def __init__(self, path):
+        super().__init__()
+        self.path = path
+        self.signals = VersionInfoSignals()
+        self.setAutoDelete(True)
+
+    def run(self):
+        try:
+            from core.file_version import get_version_info
+            self.signals.loaded.emit(self.path, get_version_info(self.path))
+        except Exception as e:
+            logger.debug(f"version info failed for {self.path}: {e}")
+            self.signals.loaded.emit(self.path, None)
 
 # pillow-heif 懒加载注册（只注册一次）
 _heif_registered = False
@@ -128,6 +230,14 @@ class ThumbnailView(QListWidget):
         # 列表筛选条件（`widgets.filter_bar.EntryFilter`）：本视图自己扫目录，
         # 所以筛选得在这条枚举路径上再过一道，否则超大图标视图与列表不一致
         self._entry_filter = None
+
+        # 平铺模式状态（见 set_tile_mode）：同一实例切换外观，不另建控件，
+        # 窗格上超大图标视图的全部接线（选中/右键/拖拽/筛选/双击）零改动复用
+        self._tile_mode = False
+        self._default_delegate = self.itemDelegate()
+        self._tile_delegate = TileItemDelegate(self)
+        self._version_cache = OrderedDict()
+        self._version_loading = set()
         
         self._thread_pool = QThreadPool()
         self._thread_pool.setMaxThreadCount(4)
@@ -149,6 +259,35 @@ class ThumbnailView(QListWidget):
         if self._current_path and self.isVisible():
             self.load_directory(self._current_path)
 
+    def set_tile_mode(self, on: bool):
+        """切换平铺/超大图标外观（同一实例，不换控件）。
+
+        只改网格、图标尺寸与绘制代理；列表内容由窗格在模式切换后
+        重新 load_directory 填充（附注数据只在平铺模式下写入）。
+        """
+        on = bool(on)
+        if on == self._tile_mode:
+            return
+        self._tile_mode = on
+        self._lazy_timer.stop()
+        self._thread_pool.clear()
+        if on:
+            self.setItemDelegate(self._tile_delegate)
+            self.setIconSize(TILE_ICON)
+            self.setSpacing(4)
+        else:
+            self.setItemDelegate(self._default_delegate)
+            self.setIconSize(QSize(128, 128))
+            self.setSpacing(15)
+        size = TILE_SIZE if on else QSize(160, 190)
+        self.setGridSize(size)
+        for i in range(self.count()):
+            it = self.item(i)
+            if it:
+                it.setSizeHint(size)
+        self.doItemsLayout()
+        self.viewport().update()
+
     def load_directory(self, path: str):
         logger.info(f"[DEBUG] load_directory START: {path}")
         t0 = time.perf_counter()
@@ -163,9 +302,8 @@ class ThumbnailView(QListWidget):
         
         try:
             filt = self._entry_filter
-            # 名称/扩展名/类型只需 name+is_dir；只有 size/date 条件才补一次 stat
-            # （本视图不靠模型的枚举快照，无信息可偷；网络盘上这一步要提醒用户）
-            need_stat = bool(filt) and filt.needs_stat
+            # 平铺模式要显示大小附注，stat 与筛选条件一样只在此需要时补
+            need_stat = (bool(filt) and filt.needs_stat) or self._tile_mode
             entries = []
             with os.scandir(path) as it:
                 for entry in it:
@@ -173,30 +311,39 @@ class ThumbnailView(QListWidget):
                         is_dir = entry.is_dir()
                     except OSError:
                         is_dir = False
-                    if filt is not None:
-                        if need_stat:
-                            try:
-                                st = entry.stat()
-                                size = -1 if is_dir else st.st_size
-                                mtime = st.st_mtime
-                            except OSError:
-                                size, mtime = -1, 0.0
-                        else:
+                    size, mtime = -1, 0.0
+                    if need_stat:
+                        try:
+                            st = entry.stat()
+                            size = -1 if is_dir else st.st_size
+                            mtime = st.st_mtime
+                        except OSError:
                             size, mtime = -1, 0.0
+                    if filt is not None:
                         if not filt.matches(entry.name, is_dir, size, mtime):
                             continue
-                    entries.append((entry.name, is_dir))
+                    entries.append((entry.name, is_dir, size))
             # 目录优先，再按名称排序
             entries.sort(key=lambda x: (not x[1], x[0].lower()))
 
             self._item_map.clear()
-            for name, is_dir in entries:
+            for name, is_dir, size in entries:
                 full_path = os.path.join(path, name)
                 item = QListWidgetItem()
                 item.setText(name)
                 item.setData(Qt.ItemDataRole.UserRole, full_path)
                 item.setData(Qt.ItemDataRole.UserRole + 1, is_dir)
-                item.setSizeHint(QSize(160, 190))
+                item.setSizeHint(TILE_SIZE if self._tile_mode else QSize(160, 190))
+
+                if self._tile_mode:
+                    if is_dir:
+                        line2, line3 = "文件夹", ""
+                    else:
+                        # exe/dll 的版本+说明异步补（VersionInfoLoader），先以大小/类型兜底
+                        line2 = _tile_size_text(size)
+                        line3 = _tile_type_text(name, False)
+                    item.setData(Qt.ItemDataRole.UserRole + 2, line2)
+                    item.setData(Qt.ItemDataRole.UserRole + 3, line3)
 
                 if self._is_image(full_path) and full_path in self._thumbnail_cache:
                     item.setIcon(self._thumbnail_cache[full_path])
@@ -209,7 +356,11 @@ class ThumbnailView(QListWidget):
 
             logger.info(f"[DEBUG] items added: {len(entries)}")
 
-            if any(self._is_image(os.path.join(path, name)) for name, _ in entries):
+            if self._tile_mode:
+                if any(self._is_pe(os.path.join(path, name))
+                       for name, _, _ in entries):
+                    call_later(self, 100, self._lazy_timer.start)
+            elif any(self._is_image(os.path.join(path, name)) for name, _, _ in entries):
                 call_later(self, 100, self._lazy_timer.start)
 
         except PermissionError:
@@ -229,6 +380,9 @@ class ThumbnailView(QListWidget):
         self._lazy_timer.start()
     
     def _load_visible_thumbnails(self):
+        if self._tile_mode:
+            self._load_visible_versions()
+            return
         if not self.isVisible() or self.count() == 0:
             return
         vp_rect = self.viewport().rect()
@@ -311,6 +465,74 @@ class ThumbnailView(QListWidget):
     def _on_thumbnail_failed(self, path):
         """加载失败时清理 _loading，避免泄漏导致该路径永远不再重试"""
         self._loading.discard(path)
+
+    def _is_pe(self, path: str) -> bool:
+        return os.path.splitext(path)[1].lower() in PE_EXTENSIONS
+
+    def _load_visible_versions(self):
+        """平铺模式：只对可见区域内的 exe/dll 补版本资源（复用缩略图的懒加载节拍）"""
+        if not self.isVisible() or self.count() == 0:
+            self._lazy_timer.stop()
+            return
+        vp_rect = self.viewport().rect()
+        if vp_rect.isEmpty():
+            return
+
+        first_index = self.indexAt(vp_rect.topLeft())
+        start_row = first_index.row() if first_index.isValid() else 0
+        if start_row < 0:
+            start_row = 0
+
+        started = 0
+        all_done = True
+        for row in range(start_row, self.count()):
+            item = self.item(row)
+            if not item:
+                continue
+            full_path = item.data(Qt.ItemDataRole.UserRole)
+            if not full_path or not self._is_pe(full_path):
+                continue
+            item_rect = self.visualItemRect(item)
+            if item_rect.isValid() and item_rect.top() > vp_rect.bottom():
+                break  # 已滚出可见区底部，后面的行不用再看
+            if full_path in self._version_cache or full_path in self._version_loading:
+                continue
+            if not item_rect.isValid() or not item_rect.intersects(vp_rect):
+                continue
+            all_done = False
+            self._version_loading.add(full_path)
+            loader = VersionInfoLoader(full_path)
+            loader.signals.loaded.connect(self._on_version_loaded)
+            self._thread_pool.start(loader)
+            started += 1
+            if started >= 8:
+                break
+        if all_done and started == 0:
+            self._lazy_timer.stop()
+
+    def _on_version_loaded(self, path, info):
+        self._version_loading.discard(path)
+        if info is None:
+            return  # 无版本资源：保留大小/类型兜底附注
+        if len(self._version_cache) >= CACHE_SIZE:
+            self._version_cache.popitem(last=False)
+        self._version_cache[path] = info
+        # 防止已切换目录后旧数据写到已回收的 item 上
+        if not self._current_path or not path.startswith(self._current_path):
+            return
+        self._apply_version_info(path, info)
+
+    def _apply_version_info(self, path, info):
+        """把 (版本号, 文件说明) 写到对应 item 的附注数据（平铺模式）"""
+        item = self._item_map.get(path)
+        if item is None:
+            return
+        ver, desc = info
+        if ver:
+            item.setData(Qt.ItemDataRole.UserRole + 2, ver)
+        if desc:
+            item.setData(Qt.ItemDataRole.UserRole + 3, desc)
+        self.viewport().update()
     
     def selected_paths(self) -> list:
         """选中项路径（按视觉行序），供窗格的复制/删除/右键菜单统一读取"""
@@ -380,6 +602,7 @@ class ThumbnailView(QListWidget):
         self._lazy_timer.stop()
         self._thread_pool.clear()
         self._loading.clear()
+        self._version_loading.clear()
         self._item_map.clear()
         super().clear()
     

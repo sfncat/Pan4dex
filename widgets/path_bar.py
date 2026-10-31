@@ -89,7 +89,7 @@ class PathBar(QWidget):
     tree_toggle_requested = pyqtSignal()  # 目录树按钮点击信号
     tabs_toggle_requested = pyqtSignal()  # 标签页按钮点击信号
     terminal_requested = pyqtSignal()  # 终端按钮点击信号
-    view_mode_requested = pyqtSignal(str)  # 查看模式切换信号 ('icon' / 'list')
+    view_mode_requested = pyqtSignal(str)  # 查看模式切换信号 ('icon'/'tile'/'xlarge'/'list')
     new_folder_requested = pyqtSignal()  # 新建文件夹按钮点击信号
     
     def __init__(self, parent=None):
@@ -166,14 +166,14 @@ class PathBar(QWidget):
         self.tabs_btn.clicked.connect(self.on_tabs_clicked)
         self.layout.addWidget(self.tabs_btn)
 
-        # 查看模式按钮（图标/超大图标/列表循环切换）
+        # 查看模式按钮（图标/平铺/超大图标/列表循环切换）
         self.view_btn = QToolButton()
         self.view_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogContentsView))
         self.view_btn.setIconSize(QSize(20, 20))
-        self.view_btn.setToolTip("查看模式：图标 → 超大图标 → 列表")
+        self.view_btn.setToolTip("查看模式：图标 → 平铺 → 超大图标 → 列表")
         self.view_btn.setFixedSize(28, 28)
         self.view_btn.setCheckable(False)
-        self._view_mode = 'icon'  # icon / xlarge / list
+        self._view_mode = 'icon'  # icon / tile / xlarge / list
         self.view_btn.clicked.connect(self.on_view_clicked)
         self.layout.addWidget(self.view_btn)
 
@@ -310,22 +310,31 @@ class PathBar(QWidget):
         self.tabs_toggle_requested.emit()
 
     def on_view_clicked(self):
-        """查看模式按钮点击：循环图标 → 超大图标 → 列表"""
-        modes = ['icon', 'xlarge', 'list']
+        """查看模式按钮点击：循环图标 → 平铺 → 超大图标 → 列表"""
+        modes = ['icon', 'tile', 'xlarge', 'list']
         idx = modes.index(self._view_mode)
         self._view_mode = modes[(idx + 1) % len(modes)]
         logger.info(f"[DEBUG] PathBar.on_view_clicked: emitting view_mode_requested with mode={self._view_mode}")
         self.view_mode_requested.emit(self._view_mode)
-        
-        if self._view_mode == 'icon':
-            self.view_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogContentsView))
-            self.view_btn.setToolTip("当前：图标，点击切换超大图标")
-        elif self._view_mode == 'xlarge':
-            self.view_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogInfoView))
-            self.view_btn.setToolTip("当前：超大图标（图片预览），点击切换列表")
-        else:
-            self.view_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogDetailedView))
-            self.view_btn.setToolTip("当前：列表，点击切换图标")
+        self._apply_view_button(self._view_mode)
+
+    def _apply_view_button(self, mode: str):
+        """按当前模式设置查看按钮图标与提示（on_view_clicked / set_view_mode 共用）"""
+        icon_map = {
+            'icon': QStyle.StandardPixmap.SP_FileDialogContentsView,
+            'tile': QStyle.StandardPixmap.SP_FileDialogListView,
+            'xlarge': QStyle.StandardPixmap.SP_FileDialogInfoView,
+            'list': QStyle.StandardPixmap.SP_FileDialogDetailedView,
+        }
+        tip_map = {
+            'icon': "当前：图标，点击切换平铺",
+            'tile': "当前：平铺，点击切换超大图标",
+            'xlarge': "当前：超大图标（图片预览），点击切换列表",
+            'list': "当前：列表，点击切换图标",
+        }
+        self.view_btn.setIcon(self.style().standardIcon(
+            icon_map.get(mode, QStyle.StandardPixmap.SP_FileDialogContentsView)))
+        self.view_btn.setToolTip(tip_map.get(mode, tip_map['icon']))
 
     def on_new_folder_clicked(self):
         """新建文件夹按钮点击"""
@@ -346,15 +355,7 @@ class PathBar(QWidget):
     def set_view_mode(self, mode: str):
         """设置查看模式（更新按钮状态）"""
         self._view_mode = mode
-        if mode == 'icon':
-            self.view_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogContentsView))
-            self.view_btn.setToolTip("当前：图标，点击切换超大图标")
-        elif mode == 'xlarge':
-            self.view_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogInfoView))
-            self.view_btn.setToolTip("当前：超大图标（图片预览），点击切换列表")
-        elif mode == 'list':
-            self.view_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogDetailedView))
-            self.view_btn.setToolTip("当前：列表，点击切换图标")
+        self._apply_view_button(mode)
 
     def set_button_visibility(self, button_name: str, visible: bool):
         """设置工具栏按钮可见性"""

@@ -2610,9 +2610,17 @@ class Pane(QWidget):
                 self.tree_view.setVisible(True)
                 self.thumbnail_view.setVisible(False)
                 self.tree_view.setIconSize(QSize(48, 48))
+            elif mode == 'tile':
+                # 平铺视图：复用超大图标的 QListWidget 实例（set_tile_mode 换外观），
+                # 选中/右键/拖拽/筛选接线不变
+                self.tree_view.setVisible(False)
+                self.thumbnail_view.set_tile_mode(True)
+                self.thumbnail_view.setVisible(True)
+                self.thumbnail_view.load_directory(self.current_path)
             elif mode == 'xlarge':
                 # 超大图标模式 - 使用独立的 ThumbnailView
                 self.tree_view.setVisible(False)
+                self.thumbnail_view.set_tile_mode(False)
                 self.thumbnail_view.setVisible(True)
                 # 强制刷新布局
                 self.thumbnail_view.show()
@@ -2626,6 +2634,7 @@ class Pane(QWidget):
             else:
                 self.tree_view.setVisible(True)
                 self.thumbnail_view.setVisible(False)
+                self.thumbnail_view.set_tile_mode(False)
                 self.tree_view.setIconSize(QSize(16, 16))
         except Exception as e:
             import logging
