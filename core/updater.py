@@ -411,8 +411,25 @@ try {
         Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
     }
     Write-Log ('备份旧目录到 {0}' -f $backup)
-    Move-WithRetry $job.target_dir $backup 3
-    Move-WithRetry $newDir $job.target_dir 3
+    $moved = $true
+    try {
+        Move-WithRetry $job.target_dir $backup 3
+    } catch {
+        # 目录改名会被外部句柄挡住（资源管理器开着该目录窗口/终端 cd 在里面，
+        # 报"正在使用中"），但这类句柄不影响往目录里覆盖文件：降级原地覆盖
+        $moved = $false
+        Write-Log ('目录改名失败（{0}），降级原地覆盖' -f $_.Exception.Message)
+        $rc = & robocopy $newDir $job.target_dir /E /R:3 /W:3 /NFL /NDL /NJH /NJS
+        if ($LASTEXITCODE -ge 8) {
+            Write-Log ('原地覆盖失败，robocopy 退出码 {0}，末尾输出：' -f $LASTEXITCODE)
+            $rc | Select-Object -Last 5 | ForEach-Object { Write-Log ('  ' + $_) }
+            throw ('原地覆盖失败：robocopy 退出码 {0}' -f $LASTEXITCODE)
+        }
+        Write-Log ('原地覆盖完成（robocopy 退出码 {0}）' -f $LASTEXITCODE)
+    }
+    if ($moved) {
+        Move-WithRetry $newDir $job.target_dir 3
+    }
 
     $marker = Join-Path $job.target_dir 'update-ok.json'
     @{ version = $job.new_version; previous = $job.old_version; backup = $backup;
