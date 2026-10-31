@@ -152,7 +152,8 @@ SQLite 表 `releases`：
 - 唯一约束：`(version, platform)`；重复上传默认拒绝。
 - 文件落盘：`data/releases/<platform>/<filename>`。
 - 「最新版本」= 该平台 `yanked=0` 中版本号最大的那条；不单独维护 latest 指针，避免两处状态不一致。
-- 磁盘统计：管理页显示各平台占用与总占用；不自动清理历史（管理员手动删除，避免误删唯一可回退版本）。
+- 磁盘统计：管理页显示各平台占用与总占用。
+- **版本保留上限**：每个平台按版本号只保留最新 5 个（可用 `PAN4DEX_UPDATE_RETENTION` 改），超出的在服务启动时和每次上传成功后自动删除（数据库记录+磁盘产物一起删，yanked 的旧版本同样计入裁剪）；删除动作写入 `data/logs/admin.log`（action=`prune`）。
 
 ### 4.4 HTTP API（客户端契约，`/api/v1`）
 

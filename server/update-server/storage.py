@@ -317,6 +317,23 @@ class Storage:
             pass
         return release
 
+    def prune(self, keep: int) -> list[Release]:
+        """每个平台按版本号只保留最新 keep 个，超出的连记录带产物删除。
+
+        返回被删除的版本（含 yanked 的旧版本）。
+        """
+        deleted: list[Release] = []
+        if keep <= 0:
+            return deleted
+        for platform in PLATFORMS:
+            releases = [r for r in self.list_releases(platform)]
+            releases.sort(key=lambda r: parse_version(r.version), reverse=True)
+            for release in releases[keep:]:
+                removed = self.delete_release(release.id)
+                if removed is not None:
+                    deleted.append(removed)
+        return deleted
+
     def total_size(self) -> int:
         with self._connect() as conn:
             row = conn.execute("SELECT COALESCE(SUM(size), 0) AS total FROM releases").fetchone()

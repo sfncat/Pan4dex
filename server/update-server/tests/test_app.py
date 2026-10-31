@@ -251,6 +251,87 @@ def test_delete_removes_file_and_record(client):
     assert client.get(f"/download/windows/{release['filename']}").status_code == 404
 
 
+def test_retention_keeps_only_newest_five_per_platform(app, client):
+    assert login(client).status_code == 302
+    for i in range(7):
+        version = f"1.9.0{40 + i}"
+        assert upload(client, platform="windows", version=version).status_code == 201
+        assert upload(client, platform="linux", version=version).status_code == 201
+
+    storage = app.extensions["storage"]
+    releases = client.get("/api/v1/releases?platform=windows").get_json()["releases"]
+    versions = [r["version"] for r in releases]
+    assert versions == ["1.9.046", "1.9.045", "1.9.044", "1.9.043", "1.9.042"]
+    assert len(client.get("/api/v1/releases?platform=linux").get_json()["releases"]) == 5
+
+    # 被裁掉的版本连产物文件一起删除
+    assert not (storage.releases_dir / "windows" / "pan4dex-1.9.040.zip").exists()
+    assert (storage.releases_dir / "windows" / "pan4dex-1.9.046.zip").exists()
+    assert not (storage.releases_dir / "linux" / "pan4dex-1.9.040-linux").exists()
+
+
+def test_retention_override_via_config(tmp_path):
+    app = create_app(
+        {
+            "TESTING": True,
+            "DATA_DIR": str(tmp_path / "data"),
+            "ADMIN_PASSWORD": "test-password",
+            "SECRET_KEY": "test-secret",
+            "RETENTION": 2,
+        }
+    )
+    client = app.test_client()
+    assert login(client).status_code == 302
+    for i in range(4):
+        version = f"1.9.0{30 + i}"
+        assert upload(client, platform="windows", version=version).status_code == 201
+    releases = client.get("/api/v1/releases?platform=windows").get_json()["releases"]
+    assert [r["version"] for r in releases] == ["1.9.033", "1.9.032"]
+
+
+def test_startup_prune_deletes_existing_excess(tmp_path):
+    from storage import Storage
+
+    data_dir = tmp_path / "data"
+    Storage(data_dir)  # 先建库
+    app = create_app(
+        {
+            "TESTING": True,
+            "DATA_DIR": str(data_dir),
+            "ADMIN_PASSWORD": "test-password",
+            "SECRET_KEY": "test-secret",
+        }
+    )
+    storage = app.extensions["storage"]
+    for i in range(7):
+        storage.add_release(
+            version=f"1.9.0{50 + i}",
+            platform="windows",
+            filename=f"pan4dex-1.9.0{50 + i}.zip",
+            size=1,
+            sha256="a" * 64,
+            notes="",
+        )
+        platform_dir = storage.releases_dir / "windows"
+        platform_dir.mkdir(parents=True, exist_ok=True)
+        artifact = platform_dir / f"pan4dex-1.9.0{50 + i}.zip"
+        artifact.write_bytes(b"x")
+
+    restarted = create_app(
+        {
+            "TESTING": True,
+            "DATA_DIR": str(data_dir),
+            "ADMIN_PASSWORD": "test-password",
+            "SECRET_KEY": "test-secret",
+        }
+    )
+    restarted_storage = restarted.extensions["storage"]
+    versions = [r.version for r in restarted_storage.list_releases("windows")]
+    assert versions == ["1.9.056", "1.9.055", "1.9.054", "1.9.053", "1.9.052"]
+    assert not (restarted_storage.releases_dir / "windows" / "pan4dex-1.9.050.zip").exists()
+    assert not (restarted_storage.releases_dir / "windows" / "pan4dex-1.9.051.zip").exists()
+
+
 def test_download_headers_and_path_traversal(client):
     assert login(client).status_code == 302
     content = make_zip()

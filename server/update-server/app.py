@@ -19,6 +19,7 @@ from flask import (
     Flask,
     abort,
     flash,
+    has_request_context,
     jsonify,
     redirect,
     render_template,
@@ -44,6 +45,7 @@ from storage import (
 SERVER_VERSION = "1.0.0"
 DEFAULT_PORT = 23011
 DEFAULT_MAX_UPLOAD_MB = 500
+DEFAULT_RETENTION = 5
 LOGIN_MAX_FAILURES = 5
 LOGIN_LOCK_SECONDS = 60
 
@@ -83,6 +85,7 @@ def create_app(overrides: dict | None = None) -> Flask:
         secret_key = "test-secret" if testing else _load_or_create_secret(data_dir)
 
     max_upload_mb = int(overrides.pop("MAX_UPLOAD_MB", os.environ.get("PAN4DEX_UPDATE_MAX_UPLOAD_MB", DEFAULT_MAX_UPLOAD_MB)))
+    retention = int(overrides.pop("RETENTION", os.environ.get("PAN4DEX_UPDATE_RETENTION", DEFAULT_RETENTION)))
     public_base_url = str(overrides.pop("PUBLIC_BASE_URL", os.environ.get("PAN4DEX_UPDATE_PUBLIC_BASE_URL", ""))).rstrip("/")
 
     app.config.update(
@@ -91,6 +94,7 @@ def create_app(overrides: dict | None = None) -> Flask:
         SECRET_KEY=secret_key,
         MAX_CONTENT_LENGTH=max_upload_mb * 1024 * 1024 + 2 * 1024 * 1024,
         MAX_UPLOAD_MB=max_upload_mb,
+        RETENTION=retention,
         PUBLIC_BASE_URL=public_base_url,
         TESTING=testing,
         SESSION_COOKIE_HTTPONLY=True,
@@ -133,11 +137,15 @@ def create_app(overrides: dict | None = None) -> Flask:
 
     def audit(action: str, detail: str) -> None:
         try:
-            line = f"{now_iso()}\t{request.remote_addr or '-'}\t{action}\t{detail}\n"
+            addr = request.remote_addr if has_request_context() else "-"
+            line = f"{now_iso()}\t{addr or '-'}\t{action}\t{detail}\n"
             with open(storage.log_dir / "admin.log", "a", encoding="utf-8") as fh:
                 fh.write(line)
         except OSError:
             pass
+
+    for pruned in storage.prune(retention):
+        audit(f"prune (启动保留最新 {retention} 个)", f"{pruned.platform} {pruned.version}")
 
     def download_url(release) -> str:
         path = url_for("download", platform=release.platform, filename=release.filename)
@@ -372,6 +380,8 @@ def create_app(overrides: dict | None = None) -> Flask:
                 notes=notes,
             )
             audit("upload", f"{platform} {version} {filename} {digest}")
+            for pruned in storage.prune(app.config["RETENTION"]):
+                audit(f"prune (上传后保留最新 {app.config['RETENTION']} 个)", f"{pruned.platform} {pruned.version}")
             return respond_upload(True, f"已上传 {version}（{platform}）", 201, release)
         except (ValidationError, OSError) as exc:
             if existing is None and storage.find(version, platform) is None:
