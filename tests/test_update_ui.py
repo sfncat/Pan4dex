@@ -195,7 +195,9 @@ def test_install_accepts_before_quit(qtbot, monkeypatch):
     QApplication.quit() 退不出去，窗口会停在更新界面直到安装脚本超时回滚"""
     monkeypatch.setattr(updater, "can_install", lambda: True)
     monkeypatch.setattr(updater, "prepare_windows_install",
-                        lambda *a, **k: ("C:/fake/install.ps1", None))
+                        lambda *a, **k: ("C:/fake/install.ps1",
+                                         {"work_dir": "C:/fake/w",
+                                          "log_path": "C:/fake/w/apply-update.log"}))
     monkeypatch.setattr(updater, "launch_windows_installer", lambda script: None)
 
     dialog = _make_dialog(qtbot, manual=True)

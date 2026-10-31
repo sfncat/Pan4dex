@@ -374,9 +374,11 @@ class UpdateDialog(QDialog):
         self.progress.show()
         try:
             if sys.platform == "win32":
-                script, _job = updater.prepare_windows_install(
+                script, job = updater.prepare_windows_install(
                     self._downloaded, self.info.version, self.current_version)
                 updater.launch_windows_installer(script)
+                logger.info("[update] 安装脚本已启动: work_dir=%s log=%s",
+                            job["work_dir"], job["log_path"])
             else:
                 target = updater.linux_target()
                 if not updater.can_write_dir(target.parent):

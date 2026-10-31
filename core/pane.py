@@ -361,6 +361,7 @@ class Pane(QWidget):
         logger.info(f"[启动计时] PathBar 创建: {(time.perf_counter()-_t0)*1000:.1f}ms")
         
         self.path_bar.path_entered.connect(self.on_path_entered)
+        self.path_bar.up_requested.connect(self._prepare_locate_on_up)
         self.path_bar.back_requested.connect(self.go_back)
         self.path_bar.forward_requested.connect(self.go_forward)
         self.path_bar.refresh_requested.connect(self.refresh_current)
@@ -605,6 +606,11 @@ class Pane(QWidget):
         # 恢复列显示状态（拍摄日期列默认隐藏；用户勾选后持久化）
         self._restore_column_visibility()
 
+        # 记忆列排序：启动恢复一次，此后点击表头即保存（与列宽/列显隐同一套 QSettings）
+        self._restoring_sort = False
+        self._restore_sort_order()
+        self.tree_view.header().sortIndicatorChanged.connect(self._on_sort_indicator_changed)
+
         # 记忆列宽：初始化末尾恢复一次，此后拖动经 400ms 防抖保存。
         # 不挂 directoryLoaded——同一目录被类级缓存命中时该信号不会再次发出
         self._column_widths_loaded = False
@@ -707,6 +713,35 @@ class Pane(QWidget):
             header = self.tree_view.header()
             widths = ",".join(str(header.sectionSize(c)) for c in range(n))
             self._get_settings().setValue(self._column_widths_key(), widths)
+        except Exception:
+            pass
+
+    # ---- 列排序记忆（QSettings 持久化，按窗格独立）----
+    _SORT_KEY = "pane/sort"  # 形如 "3,1"（列号,方向），按窗格加后缀区分
+
+    def _sort_key(self):
+        return f"{self._SORT_KEY}_{self.pane_id}"
+
+    def _restore_sort_order(self):
+        try:
+            raw = self._get_settings().value(self._sort_key(), "")
+            if raw:
+                col, order = str(raw).split(",")
+                self._restoring_sort = True
+                try:
+                    self.tree_view.sortByColumn(int(col), Qt.SortOrder(int(order)))
+                finally:
+                    self._restoring_sort = False
+        except Exception:
+            self._restoring_sort = False
+
+    def _on_sort_indicator_changed(self, column, order):
+        if self._restoring_sort:
+            return
+        try:
+            # PyQt6 的枚举不能 int()，取 .value
+            self._get_settings().setValue(
+                self._sort_key(), f"{int(column)},{order.value}")
         except Exception:
             pass
 
@@ -1120,6 +1155,15 @@ class Pane(QWidget):
         if not self.pane_tabs.isVisible():
             self.pane_tabs.setVisible(True)
             self.path_bar.set_tabs_button_checked(True)
+
+    def _prepare_locate_on_up(self, parent):
+        """向上进入上级目录：目录加载完成后把视图定位到刚离开的那个目录。"""
+        try:
+            if self.current_path and os.path.normpath(parent) == \
+                    os.path.normpath(os.path.dirname(self.current_path)):
+                self._pending_restore = ([], self.current_path)
+        except Exception:
+            pass
 
     def on_path_entered(self, path: str):
         """路径栏输入处理（回车与从下拉里选一项都走这里）"""
@@ -2553,6 +2597,20 @@ class Pane(QWidget):
             self.tree_view.setCurrentIndex(target)
             self.tree_view.scrollTo(target)
 
+        # 平铺/超大图标模式下列表由 thumbnail_view 呈现，同步在那里定位
+        tv = getattr(self, 'thumbnail_view', None)
+        if tv is not None and tv.isVisible():
+            item = tv._item_map.get(cursor) if cursor else None
+            if item is None and cursor:
+                norm = os.path.normpath(cursor)
+                for p, it in tv._item_map.items():
+                    if os.path.normpath(p) == norm:
+                        item = it
+                        break
+            if item is not None:
+                tv.setCurrentItem(item)
+                tv.scrollToItem(item)
+
     def _on_dir_loaded_restore(self, path):
         """目录异步加载完成：若此前有快照待恢复且正是当前目录，则恢复选中/滚动。"""
         pending = getattr(self, '_pending_restore', None)
@@ -2590,6 +2648,8 @@ class Pane(QWidget):
         if ok and name:
             result = self.file_ops.create_folder(self.current_path, name)
             if result.success:
+                # 刷新完成后把视图定位到新建的目录上（加载完成回调消费）
+                self._pending_restore = ([], os.path.join(self.current_path, name))
                 self._reload_after_mutation(self.current_path)
             else:
                 QMessageBox.warning(self, "创建失败", result.error)

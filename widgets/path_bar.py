@@ -83,6 +83,7 @@ class PathBar(QWidget):
     
     # 信号
     path_entered = pyqtSignal(str)  # 路径输入信号
+    up_requested = pyqtSignal(str)  # 上级目录按钮点击信号（先于 path_entered 发出）
     back_requested = pyqtSignal()   # 后退按钮点击信号
     forward_requested = pyqtSignal()  # 前进按钮点击信号
     refresh_requested = pyqtSignal()  # 刷新按钮点击信号
@@ -298,6 +299,8 @@ class PathBar(QWidget):
         current = self.combo_box.currentText()
         parent = os.path.dirname(current)
         if parent and parent != current:
+            # 先于 path_entered：窗格借此记下“刚离开的目录”，加载完定位过去
+            self.up_requested.emit(parent)
             self.path_entered.emit(parent)
 
     def on_tree_clicked(self):

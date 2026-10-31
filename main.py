@@ -642,6 +642,13 @@ def main():
         logger.info(f"Base dir: {BASE_DIR}")
         logger.info(f"Frozen: {getattr(sys, 'frozen', False)}")
         logger.info(f"[启动计时] Python 模块导入耗时: {(time.perf_counter()-_t0)*1000:.1f}ms")
+        # 上次自动安装的成败写进本日志（脚本日志在 %TEMP%，不主动捞看不到）
+        try:
+            from core import updater as _updater
+            for _line in _updater.report_pending_install_logs():
+                logger.info(_line)
+        except Exception:
+            logger.exception("回读上次安装日志失败")
         # Windows DPI 适配 - 必须在创建 QApplication 之前设置
         if sys.platform == "win32":
             os.environ["QT_AUTO_SCREEN_SCALE_FACTOR"] = "1"

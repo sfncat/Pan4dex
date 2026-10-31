@@ -25,6 +25,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -524,6 +525,66 @@ def launch_windows_installer(script: Path | str) -> subprocess.Popen:
         [powershell, "-NoProfile", "-ExecutionPolicy", "Bypass",
          "-WindowStyle", "Hidden", "-File", str(script)],
         **kwargs)
+
+
+def report_pending_install_logs(base_dir: Path | str | None = None) -> list[str]:
+    """启动时回读上次自动安装的脚本日志，返回待写进应用日志的行（无则空）。
+
+    安装脚本在旧进程退出后独立运行，成败只落在
+    %TEMP%\\pan4dex-update-*\\apply-update.log 里——不主动捞就永远看不到
+    升级为什么没升上去。逐个检查未上报过的目录：脚本日志已有终态（完成 /
+    失败：… / 已回滚旧版本目录）的交出整份日志；无终态且目录超过 1 小时
+    视为脚本中途退出；日志缺失且超过 1 小时报"可能未执行"。上报后在目录
+    里留 .reported 标记，下次启动不再重复。
+    """
+    if base_dir is None:
+        if sys.platform != "win32":
+            return []
+        base_dir = Path(tempfile.gettempdir())
+    try:
+        dirs = sorted(Path(base_dir).glob("pan4dex-update-*"))
+    except OSError:
+        return []
+    lines: list[str] = []
+    for d in dirs:
+        if (d / ".reported").exists():
+            continue
+        job = {}
+        try:
+            job = json.loads((d / "job.json").read_text(encoding="utf-8"))
+        except Exception:
+            pass
+        try:
+            content = (d / "apply-update.log").read_text(
+                encoding="utf-8", errors="replace").strip()
+        except OSError:
+            content = ""
+        try:
+            stale = time.time() - d.stat().st_mtime > 3600
+        except OSError:
+            stale = False
+        last = content.splitlines()[-1] if content else ""
+        # Write-Log 每行带 "yyyy-MM-dd HH:mm:ss " 前缀，剥掉再比对终态
+        # （终态=完成/失败：…/已回滚旧版本目录；"移动失败 N/3"是重试警告，不算）
+        msg = re.sub(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} ", "", last)
+        ver = f"{job.get('old_version', '?')} → {job.get('new_version', '?')}"
+        if not content:
+            if not stale:
+                continue  # 新目录：脚本可能还在跑，留给下次启动再报
+            lines.append(f"[update] 上次自动安装（{ver}）日志缺失，脚本可能未执行: {d}")
+        elif msg in ("完成", "已回滚旧版本目录") or msg.startswith("失败："):
+            lines.append(f"[update] 上次自动安装（{ver}）apply-update.log:")
+            lines.extend("    " + ln for ln in content.splitlines())
+        elif stale:
+            lines.append(f"[update] 上次自动安装（{ver}）脚本日志无终态（可能中途退出）: {d}")
+            lines.extend("    " + ln for ln in content.splitlines())
+        else:
+            continue  # 无终态的新目录：安装可能仍在进行，等下次启动
+        try:
+            (d / ".reported").write_text("", encoding="ascii")
+        except OSError:
+            pass
+    return lines
 
 
 # --------------------------------------------------------------- Linux 安装器
