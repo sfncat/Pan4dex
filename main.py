@@ -21,6 +21,13 @@ import logging
 # 日志配置
 
 
+def get_log_dir() -> str:
+    """日志目录：Windows %APPDATA%\\pan4dex\\logs，Linux/macOS ~/.config/pan4dex/logs"""
+    if sys.platform == "win32":
+        return os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), "pan4dex", "logs")
+    return os.path.expanduser("~/.config/pan4dex/logs")
+
+
 def setup_logging():
     """初始化日志 - 跨平台
 
@@ -28,12 +35,7 @@ def setup_logging():
     不拖垮启动：本函数在 `import main` 时就被调用，比 `main()` 还早，在这里抛
     一下就是“双击没反应”（同一个教训见 resolve_crash_log_path 的注释）。
     """
-    if sys.platform == "win32":
-        # Windows: %APPDATA%\pan4dex\logs
-        log_dir = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), "pan4dex", "logs")
-    else:
-        # Linux/macOS: ~/.config/pan4dex/logs
-        log_dir = os.path.expanduser("~/.config/pan4dex/logs")
+    log_dir = get_log_dir()
     log_file = os.path.join(log_dir, "pan4dex.log")
     # 日志格式
     fmt = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"

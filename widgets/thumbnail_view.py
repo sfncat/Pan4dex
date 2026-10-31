@@ -8,8 +8,8 @@ import logging
 import time
 from collections import OrderedDict
 from PyQt6.QtWidgets import (QAbstractItemView, QListWidget, QListWidgetItem,
-                             QApplication, QStyledItemDelegate, QStyle,
-                             QStyleOptionViewItem)
+                             QApplication, QListView, QStyledItemDelegate,
+                             QStyle, QStyleOptionViewItem)
 from PyQt6.QtCore import (QMimeData, QSize, Qt, QTimer, QUrl, QRunnable,
                           QThreadPool, QObject, pyqtSignal)
 from PyQt6.QtGui import QDrag, QPixmap, QIcon, QImage, QImageReader, QFontMetrics, QFont
@@ -317,11 +317,13 @@ class ThumbnailView(QListWidget):
         if on:
             self.setItemDelegate(self._default_delegate)
             self.setViewMode(QListWidget.ViewMode.ListMode)
+            # 资源管理器「列表」式多栏：纵向流排满一列后自动换到右边新列
+            self.setFlow(QListView.Flow.TopToBottom)
+            self.setWrapping(True)
             self.setIconSize(QSize(16, 16))
             self.setGridSize(QSize())
             self.setSpacing(0)
             self.setWordWrap(False)
-            self.setWrapping(False)
         else:
             self.setViewMode(QListWidget.ViewMode.IconMode)
             self.setIconSize(QSize(128, 128))

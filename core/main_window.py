@@ -8,8 +8,8 @@ from PyQt6.QtWidgets import (
     QToolBar, QLabel, QApplication, QMenu, QDialog,
     QLineEdit, QPlainTextEdit, QTextEdit, QComboBox
 )
-from PyQt6.QtCore import Qt, QSettings, QSize, QPoint, pyqtSignal
-from PyQt6.QtGui import QAction, QKeySequence, QCursor
+from PyQt6.QtCore import Qt, QSettings, QSize, QPoint, pyqtSignal, QUrl
+from PyQt6.QtGui import QAction, QKeySequence, QCursor, QDesktopServices
 import os
 
 logger = logging.getLogger("pan4dex.window")
@@ -728,6 +728,14 @@ class MainWindow(QMainWindow):
         update_action = QAction("检查更新(&U)...", self)
         update_action.triggered.connect(lambda: self.check_updates(manual=True))
         help_menu.addAction(update_action)
+
+        open_log_action = QAction("打开日志目录(&L)", self)
+        open_log_action.triggered.connect(self.open_log_dir)
+        help_menu.addAction(open_log_action)
+
+        open_temp_action = QAction("打开临时目录(&T)", self)
+        open_temp_action.triggered.connect(self.open_temp_dir)
+        help_menu.addAction(open_temp_action)
         help_menu.addSeparator()
 
         settings_action = QAction("设置(&S)...", self)
@@ -740,6 +748,21 @@ class MainWindow(QMainWindow):
 
         # 菜单栏右侧：应用启动器按钮（可配置直接启动外部应用）
         self.create_launcher_bar()
+
+    def open_log_dir(self):
+        """打开日志目录（不存在则先创建，保证总能落到 pan4dex.log 所在处）"""
+        from main import get_log_dir
+        log_dir = get_log_dir()
+        try:
+            os.makedirs(log_dir, exist_ok=True)
+        except OSError:
+            pass
+        QDesktopServices.openUrl(QUrl.fromLocalFile(log_dir))
+
+    def open_temp_dir(self):
+        """打开系统临时目录（pan4dex-update-* 安装工作目录、crash log 兜底都在这）"""
+        import tempfile
+        QDesktopServices.openUrl(QUrl.fromLocalFile(tempfile.gettempdir()))
 
     def create_launcher_bar(self):
         """菜单栏右侧应用启动器：一组快捷启动外部应用的按钮。

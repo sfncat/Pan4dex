@@ -5,7 +5,7 @@ import sys
 
 import pytest
 from PyQt6.QtCore import QSize, Qt
-from PyQt6.QtWidgets import QListWidget
+from PyQt6.QtWidgets import QListWidget, QListView
 
 from widgets.thumbnail_view import TILE_SIZE, TileItemDelegate, ThumbnailView
 
@@ -135,6 +135,9 @@ def test_simple_list_mode_switches_view_mode(qtbot, tile_dir):
     v.set_simple_list_mode(True)
     assert v._simple_list_mode is True
     assert v.viewMode() == QListWidget.ViewMode.ListMode
+    # 资源管理器「列表」式多栏：纵向流 + 自动换列
+    assert v.isWrapping() is True
+    assert v.flow() == QListView.Flow.TopToBottom
     assert v.iconSize() == QSize(16, 16)
     assert v.gridSize() == QSize()
     # 拖入链路不能被换外观破坏（setMovement/setViewMode 关 viewport 拖放的坑）

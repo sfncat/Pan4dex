@@ -388,3 +388,20 @@ def test_cleanup_after_update_removes_matching_backup(tmp_path, monkeypatch):
     updater.cleanup_after_update("1.9.028")     # 版本一致：清理
     assert not backup.exists()
     assert not marker.exists()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="仅 Windows 有目录备份")
+def test_cleanup_after_update_tolerates_bom_marker(tmp_path, monkeypatch):
+    """PS 5.1 Set-Content -Encoding UTF8 写出的标记带 BOM，不能因此判读取失败"""
+    install = tmp_path / "pan4dex"
+    install.mkdir()
+    backup = tmp_path / "pan4dex.bak-1.9.027"
+    backup.mkdir()
+    marker = install / "update-ok.json"
+    marker.write_bytes(b"\xef\xbb\xbf" + json.dumps({
+        "version": "1.9.028", "backup": str(backup)}).encode("utf-8"))
+    monkeypatch.setattr(updater, "windows_install_dir", lambda: install)
+
+    updater.cleanup_after_update("1.9.028")
+    assert not backup.exists()
+    assert not marker.exists()

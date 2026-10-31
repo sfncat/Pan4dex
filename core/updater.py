@@ -394,7 +394,24 @@ try {
 
     Write-Log ('解压 {0}' -f $job.zip_path)
     if (Test-Path -LiteralPath $extract) { Remove-Item -LiteralPath $extract -Recurse -Force }
-    Expand-Archive -LiteralPath $job.zip_path -DestinationPath $extract -Force
+    # tar.exe（Windows 10 1803+ 自带 bsdtar，能直接解 zip）比 Expand-Archive
+    # 快数倍——解压 20~30 秒是升级耗时大头；缺失或失败再回退 Expand-Archive
+    $extracted = $false
+    $tar = Join-Path ([Environment]::SystemDirectory) 'tar.exe'
+    if (Test-Path -LiteralPath $tar) {
+        & $tar -xf $job.zip_path -C $extract
+        if ($LASTEXITCODE -eq 0) {
+            $extracted = $true
+            Write-Log 'tar.exe 解压完成'
+        } else {
+            Write-Log ('tar.exe 解压失败（退出码 {0}），回退 Expand-Archive' -f $LASTEXITCODE)
+        }
+    } else {
+        Write-Log 'tar.exe 不可用，使用 Expand-Archive'
+    }
+    if (-not $extracted) {
+        Expand-Archive -LiteralPath $job.zip_path -DestinationPath $extract -Force
+    }
     $newDir = Join-Path $extract 'pan4dex'
     if (-not (Test-Path -LiteralPath (Join-Path $newDir 'pan4dex.exe'))) {
         throw '解压结果里没有 pan4dex\pan4dex.exe'
@@ -663,7 +680,8 @@ def cleanup_after_update(current_version: str = VERSION) -> None:
     if not marker.is_file():
         return
     try:
-        data = json.loads(marker.read_text(encoding="utf-8"))
+        # PS 5.1 的 Set-Content -Encoding UTF8 写出带 BOM，utf-8-sig 兼容有无 BOM
+        data = json.loads(marker.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
         logger.warning("update-ok.json 读取失败，保留备份目录")
         return
