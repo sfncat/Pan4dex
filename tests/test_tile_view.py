@@ -150,16 +150,21 @@ def test_simple_list_mode_switches_view_mode(qtbot, tile_dir):
     assert v.viewport().acceptDrops() is True
 
 
-def test_simple_list_items_no_size_hint_no_lazy_load(qtbot, tile_dir):
+def test_simple_list_items_sized_by_name(qtbot, tile_dir):
+    (tile_dir / "2024-01-02_拍照归档目录").mkdir()
     (tile_dir / "pic.png").write_bytes(b"\x89PNG\r\n\x1a\n")
     v = ThumbnailView()
     qtbot.addWidget(v)
     v.set_simple_list_mode(True)
     v.load_directory(str(tile_dir))
 
-    txt = v._item_map[os.path.join(str(tile_dir), "a.txt")]
-    # 列表模式不设自定义尺寸，行高随字体
-    assert not txt.sizeHint().isValid()
+    long_name = "2024-01-02_拍照归档目录"
+    txt = v._item_map[os.path.join(str(tile_dir), long_name)]
+    # 行宽必须按名称实际宽度撑开，不能塌成几个字符宽（否则全成「20…」）
+    from PyQt6.QtGui import QFontMetrics
+    fm = QFontMetrics(v.font())
+    expect = 16 + 6 + fm.horizontalAdvance(long_name) + 16
+    assert txt.sizeHint().width() == expect
     # 图片也不进懒加载线程池
     qtbot.wait(300)
     assert not v._lazy_timer.isActive()

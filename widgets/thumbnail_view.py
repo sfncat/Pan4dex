@@ -302,6 +302,16 @@ class ThumbnailView(QListWidget):
         self.doItemsLayout()
         self.viewport().update()
 
+    def _simple_list_hint(self, name: str) -> QSize:
+        """简单列表的行尺寸：宽度按名称实际宽度撑开（资源管理器列表式）。
+
+        依赖默认 delegate 的空 hint 会塌成几个字符宽，长名称全部
+        省略成「20…」什么都认不出（2026-10-31 用户实测）。
+        """
+        fm = QFontMetrics(self.font())
+        return QSize(16 + 6 + fm.horizontalAdvance(name) + 16,
+                     max(fm.height() + 6, 22))
+
     def set_simple_list_mode(self, on: bool):
         """切换简单列表外观（QListView.ListMode：单列、小图标、无网格）。
 
@@ -334,8 +344,9 @@ class ThumbnailView(QListWidget):
         for i in range(self.count()):
             it = self.item(i)
             if it:
-                # 空 QSize = 无自定义 hint，行高随字体；其余模式恢复默认网格
-                it.setSizeHint(QSize() if on else QSize(160, 190))
+                # 列表模式按名称宽度撑开；其余模式恢复默认网格
+                it.setSizeHint(self._simple_list_hint(it.text()) if on
+                               else QSize(160, 190))
         # setViewMode 内部可能重置 viewport 的 acceptDrops（同 setMovement 坑），
         # 切完外观再显式打开一次
         self.viewport().setAcceptDrops(True)
@@ -388,7 +399,8 @@ class ThumbnailView(QListWidget):
                 item.setData(Qt.ItemDataRole.UserRole, full_path)
                 item.setData(Qt.ItemDataRole.UserRole + 1, is_dir)
                 item.setSizeHint(TILE_SIZE if self._tile_mode
-                                 else (QSize() if self._simple_list_mode
+                                 else (self._simple_list_hint(name)
+                                       if self._simple_list_mode
                                        else QSize(160, 190)))
 
                 if self._tile_mode:
