@@ -153,6 +153,43 @@ def test_dialog_reuses_verified_download(qtbot, monkeypatch, tmp_path):
     dialog.reject()
 
 
+def test_dialog_download_only_button_only_when_installable(qtbot, monkeypatch):
+    dialog = _make_dialog(qtbot)
+    # 源码运行模式：没有自动安装也就没有「只下载」
+    assert dialog.download_btn.isHidden()
+    monkeypatch.setattr(updater, "can_install", lambda: True)
+    dialog._show_found()
+    assert not dialog.download_btn.isHidden()
+    assert dialog.download_btn.text() == "只下载"
+    dialog.reject()
+
+
+def test_dialog_download_only_shows_path_not_install(qtbot, monkeypatch, tmp_path):
+    """「只下载」完成后显示包路径和下载目录，不自动进入安装"""
+    def fake_download(info, dest_dir=None, progress=None, cancel=None, timeout=60):
+        path = Path(dest_dir) / info.filename
+        path.write_bytes(b"x" * info.size)
+        return path
+
+    monkeypatch.setattr(updater, "can_install", lambda: True)
+    monkeypatch.setattr(updater, "download_update", fake_download)
+    dialog = _make_dialog(qtbot)
+    monkeypatch.setattr(dialog, "_download_dir", lambda: tmp_path)
+    dialog.download_btn.click()
+    qtbot.waitUntil(lambda: dialog._phase == "ready", timeout=5000)
+    assert dialog._download_only is True
+    assert str(tmp_path / "pan4dex-1.9.028.zip") in dialog.status_label.text()
+    assert dialog.secondary_btn.text() == "打开下载目录"
+    assert dialog.primary_btn.text() == "立即安装并重启"
+    opened = []
+    monkeypatch.setattr(dialog, "_open_download_dir",
+                        lambda: opened.append("dir"))
+    dialog._on_secondary()
+    assert opened == ["dir"]
+    assert dialog._phase == "ready"                   # 打开目录不等于关闭
+    dialog.reject()
+
+
 def test_install_accepts_before_quit(qtbot, monkeypatch):
     """安装必须先 accept() 再退出应用：模态 exec() 的嵌套循环里裸调
     QApplication.quit() 退不出去，窗口会停在更新界面直到安装脚本超时回滚"""

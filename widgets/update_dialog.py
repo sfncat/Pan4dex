@@ -68,6 +68,7 @@ class UpdateDialog(QDialog):
         self._speed = None
         self._last_time = None
         self._last_bytes = 0
+        self._download_only = False
         self._error_retry = False
         self._error_open = None                 # "page" / "dir" / None
 
@@ -137,6 +138,9 @@ class UpdateDialog(QDialog):
         self.primary_btn.setDefault(True)
         self.primary_btn.clicked.connect(self._on_primary)
         buttons.addWidget(self.primary_btn)
+        self.download_btn = QPushButton("只下载")
+        self.download_btn.clicked.connect(self._on_download_only)
+        buttons.addWidget(self.download_btn)
         self.secondary_btn = QPushButton("稍后")
         self.secondary_btn.clicked.connect(self._on_secondary)
         buttons.addWidget(self.secondary_btn)
@@ -149,12 +153,13 @@ class UpdateDialog(QDialog):
         layout.addLayout(buttons)
 
     def _set_buttons(self, *, primary=None, secondary=None, skip=False,
-                     close=True, close_text="关闭"):
+                     close=True, close_text="关闭", download=False):
         if primary:
             self.primary_btn.setText(primary[0])
             self.primary_btn.show()
         else:
             self.primary_btn.hide()
+        self.download_btn.setVisible(bool(download))
         if secondary:
             self.secondary_btn.setText(secondary[0])
             self.secondary_btn.show()
@@ -166,6 +171,7 @@ class UpdateDialog(QDialog):
 
     def _show_found(self):
         self._phase = _PHASE_FOUND
+        self._download_only = False
         self.title_label.setText("发现新版本")
         self.version_label.setText(f"{self.current_version}  →  {self.info.version}")
         self.status_label.setText(
@@ -177,7 +183,7 @@ class UpdateDialog(QDialog):
         self.detail_label.hide()
         if updater.can_install():
             self._set_buttons(primary=("立即更新",), secondary=("稍后",),
-                              skip=True, close=False)
+                              skip=True, close=False, download=True)
         else:
             # 源码运行模式：允许查看更新，但不替换开发环境
             self._set_buttons(primary=None, secondary=("打开下载页",), skip=True)
@@ -207,9 +213,17 @@ class UpdateDialog(QDialog):
         self.progress.show()
         self.detail_label.setText(
             f"{fmt_size(self.info.size)} · SHA-256 校验通过")
-        self.status_label.setText("新版本已下载完成，安装过程中 Pan4dex 会重启。")
-        self._set_buttons(primary=("立即安装并重启",), secondary=("稍后",),
-                          skip=False, close=False)
+        if self._download_only:
+            self.status_label.setText(
+                f"更新包已下载到：{self._downloaded}\n"
+                "可现在安装，也可保持现状——下次启动提示时校验通过的包直接复用。")
+            self._set_buttons(primary=("立即安装并重启",),
+                              secondary=("打开下载目录",),
+                              skip=False, close=True, close_text="稍后")
+        else:
+            self.status_label.setText("新版本已下载完成，安装过程中 Pan4dex 会重启。")
+            self._set_buttons(primary=("立即安装并重启",), secondary=("稍后",),
+                              skip=False, close=False)
 
     def _show_error(self, message: str, *, retry: bool, open_page: bool = False,
                     open_dir: bool = False):
@@ -248,12 +262,19 @@ class UpdateDialog(QDialog):
             else:
                 self._open_download_page()      # 源码模式只能手动下载
         elif self._phase == _PHASE_READY:
-            self.reject()                       # 已下载的文件保留，下次可复用
+            if self._download_only:
+                self._open_download_dir()
+            else:
+                self.reject()                   # 已下载的文件保留，下次可复用
         elif self._phase == _PHASE_ERROR:
             if self._error_open == "dir":
                 self._open_download_dir()
             else:
                 self._open_download_page()
+
+    def _on_download_only(self):
+        self._download_only = True
+        self._start_download()
 
     def _on_skip(self):
         QSettings(ORG_NAME, APP_NAME).setValue(
@@ -324,7 +345,7 @@ class UpdateDialog(QDialog):
             return
         self._downloaded = path
         self._show_ready()
-        if self.auto_install:
+        if self.auto_install and not self._download_only:
             self.status_label.setText("下载完成，正在安装并重启…")
             call_later(self, 800, self._install)
 
