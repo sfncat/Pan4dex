@@ -45,6 +45,16 @@ def test_icon_view_keeps_extended_selection_with_drag_enabled(qtbot):
     assert view.acceptDrops() is True
 
 
+def test_icon_view_viewport_accepts_drops(qtbot):
+    """setMovement(Static) 会关掉 viewport 的 acceptDrops 且后续 setAcceptDrops
+    不再同步回 viewport——而拖拽事件投递给 viewport，关掉即收不到任何拖入"""
+    from widgets.thumbnail_view import ThumbnailView
+
+    view = ThumbnailView()
+    qtbot.addWidget(view)
+    assert view.viewport().acceptDrops() is True
+
+
 def test_drag_payload_contains_every_selected_item(qtbot, tmp_path):
     a = tmp_path / "a.txt"
     a.write_text("a")

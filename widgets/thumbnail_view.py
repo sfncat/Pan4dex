@@ -220,7 +220,12 @@ class ThumbnailView(QListWidget):
         self.setDragDropMode(QAbstractItemView.DragDropMode.DragDrop)
         self.setDragEnabled(True)
         self.setAcceptDrops(True)
+        # setMovement(Static) 会把 viewport 的 acceptDrops 一并关掉，且此后
+        # 对视图再 setAcceptDrops(True) 也不会同步回 viewport——而拖拽事件
+        # 恰恰投递给 viewport，导致图标视图收不到任何拖入（列表视图没调
+        # setMovement 所以一直正常）。必须对 viewport 显式打开。
         self.setDropIndicatorShown(True)
+        self.viewport().setAcceptDrops(True)
         self.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
         self._drag_source_pane = None
         self.setUniformItemSizes(True)

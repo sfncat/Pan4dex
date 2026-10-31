@@ -38,11 +38,14 @@ def setup_logging():
     # 日志格式
     fmt = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
     datefmt = "%Y-%m-%d %H:%M:%S"
-    # 文件处理器（记录所有级别）
+    # 文件处理器（记录所有级别）；按天滚动：当天仍是 pan4dex.log，
+    # 跨天后旧文件改名 pan4dex.log.YYYY-MM-DD，保留 14 天
     file_handler = None
     try:
         os.makedirs(log_dir, exist_ok=True)
-        file_handler = logging.FileHandler(log_file, encoding="utf-8")
+        from logging.handlers import TimedRotatingFileHandler
+        file_handler = TimedRotatingFileHandler(
+            log_file, when="midnight", backupCount=14, encoding="utf-8")
     except OSError as exc:
         print(f"[pan4dex] 文件日志不可用（{exc}），仅输出到 stderr", file=sys.stderr)
     # 控制台处理器（只显示 INFO 以上）
