@@ -19,6 +19,11 @@
 
 ## 更新记录
 
+### v1.9.046 — 2026-10-31（master）
+
+#### 🐛 缺陷修复
+- Linux 应用内升级后新版本秒死（两台机器两次实证，日志报 `ModuleNotFoundError: No module named 'PyQt6.QtWidgets'`）：onefile 应用进程的 `_PYI_*` 环境标记被升级子进程继承，导致其跳过解压、复用旧进程的 `/tmp/_MEI*` 目录，旧进程退出删除该目录后新进程 import 踩空。启动新版本前剥掉 `_MEI*`/`_PYI_*` 标记及 `LD_LIBRARY_PATH` 里指向 `_MEI` 的条目（Windows 安装脚本链路同源预防）
+
 ### v1.9.045 — 2026-10-31（master）
 
 #### 🐛 缺陷修复

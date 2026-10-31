@@ -324,6 +324,36 @@ def test_launch_windows_installer_uses_create_no_window(monkeypatch):
     assert not flags & subprocess.DETACHED_PROCESS
 
 
+def test_launched_children_get_env_without_pyinstaller_markers(monkeypatch, tmp_path):
+    """升级=PyInstaller 进程拉起另一个 PyInstaller 进程：子进程若继承
+    _MEIPASS2 等父子标记，会跳过解压复用父进程的 _MEI 目录，父进程退出
+    删目录后子进程 import 踩空（linux231 实证 ModuleNotFoundError
+    'PyQt6.QtWidgets'）。两个启动函数都必须剥掉这些标记。"""
+    captured = {}
+
+    class FakePopen:
+        def __init__(self, args, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(updater.subprocess, "Popen", FakePopen)
+    monkeypatch.setattr(updater.os, "environ",
+                        {"PATH": "/usr/bin", "HOME": "/home/x",
+                         "_MEIPASS2": "/tmp/_MEIparent",
+                         "_PYI_APPLICATION_HOME_DIR": "/tmp/_MEIparent",
+                         "_PYI_ARCHIVE_FILE": "/x/pan4dex",
+                         "LD_LIBRARY_PATH": "/tmp/_MEIparent:/usr/local/lib"})
+
+    updater.launch_detached(tmp_path / "pan4dex", log_file=tmp_path / "l.log")
+    env = captured["env"]
+    assert env["PATH"] == "/usr/bin" and env["HOME"] == "/home/x"
+    assert not [k for k in env if k.startswith(("_MEI", "_PYI_"))]
+    # LD_LIBRARY_PATH 里指向旧 _MEI 目录的条目也要剥掉
+    assert env["LD_LIBRARY_PATH"] == "/usr/local/lib"
+
+    updater.launch_windows_installer(r"C:\fake\apply-update.ps1")
+    assert not [k for k in captured["env"] if k.startswith(("_MEI", "_PYI_"))]
+
+
 # --------------------------------------------------------- Linux 安装预检
 
 

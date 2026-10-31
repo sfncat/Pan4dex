@@ -337,6 +337,29 @@ def can_write_dir(path: Path | str) -> bool:
         return False
 
 
+def _pyinstaller_child_env() -> dict:
+    """剥掉 PyInstaller 父子进程标记变量。
+
+    onefile 引导器拉起应用进程时会留下一组 _PYI_* 环境标记
+    （_PYI_APPLICATION_HOME_DIR 指向解压目录、_PYI_ARCHIVE_FILE 指向
+    原可执行文件、LD_LIBRARY_PATH 也指向解压目录）。升级恰恰是
+    PyInstaller 进程拉起另一个 PyInstaller 进程：新进程看到标记就跳过
+    解压、直接复用旧进程的 _MEI 目录，旧进程退出时把该目录删掉，
+    新进程 import 踩空（linux231 实证：ModuleNotFoundError
+    'PyQt6.QtWidgets'，死不死取决于新旧进程退出的竞态）。
+    """
+    env: dict = {}
+    for key, value in os.environ.items():
+        if key.startswith(("_MEI", "_PYI_")):
+            continue
+        if key == "LD_LIBRARY_PATH":
+            value = ":".join(p for p in value.split(":") if "_MEI" not in p)
+            if not value:
+                continue
+        env[key] = value
+    return env
+
+
 def launch_detached(path: Path | str, log_file: Path | str | None = None) -> subprocess.Popen:
     """脱离当前进程启动新版本（不继承控制台/管道）。
 
@@ -348,6 +371,7 @@ def launch_detached(path: Path | str, log_file: Path | str | None = None) -> sub
         "stdout": subprocess.DEVNULL,
         "stderr": subprocess.DEVNULL,
         "close_fds": True,
+        "env": _pyinstaller_child_env(),
     }
     if log_file is not None:
         handle = open(log_file, "ab")
@@ -557,6 +581,8 @@ def launch_windows_installer(script: Path | str) -> subprocess.Popen:
         "stdout": subprocess.DEVNULL,
         "stderr": subprocess.DEVNULL,
         "close_fds": True,
+        # 安装脚本随后会启动新版本 exe，同样不能带 PyInstaller 父子标记
+        "env": _pyinstaller_child_env(),
     }
     if sys.platform == "win32":
         # PowerShell 是控制台程序：DETACHED_PROCESS 下初始化即死、脚本一行不执行

@@ -356,6 +356,12 @@ widgets/update_dialog.py   # 发现新版本 / 下载进度 / 安装确认
 4. `subprocess.Popen(start_new_session=True)`（核心层不 import Qt）启动新版本，**stderr/stdout
    追加到安装目录 `pan4dex-launch.log`**——新版本起来即死（依赖/权限/显示环境问题）时死因
    在这里，没有它整条升级在日志里无痕；随后退出当前进程。
+   **启动前必须剥掉 PyInstaller 父子进程标记**（`_MEI*`/`_PYI_*` 环境变量，`LD_LIBRARY_PATH`
+   里指向 `_MEI` 目录的条目一并去掉）：onefile 应用进程带着 `_PYI_APPLICATION_HOME_DIR`
+   （指向旧进程的 `/tmp/_MEI*` 解压目录）等标记，新进程看到就跳过解压、直接复用旧目录；
+   旧进程退出时把该目录删掉，新进程 import 踩空（2026-10-31 linux231 两次实证：
+   `ModuleNotFoundError: No module named 'PyQt6.QtWidgets'`，死不死取决于新旧进程退出的竞态；
+   带标记复现、剥掉标记即正常，Windows 安装脚本链路同源预防）。
 5. 失败（磁盘满、权限、校验不符）：删除临时文件，保留旧文件，对话框说明原因。
    全链路（target/替换/启动）打 `[update]` INFO 日志进 pan4dex.log。
 
