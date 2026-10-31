@@ -81,6 +81,8 @@ class TileItemDelegate(QStyledItemDelegate):
         line2 = index.data(Qt.ItemDataRole.UserRole + 2) or ""
         line3 = index.data(Qt.ItemDataRole.UserRole + 3) or ""
         lines = [name, line2, line3]
+        if not line2 and not line3:
+            lines = lines[:1]           # 文件夹：只有名称，垂直居中
         n = len(lines)
         row_h = rect.height() / n
         # 逐行用 drawText(QPoint) 画：Qt 的 drawText(QRect,…) 重载在多列
@@ -95,7 +97,11 @@ class TileItemDelegate(QStyledItemDelegate):
             fm = QFontMetrics(font)
             elided = fm.elidedText(text, Qt.TextElideMode.ElideRight,
                                    tw if i == 0 else int(tw * 0.95))
-            baseline = int(rect.y() + (i + 0.62) * row_h)
+            if n == 1:
+                baseline = rect.y() + (rect.height() + fm.ascent()
+                                       - fm.descent()) // 2
+            else:
+                baseline = int(rect.y() + (i + 0.62) * row_h)
             painter.drawText(tx, baseline, elided)
 
 
@@ -337,7 +343,7 @@ class ThumbnailView(QListWidget):
 
                 if self._tile_mode:
                     if is_dir:
-                        line2, line3 = "文件夹", ""
+                        line2, line3 = "", ""   # 文件夹不放附注，名称居中
                     else:
                         # exe/dll 的版本+说明异步补（VersionInfoLoader），先以大小/类型兜底
                         line2 = _tile_size_text(size)
@@ -572,6 +578,8 @@ class ThumbnailView(QListWidget):
     # 拖放事件统一转交 Pane（与 FileListTreeView 同一套逻辑），
     # 这样图标视图也能接外部拖入、以及拖到文件夹图标上
     def dragEnterEvent(self, event):
+        logger.info("[drag] 图标视图 enter formats=%s",
+                    event.mimeData().formats())
         if self._drag_source_pane is None:
             event.ignore()
             return
@@ -582,14 +590,17 @@ class ThumbnailView(QListWidget):
         if mime.hasUrls() or mime.hasFormat("application/x-pan4dex-drag"):
             event.acceptProposedAction()
         else:
+            logger.info("[drag] 图标视图 move 忽略：mime 不含文件")
             event.ignore()
 
     def dragLeaveEvent(self, event):
+        logger.info("[drag] 图标视图 leave")
         if self._drag_source_pane is not None:
             self._drag_source_pane._apply_drag_highlight(False)
         event.accept()
 
     def dropEvent(self, event):
+        logger.info("[drag] 图标视图 drop pos=%s", event.position())
         if self._drag_source_pane is None:
             event.ignore()
             return

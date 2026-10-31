@@ -15,7 +15,7 @@
 # ---- 发布元数据 ----
 APP_NAME = "Pan4dex"                  # 应用英文名
 APP_NAME_CN = "万格"                    # 应用中文名
-VERSION = "1.9.036"                    # 版本号（开发分支 dev/shell-behavior-smb-perf 从 1.9.000 起每次发布末位 +1）
+VERSION = "1.9.037"                    # 版本号（开发分支 dev/shell-behavior-smb-perf 从 1.9.000 起每次发布末位 +1）
 
 # 编译时间（YYYY-MM-DD HH:MM:SS）：构建脚本打包前生成 config/_build_info.py（已 gitignore，
 # 打包后删除），让时间戳随包内嵌又不弄脏工作区；源码运行没有该文件，按 dev 显示。

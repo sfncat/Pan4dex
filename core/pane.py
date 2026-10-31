@@ -181,6 +181,7 @@ class FileListTreeView(QTreeView):
     # 以下拖放虚函数由 QAbstractItemView 内部路由调用（DragDrop 模式），
     # 均不调用 super()，阻止 Qt 内置 model.dropMimeData 路径，转交 Pane 逻辑。
     def dragEnterEvent(self, event):
+        logger.info("[drag] 列表 enter formats=%s", event.mimeData().formats())
         self._pane.dragEnterEvent(event)
 
     def dragMoveEvent(self, event):
@@ -188,13 +189,16 @@ class FileListTreeView(QTreeView):
         if mime.hasUrls() or mime.hasFormat("application/x-pan4dex-drag"):
             event.acceptProposedAction()
         else:
+            logger.info("[drag] 列表 move 忽略：mime 不含文件")
             event.ignore()
 
     def dragLeaveEvent(self, event):
+        logger.info("[drag] 列表 leave")
         self._pane._apply_drag_highlight(False)
         event.accept()
 
     def dropEvent(self, event):
+        logger.info("[drag] 列表 drop pos=%s", event.position())
         self._pane.dropEvent(event)
 
     def keyPressEvent(self, event):
@@ -300,6 +304,9 @@ class Pane(QWidget):
         if obj == self.tree_view.viewport() or (
                 thumbs is not None and not sip.isdeleted(thumbs)
                 and obj == thumbs.viewport()):
+            if et in (QEvent.Type.DragEnter, QEvent.Type.DragMove,
+                      QEvent.Type.DragLeave, QEvent.Type.Drop):
+                logger.info("[drag] viewport et=%s", int(et))
             if et == QEvent.Type.MouseButtonPress:
                 self.activated.emit(self)
                 if hasattr(event, 'button'):
@@ -2806,6 +2813,9 @@ class Pane(QWidget):
 
     def dragEnterEvent(self, event):
         """拖拽进入"""
+        logger.info("[drag] pane enter urls=%s internal=%s",
+                    bool(event.mimeData().hasUrls()),
+                    event.mimeData().hasFormat("application/x-pan4dex-drag"))
         if event.mimeData().hasUrls() or event.mimeData().hasFormat("application/x-pan4dex-drag"):
             self._apply_drag_highlight(True)
             event.accept()
@@ -2831,6 +2841,8 @@ class Pane(QWidget):
         target_dir = self.current_path
         pos = event.position().toPoint()
         idx = view.indexAt(pos)
+        logger.info("[drag] pane drop view=%s pos=%s idx=%s",
+                    type(view).__name__, pos, idx.isValid())
         if idx.isValid():
             if view is self.tree_view:
                 p = self.model.filePath(self._map_to_source(idx))

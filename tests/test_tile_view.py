@@ -46,7 +46,9 @@ def test_tile_items_carry_size_and_type_annotation(qtbot, tile_dir):
     assert txt.data(Qt.ItemDataRole.UserRole + 3) == "TXT 文件"
 
     sub = v._item_map[os.path.join(str(tile_dir), "sub")]
-    assert sub.data(Qt.ItemDataRole.UserRole + 2) == "文件夹"
+    # 文件夹不放附注（名称垂直居中显示）
+    assert sub.data(Qt.ItemDataRole.UserRole + 2) in (None, "")
+    assert sub.data(Qt.ItemDataRole.UserRole + 3) in (None, "")
 
 
 def test_non_tile_mode_writes_no_annotation(qtbot, tile_dir):
