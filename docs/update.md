@@ -346,12 +346,17 @@ widgets/update_dialog.py   # 发现新版本 / 下载进度 / 安装确认
 
 目标 = `os.path.realpath(sys.executable)`。
 
-1. 预检目标所在目录可写；不可写 → 下载到 `~/.cache/pan4dex/updates/`，弹出手动命令：
-   `sudo install -m 755 <下载文件> <目标路径>`，不尝试提权。
-2. 下载到目标目录内 `.pan4dex-<ver>.part`（同文件系统才能原子替换），校验大小/SHA-256 与 ELF 头。
+1. 预检目标所在目录可写；不可写 → 弹出手动命令：
+   `sudo install -m 755 <下载文件绝对路径> <目标路径>`（绝对路径加引号——只给文件名的话
+   用户在任何其他目录执行都会 No such file），不尝试提权。
+2. 下载到 `~/.cache/pan4dex/updates/`（`.part` 临时名，校验大小/SHA-256 与 ELF 头）。
+   与安装目录跨文件系统时 `os.replace` 报 EXDEV，自动降级为拷进安装目录再原地替换。
 3. `chmod 0o755` → `os.replace(part, target)`（Linux 允许替换正在运行的可执行文件）。
-4. `QProcess.startDetached` 等价的 `subprocess.Popen(start_new_session=True)`（核心层不 import Qt），随后退出当前进程。
+4. `subprocess.Popen(start_new_session=True)`（核心层不 import Qt）启动新版本，**stderr/stdout
+   追加到安装目录 `pan4dex-launch.log`**——新版本起来即死（依赖/权限/显示环境问题）时死因
+   在这里，没有它整条升级在日志里无痕；随后退出当前进程。
 5. 失败（磁盘满、权限、校验不符）：删除临时文件，保留旧文件，对话框说明原因。
+   全链路（target/替换/启动）打 `[update]` INFO 日志进 pan4dex.log。
 
 注意：onefile 运行时会解压到 `/tmp`，替换原文件不影响当前进程；`.desktop` 的 `Exec` 路径不变，无需重装菜单。
 

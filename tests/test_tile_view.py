@@ -127,6 +127,37 @@ def test_path_bar_mode_cycle(qtbot):
         assert bar._view_mode == expected
 
 
+def test_refresh_preserving_selection_reloads_thumbnail_view(qtbot, tmp_dir):
+    """F5/刷新按钮必须重扫平铺视图：它自己 scandir 填充，不走模型"""
+    from core.pane import Pane
+    pane = Pane("t_refresh_tv", start_path=str(tmp_dir))
+    qtbot.addWidget(pane)
+    pane.show()
+    pane.on_view_mode_changed('tile')
+
+    (tmp_dir / "late.txt").write_text("x")
+    pane._refresh_preserving_selection()
+    assert os.path.join(str(tmp_dir), "late.txt") in pane.thumbnail_view._item_map
+
+
+def test_drop_done_reloads_thumbnail_view_when_target_is_current_dir(qtbot, tmp_dir):
+    """拖入当前目录完成后平铺视图必须立即显示新文件（原来只有重进目录才出现）"""
+    from core.pane import Pane
+    pane = Pane("t_drop_tv", start_path=str(tmp_dir))
+    qtbot.addWidget(pane)
+    pane.show()
+    pane.on_view_mode_changed('tile')
+
+    (tmp_dir / "dropped.txt").write_text("x")
+
+    class _Result:
+        success = True
+        error = None
+
+    pane._on_drop_done(_Result(), str(tmp_dir), None)
+    assert os.path.join(str(tmp_dir), "dropped.txt") in pane.thumbnail_view._item_map
+
+
 def test_simple_list_mode_switches_view_mode(qtbot, tile_dir):
     v = ThumbnailView()
     qtbot.addWidget(v)

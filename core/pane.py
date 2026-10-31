@@ -2632,6 +2632,9 @@ class Pane(QWidget):
             self.model.refresh()
         except Exception:
             self._pending_restore = None
+        # 平铺/超大图标视图自己 scandir 填充、不走模型，必须显式重扫
+        if self.thumbnail_view.isVisible():
+            self.thumbnail_view.load_directory(self.current_path)
 
     def add_to_bookmarks(self, path):
         """添加到收藏夹"""
@@ -2996,6 +2999,11 @@ class Pane(QWidget):
             if moved_srcs:
                 # 跨窗格/外部移动：源目录也要重扫，避免源窗格残留已移走项
                 self._refresh_source_dirs(moved_srcs)
+            # 平铺/超大图标视图自己 scandir 填充、不走模型：拖到当前目录时
+            # 必须显式重扫，否则新文件只有退出目录再进才出现
+            if (self.thumbnail_view.isVisible() and target_dir
+                    and os.path.normpath(target_dir) == os.path.normpath(self.current_path)):
+                self.thumbnail_view.load_directory(self.current_path)
         else:
             self.status_label.setText("拖放失败")
             QMessageBox.warning(self, "移动/复制", result.error or "操作失败")

@@ -20,6 +20,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -336,14 +337,24 @@ def can_write_dir(path: Path | str) -> bool:
         return False
 
 
-def launch_detached(path: Path | str) -> subprocess.Popen:
-    """脱离当前进程启动新版本（不继承控制台/管道）"""
+def launch_detached(path: Path | str, log_file: Path | str | None = None) -> subprocess.Popen:
+    """脱离当前进程启动新版本（不继承控制台/管道）。
+
+    Linux 下新版本若是起来即死（glibc/依赖/权限等），stderr 扔 DEVNULL
+    就永远查不到死因——给了 log_file 就把 stdout/stderr 追加进去。
+    """
     kwargs: dict = {
         "stdin": subprocess.DEVNULL,
         "stdout": subprocess.DEVNULL,
         "stderr": subprocess.DEVNULL,
         "close_fds": True,
     }
+    if log_file is not None:
+        handle = open(log_file, "ab")
+        handle.write(
+            f"\n=== launch {Path(path).name} {time.strftime('%Y-%m-%dT%H:%M:%S')} ===\n".encode())
+        kwargs["stdout"] = handle
+        kwargs["stderr"] = handle
     if sys.platform == "win32":
         kwargs["creationflags"] = (
             getattr(subprocess, "DETACHED_PROCESS", 0)
@@ -640,15 +651,23 @@ def validate_linux_elf(path: Path | str) -> None:
 
 
 def linux_manual_command(downloaded: Path | str, target: Path | str | None = None) -> str:
-    """目标目录不可写时给用户的手动安装命令"""
+    """目标目录不可写时给用户的手动安装命令
+
+    下载文件在 ~/.cache/pan4dex/updates/，命令必须带绝对路径——只给文件名的话
+    用户在任何其他目录执行都会 No such file（绝对路径加引号防空格）。
+    """
     dest = Path(target) if target else linux_target()
-    return f"sudo install -m 755 {Path(downloaded).name} {dest}"
+    return (f"sudo install -m 755 {shlex.quote(str(Path(downloaded).resolve()))} "
+            f"{shlex.quote(str(dest))}")
 
 
 def apply_linux_update(downloaded: Path | str,
                        target: Path | str | None = None,
                        launch: bool = True) -> Path:
     """把下载好的 ELF 原子替换到目标路径并（默认）启动新版本，返回目标路径"""
+    import errno
+    import shlex
+
     source = Path(downloaded)
     dest = Path(target) if target else linux_target()
     if not source.is_file():
@@ -658,13 +677,35 @@ def apply_linux_update(downloaded: Path | str,
     if not can_write_dir(dest.parent):
         raise InstallError(f"安装目录不可写: {dest.parent}")
     validate_linux_elf(source)
+    logger.info("[update] Linux 安装: source=%s target=%s", source, dest)
     try:
         os.chmod(source, 0o755)
         os.replace(source, dest)
     except OSError as exc:
-        raise InstallError(f"替换可执行文件失败: {exc}") from exc
+        if exc.errno != errno.EXDEV:
+            raise InstallError(f"替换可执行文件失败: {exc}") from exc
+        # 下载目录（~/.cache）与安装目录跨文件系统时 os.replace 报 EXDEV：
+        # 先拷进安装目录再原地替换
+        logger.info("[update] 跨文件系统，降级拷贝后替换: %s", exc)
+        tmp = dest.parent / (dest.name + ".upgrade-tmp")
+        try:
+            shutil.copyfile(source, tmp)
+            os.chmod(tmp, 0o755)
+            os.replace(tmp, dest)
+        except OSError as exc2:
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise InstallError(f"替换可执行文件失败: {exc2}") from exc2
+        # 与同文件系统 os.replace（源文件随替换消失）保持一致，清掉下载残留
+        try:
+            source.unlink(missing_ok=True)
+        except OSError:
+            pass
+    logger.info("[update] Linux 替换完成")
     if launch:
-        launch_detached(dest)
+        launch_detached(dest, log_file=dest.parent / "pan4dex-launch.log")
     return dest
 
 

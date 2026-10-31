@@ -381,10 +381,15 @@ class UpdateDialog(QDialog):
                             job["work_dir"], job["log_path"])
             else:
                 target = updater.linux_target()
+                logger.info("[update] Linux 安装: target=%s 下载包=%s",
+                            target, self._downloaded)
                 if not updater.can_write_dir(target.parent):
+                    logger.warning("[update] Linux 安装目录不可写，转手动安装: %s",
+                                   target.parent)
                     self._show_manual_install(target)
                     return
                 updater.apply_linux_update(self._downloaded, target, launch=True)
+                logger.info("[update] Linux 替换完成，已启动新版本进程")
         except updater.InstallError as exc:
             logger.warning("更新安装准备失败: %s", exc)
             self._show_error(f"{exc}\n\n当前版本未受影响，可继续使用。",

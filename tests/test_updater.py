@@ -368,6 +368,42 @@ def test_apply_linux_update_rejects_non_elf(tmp_path):
     assert target.read_bytes() == b"old"
 
 
+def test_apply_linux_update_exdev_falls_back_to_copy(tmp_path, monkeypatch):
+    """下载目录（~/.cache）与安装目录跨文件系统时 os.replace 报 EXDEV，降级拷贝替换"""
+    import errno
+    target = tmp_path / "pan4dex"
+    target.write_bytes(b"old")
+    download = tmp_path / "dl" / "pan4dex-1.9.028-linux"
+    download.parent.mkdir()
+    download.write_bytes(_elf_bytes())
+    real_replace = os.replace
+    state = {"first": True}
+
+    def fake_replace(src, dst):
+        if state["first"] and str(src) == str(download):
+            state["first"] = False
+            raise OSError(errno.EXDEV, "Invalid cross-device link")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(updater.os, "replace", fake_replace)
+    updater.apply_linux_update(download, target, launch=False)
+    assert target.read_bytes() == _elf_bytes()
+    assert not download.exists()
+    assert not (tmp_path / "pan4dex.upgrade-tmp").exists()
+
+
+def test_linux_manual_command_uses_absolute_path(tmp_path):
+    """手动安装命令必须带下载文件的绝对路径（只有文件名在其他目录执行必失败）"""
+    dl = tmp_path / "cache" / "pan4dex-1.9.028-linux"
+    dl.parent.mkdir()
+    dl.write_bytes(_elf_bytes())
+    target = tmp_path / "apps" / "pan4dex"
+    target.parent.mkdir()
+    cmd = updater.linux_manual_command(dl, target)
+    assert str(dl.resolve()) in cmd
+    assert str(target) in cmd
+
+
 # ---------------------------------------------------------- 安装后清理
 
 
