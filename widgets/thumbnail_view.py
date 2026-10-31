@@ -334,6 +334,9 @@ class ThumbnailView(QListWidget):
             self.setGridSize(QSize())
             self.setSpacing(0)
             self.setWordWrap(False)
+            # uniformItemSizes 会让所有条目套用第一个条目的宽度，长名全被
+            # 截成同宽（2026-10-31 用户截图），必须关掉按各自 hint 排
+            self.setUniformItemSizes(False)
         else:
             self.setViewMode(QListWidget.ViewMode.IconMode)
             self.setIconSize(QSize(128, 128))
@@ -341,6 +344,7 @@ class ThumbnailView(QListWidget):
             self.setSpacing(15)
             self.setWordWrap(True)
             self.setWrapping(True)
+            self.setUniformItemSizes(True)
         for i in range(self.count()):
             it = self.item(i)
             if it:

@@ -171,6 +171,8 @@ def test_simple_list_mode_switches_view_mode(qtbot, tile_dir):
     assert v.flow() == QListView.Flow.TopToBottom
     assert v.iconSize() == QSize(16, 16)
     assert v.gridSize() == QSize()
+    # uniformItemSizes 会把所有条目压成第一个条目的宽度，长名全被截断
+    assert v.uniformItemSizes() is False
     # 拖入链路不能被换外观破坏（setMovement/setViewMode 关 viewport 拖放的坑）
     assert v.viewport().acceptDrops() is True
 
@@ -178,6 +180,7 @@ def test_simple_list_mode_switches_view_mode(qtbot, tile_dir):
     assert v._simple_list_mode is False
     assert v.viewMode() == QListWidget.ViewMode.IconMode
     assert v.gridSize() == QSize(160, 190)
+    assert v.uniformItemSizes() is True
     assert v.viewport().acceptDrops() is True
 
 
