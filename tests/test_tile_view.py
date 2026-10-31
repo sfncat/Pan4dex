@@ -5,6 +5,7 @@ import sys
 
 import pytest
 from PyQt6.QtCore import QSize, Qt
+from PyQt6.QtWidgets import QListWidget
 
 from widgets.thumbnail_view import TILE_SIZE, TileItemDelegate, ThumbnailView
 
@@ -120,7 +121,69 @@ def test_path_bar_mode_cycle(qtbot):
     qtbot.addWidget(bar)
     seen = []
     bar.view_mode_requested.connect(seen.append)
-    for expected in ('tile', 'xlarge', 'list', 'icon', 'tile'):
+    for expected in ('tile', 'xlarge', 'list', 'simple_list', 'icon', 'tile'):
         bar.on_view_clicked()
         assert seen[-1] == expected
         assert bar._view_mode == expected
+
+
+def test_simple_list_mode_switches_view_mode(qtbot, tile_dir):
+    v = ThumbnailView()
+    qtbot.addWidget(v)
+    v.load_directory(str(tile_dir))
+
+    v.set_simple_list_mode(True)
+    assert v._simple_list_mode is True
+    assert v.viewMode() == QListWidget.ViewMode.ListMode
+    assert v.iconSize() == QSize(16, 16)
+    assert v.gridSize() == QSize()
+    # 拖入链路不能被换外观破坏（setMovement/setViewMode 关 viewport 拖放的坑）
+    assert v.viewport().acceptDrops() is True
+
+    v.set_simple_list_mode(False)
+    assert v._simple_list_mode is False
+    assert v.viewMode() == QListWidget.ViewMode.IconMode
+    assert v.gridSize() == QSize(160, 190)
+    assert v.viewport().acceptDrops() is True
+
+
+def test_simple_list_items_no_size_hint_no_lazy_load(qtbot, tile_dir):
+    (tile_dir / "pic.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+    v = ThumbnailView()
+    qtbot.addWidget(v)
+    v.set_simple_list_mode(True)
+    v.load_directory(str(tile_dir))
+
+    txt = v._item_map[os.path.join(str(tile_dir), "a.txt")]
+    # 列表模式不设自定义尺寸，行高随字体
+    assert not txt.sizeHint().isValid()
+    # 图片也不进懒加载线程池
+    qtbot.wait(300)
+    assert not v._lazy_timer.isActive()
+    assert os.path.join(str(tile_dir), "pic.png") not in v._loading
+
+
+def test_pane_view_mode_simple_list_wiring(qtbot, tmp_dir):
+    from core.pane import Pane
+    pane = Pane("t_simple", start_path=str(tmp_dir))
+    qtbot.addWidget(pane)
+
+    # 先进平铺，再切列表：验证两种外观互斥恢复
+    pane.on_view_mode_changed('tile')
+    pane.on_view_mode_changed('simple_list')
+    assert pane.thumbnail_view._simple_list_mode is True
+    assert pane.thumbnail_view._tile_mode is False
+    assert not pane.thumbnail_view.isHidden()
+    assert pane.tree_view.isHidden()
+    assert pane.thumbnail_view.viewMode() == QListWidget.ViewMode.ListMode
+    assert pane.path_bar._view_mode == 'simple_list'
+
+    # 列表 → 超大图标：ListMode 要退回 IconMode
+    pane.on_view_mode_changed('xlarge')
+    assert pane.thumbnail_view._simple_list_mode is False
+    assert pane.thumbnail_view.viewMode() == QListWidget.ViewMode.IconMode
+
+    # 列表 → 详细信息：树视图回来，缩略图视图隐藏
+    pane.on_view_mode_changed('list')
+    assert pane.thumbnail_view.isHidden()
+    assert not pane.tree_view.isHidden()

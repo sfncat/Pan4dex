@@ -245,6 +245,9 @@ class ThumbnailView(QListWidget):
         # 平铺模式状态（见 set_tile_mode）：同一实例切换外观，不另建控件，
         # 窗格上超大图标视图的全部接线（选中/右键/拖拽/筛选/双击）零改动复用
         self._tile_mode = False
+        # 简单列表模式（见 set_simple_list_mode）：单列小图标、无网格，
+        # 与平铺/超大图标共用同一实例与全部接线
+        self._simple_list_mode = False
         self._default_delegate = self.itemDelegate()
         self._tile_delegate = TileItemDelegate(self)
         self._version_cache = OrderedDict()
@@ -299,6 +302,44 @@ class ThumbnailView(QListWidget):
         self.doItemsLayout()
         self.viewport().update()
 
+    def set_simple_list_mode(self, on: bool):
+        """切换简单列表外观（QListView.ListMode：单列、小图标、无网格）。
+
+        与 set_tile_mode 同一思路：同一实例换外观，窗格接线零改动。
+        列表模式不加载缩略图/版本资源（load_directory 会跳过懒加载）。
+        """
+        on = bool(on)
+        if on == self._simple_list_mode:
+            return
+        self._simple_list_mode = on
+        self._lazy_timer.stop()
+        self._thread_pool.clear()
+        if on:
+            self.setItemDelegate(self._default_delegate)
+            self.setViewMode(QListWidget.ViewMode.ListMode)
+            self.setIconSize(QSize(16, 16))
+            self.setGridSize(QSize())
+            self.setSpacing(0)
+            self.setWordWrap(False)
+            self.setWrapping(False)
+        else:
+            self.setViewMode(QListWidget.ViewMode.IconMode)
+            self.setIconSize(QSize(128, 128))
+            self.setGridSize(QSize(160, 190))
+            self.setSpacing(15)
+            self.setWordWrap(True)
+            self.setWrapping(True)
+        for i in range(self.count()):
+            it = self.item(i)
+            if it:
+                # 空 QSize = 无自定义 hint，行高随字体；其余模式恢复默认网格
+                it.setSizeHint(QSize() if on else QSize(160, 190))
+        # setViewMode 内部可能重置 viewport 的 acceptDrops（同 setMovement 坑），
+        # 切完外观再显式打开一次
+        self.viewport().setAcceptDrops(True)
+        self.doItemsLayout()
+        self.viewport().update()
+
     def load_directory(self, path: str):
         logger.info(f"[DEBUG] load_directory START: {path}")
         t0 = time.perf_counter()
@@ -344,7 +385,9 @@ class ThumbnailView(QListWidget):
                 item.setText(name)
                 item.setData(Qt.ItemDataRole.UserRole, full_path)
                 item.setData(Qt.ItemDataRole.UserRole + 1, is_dir)
-                item.setSizeHint(TILE_SIZE if self._tile_mode else QSize(160, 190))
+                item.setSizeHint(TILE_SIZE if self._tile_mode
+                                 else (QSize() if self._simple_list_mode
+                                       else QSize(160, 190)))
 
                 if self._tile_mode:
                     if is_dir:
@@ -371,7 +414,9 @@ class ThumbnailView(QListWidget):
                 if any(self._is_pe(os.path.join(path, name))
                        for name, _, _ in entries):
                     call_later(self, 100, self._lazy_timer.start)
-            elif any(self._is_image(os.path.join(path, name)) for name, _, _ in entries):
+            elif (not self._simple_list_mode
+                  and any(self._is_image(os.path.join(path, name))
+                          for name, _, _ in entries)):
                 call_later(self, 100, self._lazy_timer.start)
 
         except PermissionError:
@@ -393,6 +438,8 @@ class ThumbnailView(QListWidget):
     def _load_visible_thumbnails(self):
         if self._tile_mode:
             self._load_visible_versions()
+            return
+        if self._simple_list_mode:
             return
         if not self.isVisible() or self.count() == 0:
             return

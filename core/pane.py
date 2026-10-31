@@ -2676,11 +2676,13 @@ class Pane(QWidget):
             if mode == 'icon':
                 self.tree_view.setVisible(True)
                 self.thumbnail_view.setVisible(False)
+                self.thumbnail_view.set_simple_list_mode(False)
                 self.tree_view.setIconSize(QSize(48, 48))
             elif mode == 'tile':
                 # 平铺视图：复用超大图标的 QListWidget 实例（set_tile_mode 换外观），
                 # 选中/右键/拖拽/筛选接线不变
                 self.tree_view.setVisible(False)
+                self.thumbnail_view.set_simple_list_mode(False)
                 self.thumbnail_view.set_tile_mode(True)
                 self.thumbnail_view.setVisible(True)
                 self.thumbnail_view.load_directory(self.current_path)
@@ -2688,6 +2690,7 @@ class Pane(QWidget):
                 # 超大图标模式 - 使用独立的 ThumbnailView
                 self.tree_view.setVisible(False)
                 self.thumbnail_view.set_tile_mode(False)
+                self.thumbnail_view.set_simple_list_mode(False)
                 self.thumbnail_view.setVisible(True)
                 # 强制刷新布局
                 self.thumbnail_view.show()
@@ -2698,10 +2701,18 @@ class Pane(QWidget):
                 QApplication.processEvents()
                 logger.info(f"[DEBUG] Calling thumbnail_view.load_directory({self.current_path})")
                 self.thumbnail_view.load_directory(self.current_path)
+            elif mode == 'simple_list':
+                # 简单列表：同一 ThumbnailView 实例换 ListMode 外观，接线全复用
+                self.tree_view.setVisible(False)
+                self.thumbnail_view.set_tile_mode(False)
+                self.thumbnail_view.set_simple_list_mode(True)
+                self.thumbnail_view.setVisible(True)
+                self.thumbnail_view.load_directory(self.current_path)
             else:
                 self.tree_view.setVisible(True)
                 self.thumbnail_view.setVisible(False)
                 self.thumbnail_view.set_tile_mode(False)
+                self.thumbnail_view.set_simple_list_mode(False)
                 self.tree_view.setIconSize(QSize(16, 16))
         except Exception as e:
             import logging

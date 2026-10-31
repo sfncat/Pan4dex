@@ -75,6 +75,37 @@ def _make_up_icon(size: int = 20) -> QIcon:
     return QIcon(px)
 
 
+def _make_tabs_icon(size: int = 20) -> QIcon:
+    """绘制标签页图标（两张错开叠放的页卡）。
+
+    标签页按钮原来用 SP_FileDialogDetailedView，与查看模式的「详细信息」
+    图标完全相同，无法区分；自绘双页卡图标替代。
+    size 为逻辑像素，按 2x 渲染保证高分屏清晰。
+    """
+    dpr = 2
+    px = QPixmap(size * dpr, size * dpr)
+    px.setDevicePixelRatio(dpr)
+    px.fill(Qt.GlobalColor.transparent)
+
+    p = QPainter(px)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    border = QColor(190, 205, 225)
+    fill = QColor(42, 48, 60)
+    r = size * 0.14
+    # 后面一张页卡（只描边，露出右上角）
+    p.setPen(QPen(border, 1.2))
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    p.drawRoundedRect(QRectF(size * 0.30, size * 0.10,
+                             size * 0.58, size * 0.58), r, r)
+    # 前面一张页卡（实心填充 + 描边）
+    p.setPen(QPen(border, 1.2))
+    p.setBrush(fill)
+    p.drawRoundedRect(QRectF(size * 0.12, size * 0.30,
+                             size * 0.58, size * 0.58), r, r)
+    p.end()
+    return QIcon(px)
+
+
 class PathBar(QWidget):
     """路径栏组件"""
     
@@ -90,7 +121,7 @@ class PathBar(QWidget):
     tree_toggle_requested = pyqtSignal()  # 目录树按钮点击信号
     tabs_toggle_requested = pyqtSignal()  # 标签页按钮点击信号
     terminal_requested = pyqtSignal()  # 终端按钮点击信号
-    view_mode_requested = pyqtSignal(str)  # 查看模式切换信号 ('icon'/'tile'/'xlarge'/'list')
+    view_mode_requested = pyqtSignal(str)  # 查看模式切换信号 ('icon'/'tile'/'xlarge'/'list'/'simple_list')
     new_folder_requested = pyqtSignal()  # 新建文件夹按钮点击信号
     
     def __init__(self, parent=None):
@@ -157,9 +188,10 @@ class PathBar(QWidget):
         self.tree_btn.clicked.connect(self.on_tree_clicked)
         self.layout.addWidget(self.tree_btn)
 
-        # 标签页按钮
+        # 标签页按钮（自绘双页卡图标：SP_FileDialogDetailedView 与查看模式
+        # 的「详细信息」图标相同，无法区分）
         self.tabs_btn = QToolButton()
-        self.tabs_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogDetailedView))
+        self.tabs_btn.setIcon(_make_tabs_icon(20))
         self.tabs_btn.setIconSize(QSize(20, 20))
         self.tabs_btn.setToolTip("标签页")
         self.tabs_btn.setFixedSize(28, 28)
@@ -171,10 +203,10 @@ class PathBar(QWidget):
         self.view_btn = QToolButton()
         self.view_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogContentsView))
         self.view_btn.setIconSize(QSize(20, 20))
-        self.view_btn.setToolTip("查看模式：图标 → 平铺 → 超大图标 → 列表")
+        self.view_btn.setToolTip("查看模式：图标 → 平铺 → 超大图标 → 详细信息 → 列表")
         self.view_btn.setFixedSize(28, 28)
         self.view_btn.setCheckable(False)
-        self._view_mode = 'icon'  # icon / tile / xlarge / list
+        self._view_mode = 'icon'  # icon / tile / xlarge / list / simple_list
         self.view_btn.clicked.connect(self.on_view_clicked)
         self.layout.addWidget(self.view_btn)
 
@@ -313,8 +345,8 @@ class PathBar(QWidget):
         self.tabs_toggle_requested.emit()
 
     def on_view_clicked(self):
-        """查看模式按钮点击：循环图标 → 平铺 → 超大图标 → 列表"""
-        modes = ['icon', 'tile', 'xlarge', 'list']
+        """查看模式按钮点击：循环图标 → 平铺 → 超大图标 → 详细信息 → 列表"""
+        modes = ['icon', 'tile', 'xlarge', 'list', 'simple_list']
         idx = modes.index(self._view_mode)
         self._view_mode = modes[(idx + 1) % len(modes)]
         logger.info(f"[DEBUG] PathBar.on_view_clicked: emitting view_mode_requested with mode={self._view_mode}")
@@ -328,12 +360,14 @@ class PathBar(QWidget):
             'tile': QStyle.StandardPixmap.SP_FileDialogListView,
             'xlarge': QStyle.StandardPixmap.SP_FileDialogInfoView,
             'list': QStyle.StandardPixmap.SP_FileDialogDetailedView,
+            'simple_list': QStyle.StandardPixmap.SP_FileDialogListView,
         }
         tip_map = {
             'icon': "当前：图标，点击切换平铺",
             'tile': "当前：平铺，点击切换超大图标",
-            'xlarge': "当前：超大图标（图片预览），点击切换列表",
-            'list': "当前：列表，点击切换图标",
+            'xlarge': "当前：超大图标（图片预览），点击切换详细信息",
+            'list': "当前：详细信息，点击切换列表",
+            'simple_list': "当前：列表，点击切换图标",
         }
         self.view_btn.setIcon(self.style().standardIcon(
             icon_map.get(mode, QStyle.StandardPixmap.SP_FileDialogContentsView)))
