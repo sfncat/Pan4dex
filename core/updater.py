@@ -363,6 +363,19 @@ function Write-Log([string]$Message) {
     Add-Content -LiteralPath $log -Value $line -Encoding UTF8
 }
 
+function Move-WithRetry([string]$From, [string]$To, [int]$Tries) {
+    for ($i = 1; $i -le $Tries; $i++) {
+        try {
+            Move-Item -LiteralPath $From -Destination $To -ErrorAction Stop
+            return
+        } catch {
+            if ($i -eq $Tries) { throw }
+            Write-Log ('移动失败 {0}/{1}，3 秒后重试：{2}' -f $i, $Tries, $_.Exception.Message)
+            Start-Sleep -Seconds 3
+        }
+    }
+}
+
 $backup = '{0}.bak-{1}' -f $job.target_dir, $job.old_version
 $extract = Join-Path $job.work_dir 'extract'
 $started = $false
@@ -387,9 +400,18 @@ try {
     }
 
     if (Test-Path -LiteralPath $backup) { Remove-Item -LiteralPath $backup -Recurse -Force }
+    # 解压要静默跑 20~30 秒，期间用户可能把 Pan4dex 重新打开——活着的实例会
+    # 锁住安装目录导致移动失败回滚（2026-10-31 真机实测三次同因失败）。
+    # 替换前把仍从安装目录运行的实例清掉；按 exe 完整路径匹配，不误伤其他目录的实例
+    $stale = Get-Process pan4dex -ErrorAction SilentlyContinue | Where-Object {
+        $_.Path -and $_.Path -eq $job.exe_path }
+    foreach ($p in $stale) {
+        Write-Log ('结束占用安装目录的实例 pid={0}' -f $p.Id)
+        Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+    }
     Write-Log ('备份旧目录到 {0}' -f $backup)
-    Move-Item -LiteralPath $job.target_dir -Destination $backup
-    Move-Item -LiteralPath $newDir -Destination $job.target_dir
+    Move-WithRetry $job.target_dir $backup 3
+    Move-WithRetry $newDir $job.target_dir 3
 
     $marker = Join-Path $job.target_dir 'update-ok.json'
     @{ version = $job.new_version; previous = $job.old_version; backup = $backup;

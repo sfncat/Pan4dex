@@ -273,6 +273,11 @@ def test_prepare_windows_install_writes_script_and_job(tmp_path, monkeypatch):
         # 宽限 15 秒后强杀旧进程：卡死的旧版本不能让安装等满超时后回滚
         text = script.read_text(encoding="utf-8-sig")
         assert "WaitForExit(15000)" in text and "Stop-Process" in text
+        # 解压窗口内重开的实例会锁住安装目录（2026-10-31 真机三次同因失败）：
+        # 替换前按 exe 完整路径清场 + 移动带重试
+        assert "Get-Process pan4dex" in text
+        assert text.count("Move-WithRetry $") == 2
+        assert "Start-Sleep -Seconds 3" in text
         data = json.loads((script.parent / "job.json").read_text(encoding="utf-8"))
         assert data["target_dir"] == str(target)
         assert data["new_version"] == "1.9.028"
