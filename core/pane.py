@@ -18,7 +18,7 @@ import sys
 
 from widgets.path_bar import PathBar
 from widgets.pane_tree_view import PaneTreeView
-from core.dir_model import Entry, COL_DATE, COL_SIZE
+from core.dir_model import Entry, COL_DATE, COL_SIZE, DirStoreModel
 from core.file_operations import (
     FileOperations, FileOperationType, FileOperationResult, _is_network_path,
     describe_removal, move_target_inside_sources, same_volume, decide_drop_action)
@@ -114,8 +114,13 @@ class PaneSortProxyModel(QSortFilterProxyModel):
             if col == COL_SIZE:
                 # 按**字节数**比，不按格式化字符串（旧比较把
                 # “4.0 KB” 排在“5 B” 前面，大目录上大小列基本是乱的）；
-                # 目录没大小，并列时按名称（与资源管理器一致）
+                # 目录默认没大小：已「计算目录大小」的按占用字节参与比较，
+                # 未计算的视为 -1（相互并列时退回名称序，与资源管理器一致）
                 if le.is_dir:
+                    ls = DirStoreModel.dir_size(le.path)
+                    rs = DirStoreModel.dir_size(re.path)
+                    if ls is not None or rs is not None:
+                        return (ls if ls is not None else -1) < (rs if rs is not None else -1)
                     return le.name.lower() < re.name.lower()
                 return le.size < re.size
             if col == COL_DATE:
@@ -628,6 +633,8 @@ class Pane(QWidget):
         model.directoryLoaded.connect(self._on_dir_loaded_restore)
         # 本窗格改动目录（如行内改名）后，让其它显示同一目录的窗格一并重扫
         model.dirChanged.connect(self._on_model_dir_changed)
+        # 目录占用计算完成：状态栏报结果
+        model.dirSizeComputed.connect(self._on_dir_size_computed)
         # 行内改名目标可能在异步加载完成后才出现
         model.directoryLoaded.connect(self._on_dir_loaded_inline_rename)
 
@@ -1667,6 +1674,17 @@ class Pane(QWidget):
             rename_action.setShortcut(QKeySequence("F2"))
             rename_action.triggered.connect(self.rename_selected)
             menu.addAction(rename_action)
+
+            menu.addSeparator()
+
+            # 目录占用：目录「大小」列默认留空（枚举不递归），右键按需触发
+            # 后台递归统计（资源管理器同款交互），可多选一起算
+            dir_paths = [p for p in paths if os.path.isdir(p)]
+            if dir_paths:
+                calc_size_action = QAction("计算目录大小(&U)", self)
+                calc_size_action.triggered.connect(
+                    lambda checked=False, dp=tuple(dir_paths): self._calc_dir_sizes(dp))
+                menu.addAction(calc_size_action)
             
             menu.addSeparator()
             
@@ -2006,6 +2024,31 @@ class Pane(QWidget):
             if size < 1024:
                 return f"{size:.1f} {unit}"
         return f"{size:.1f} PB"
+
+    def _calc_dir_sizes(self, paths):
+        """右键「计算目录大小」：交给模型后台递归统计，完成后大小列自动刷新"""
+        dirs = [p for p in paths if os.path.isdir(p)]
+        if not dirs:
+            return
+        for d in dirs:
+            self.model.request_dir_size(d)
+        if len(dirs) == 1:
+            self.status_label.setText(f"正在计算 {os.path.basename(dirs[0])} 的占用空间…")
+        else:
+            self.status_label.setText(f"正在计算 {len(dirs)} 个目录的占用空间…")
+
+    def _on_dir_size_computed(self, path, total):
+        """目录占用算完（主线程）：状态栏报结果；算到一半切走目录时不打扰当前状态"""
+        try:
+            if os.path.dirname(os.path.normpath(path)) != os.path.normpath(self.current_path):
+                return
+            name = os.path.basename(path)
+            if total is None:
+                self.status_label.setText(f"{name}：无法访问")
+            else:
+                self.status_label.setText(f"{name} 的占用空间：{self._fmt_size(total)}")
+        except Exception:
+            pass
     
     def open_selected(self):
         """打开选中项"""

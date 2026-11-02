@@ -947,3 +947,100 @@ def test_stale_entries_released_only_at_safe_point(qtbot, tree, tmp_path):
     third.mkdir()
     m.set_directory(str(third))                # 再一次 reset = 安全点
     assert m._nodes[key]._stale is None
+
+
+# ---------- 目录占用计算（右键「计算目录大小」）----------
+
+@pytest.fixture
+def _clean_dir_sizes():
+    """目录占用缓存/在算集合是类级共享状态，测试前后清干净，不串其它用例。"""
+    DirStoreModel._DIR_SIZES.clear()
+    DirStoreModel._SIZE_PENDING.clear()
+    yield
+    DirStoreModel._DIR_SIZES.clear()
+    DirStoreModel._SIZE_PENDING.clear()
+
+
+def _size_text(m, di, name):
+    r = next(r for r in range(m.rowCount(di)) if m.fileName(m.index(r, 0, di)) == name)
+    return m.data(m.index(r, 1, di), Qt.ItemDataRole.DisplayRole)
+
+
+def test_calc_dir_size_nested(tree, _clean_dir_sizes):
+    """嵌套目录递归求和；不跟随符号链接；根目录不可读返回 None。"""
+    (tree / "dir_a" / "sub").mkdir()
+    (tree / "dir_a" / "sub" / "s.txt").write_text("123")   # +3
+    # dir_a 原有 inner.txt("x") +1，b.txt("hello") +5 不在目录里
+    assert dm.calc_dir_size(str(tree / "dir_a")) == 4
+    assert dm.calc_dir_size(str(tree / "dir_a" / "sub")) == 3
+    empty = tree / "empty"
+    empty.mkdir()
+    assert dm.calc_dir_size(str(empty)) == 0
+    assert dm.calc_dir_size(str(tree / "__no_such__")) is None
+    if hasattr(os, "symlink"):
+        link = tree / "dir_link"
+        try:
+            os.symlink(str(tree / "dir_a"), str(link), target_is_directory=True)
+        except OSError:
+            pass                       # Windows 无特权建不了链接：跳过该断言
+        else:
+            # 符号链接当文件算自身大小，绝不递归进目标（防环）
+            assert dm.calc_dir_size(str(tree)) < 100
+
+
+def test_calc_dir_size_cancel(tree, _clean_dir_sizes):
+    """取消令牌报「停」时返回 None（不拿半截结果当真值）。"""
+    assert dm.calc_dir_size(str(tree), cancel=lambda: True) is None
+
+
+def test_request_dir_size_updates_size_column(qtbot, tree, _clean_dir_sizes):
+    """右键触发后：计算中显示「…」，完成后大小列显示占用字节。"""
+    m = DirStoreModel()
+    di = _load(qtbot, m, tree)
+    assert _size_text(m, di, "dir_a") == ""          # 默认留空
+    DirStoreModel._SIZE_PENDING.add(_key(str(tree / "dir_a")))
+    assert _size_text(m, di, "dir_a") == "…"         # 在算标记
+    DirStoreModel._SIZE_PENDING.clear()
+
+    m.request_dir_size(str(tree / "dir_a"))          # inner.txt "x" = 1B
+    qtbot.waitUntil(lambda: DirStoreModel.dir_size(str(tree / "dir_a")) == 1,
+                    timeout=5000)
+    assert _size_text(m, di, "dir_a") == "1 B"
+
+
+def test_dir_size_survives_navigation(qtbot, tree, tmp_path, _clean_dir_sizes):
+    """结果在类级缓存里：切走再切回（条目重建）仍显示，不用重算。"""
+    m = DirStoreModel()
+    di = _load(qtbot, m, tree)
+    m.request_dir_size(str(tree / "dir_a"))
+    qtbot.waitUntil(lambda: DirStoreModel.dir_size(str(tree / "dir_a")) == 1,
+                    timeout=5000)
+    other = tmp_path / "other_nav"
+    other.mkdir()
+    _load(qtbot, m, other)
+    di = _load(qtbot, m, tree)                       # 条目是缓存副本重建的
+    assert _size_text(m, di, "dir_a") == "1 B"
+
+
+def test_dir_size_invalidated_on_refresh(qtbot, tree, _clean_dir_sizes):
+    """F5 重扫当前目录：已算出的占用作废（子树内容可能已变），回到留空。"""
+    m = DirStoreModel()
+    di = _load(qtbot, m, tree)
+    m.request_dir_size(str(tree / "dir_a"))
+    qtbot.waitUntil(lambda: DirStoreModel.dir_size(str(tree / "dir_a")) == 1,
+                    timeout=5000)
+    m.refresh()
+    qtbot.waitUntil(lambda: _loaded(m, str(tree)), timeout=5000)
+    assert _size_text(m, di, "dir_a") == ""
+
+
+def test_dir_size_invalidated_on_rename(qtbot, tree, _clean_dir_sizes):
+    """行内改名：旧路径子树下缓存的占用全部失效。"""
+    m = DirStoreModel()
+    di = _load(qtbot, m, tree)
+    m.request_dir_size(str(tree / "dir_a"))
+    qtbot.waitUntil(lambda: DirStoreModel.dir_size(str(tree / "dir_a")) == 1,
+                    timeout=5000)
+    r = next(r for r in range(m.rowCount(di)) if m.fileName(m.index(r, 0, di)) == "dir_a")
+    assert m.setData(m.index(r, 0, di), "dir_renamed", Qt.ItemDataRole.EditRole)
+    assert DirStoreModel.dir_size(str(tree / "dir_a")) is None

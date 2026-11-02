@@ -309,6 +309,91 @@ def dir_pool():
     return _DIR_POOL
 
 
+# ---------- 目录占用计算（右键「计算目录大小」触发） ----------
+
+_SIZE_POOL = None
+_SIZE_POOL_THREADS = 2       # 与枚举池分开：深度递归扫描不会抢占枚举槽位
+
+
+def size_pool():
+    """目录占用计算专用线程池（全进程一个，限 2 线程防并发扫盘互相拖慢）。"""
+    global _SIZE_POOL
+    if _SIZE_POOL is None:
+        pool = QThreadPool()
+        pool.setMaxThreadCount(_SIZE_POOL_THREADS)
+        pool.setObjectName("pan4dex.sizepool")
+        _SIZE_POOL = pool
+    return _SIZE_POOL
+
+
+def calc_dir_size(path, cancel=None):
+    """递归统计目录占用字节数（表面大小合计，与文件「大小」列同口径；不跟随符号链接）。
+
+    返回字节数；根目录本身不可读返回 None（与「空目录 = 0」区分，显示为「—」）；
+    个别子项/子目录不可读则跳过继续——能算多少算多少，与资源管理器一致。
+    `cancel` 是「该停了吗」令牌（可调用或带 `abandoned` 属性），每弹出一个目录探一次。
+    """
+    total = 0
+    try:
+        with os.scandir(path) as it:
+            top = list(it)
+    except OSError:
+        return None
+    stack = []
+    for e in top:
+        try:
+            if e.is_dir(follow_symlinks=False):
+                stack.append(e.path)
+            else:
+                total += e.stat(follow_symlinks=False).st_size
+        except OSError:
+            continue
+    while stack:
+        if cancel is not None:
+            aborted = bool(cancel()) if callable(cancel) else bool(cancel.abandoned)
+            if aborted:
+                return None
+        current = stack.pop()
+        try:
+            with os.scandir(current) as it:
+                for e in it:
+                    try:
+                        if e.is_dir(follow_symlinks=False):
+                            stack.append(e.path)
+                        else:
+                            total += e.stat(follow_symlinks=False).st_size
+                    except OSError:
+                        continue
+        except OSError:
+            continue
+    return total
+
+
+class _SizeSignals(QObject):
+    computed = pyqtSignal(str, object)   # path, 字节数（None = 不可读/被取消）
+
+
+class _DirSizeTask(QRunnable):
+    """一次目录占用计算。结果经 signals 排队回主线程（投递目标销毁则丢弃，
+    与 `_LoadTask` 同款约定）；计算结果进类级缓存，模型销毁不影响其它窗格。"""
+
+    def __init__(self, path, signals):
+        super().__init__()
+        self.path = path
+        self.signals = signals
+        self.setAutoDelete(True)
+
+    def run(self):
+        try:
+            total = calc_dir_size(self.path)
+        except Exception:
+            total = None
+        try:
+            self.signals.computed.emit(self.path, total)
+        except RuntimeError:
+            logger.debug("目录大小结果丢弃：投递目标已随模型销毁")
+
+
 # ---------- 后台枚举任务 ----------
 
 class _LoadSignals(QObject):
@@ -403,11 +488,18 @@ class DirStoreModel(QAbstractItemModel):
     directoryLoaded = pyqtSignal(str)
     loadingStarted = pyqtSignal(str)
     dirChanged = pyqtSignal(str)   # 本模型使某目录发生变更（行内改名等），供跨窗格同步
+    dirSizeComputed = pyqtSignal(str, object)   # 目录占用算完（path, 字节|None），pane 用于状态栏
 
     # 类级缓存：{dirkey: (timestamp, show_hidden, [Entry])}，跨窗格共享同一目录枚举结果
     _CACHE = {}
     _CACHE_TTL = 2.0   # 秒；本地/网络通用。监视只跟当前显示目录，切走期间的
                        # 改动靠「快照过期 + 到达时重扫」兜底，故本地快照也非永久有效
+    # 目录占用计算结果：{dirkey: 字节数}，None 值 = 算过但不可读（显示「—」）。
+    # 类级共享：分屏两侧显示同一目录都能用；所在目录被重扫/改名后整棵子树失效
+    _DIR_SIZES = {}
+    _DIR_SIZES_MAX = 4096
+    _SIZE_PENDING = set()          # 正在计算的 dirkey（跨模型去重，避免重复扫盘）
+    _LIVE_MODELS = None            # 存活模型弱引用集（懒建，见 __init__）
     # 类级「应用内刚改过该目录」时间戳：用于抑制紧随其后的文件系统通知，
     # 避免同一次改动被重扫两遍（列表闪一下）。跨窗格共享——一个窗格改动会
     # 经 refresh_dir 刷所有窗格，各窗格的 watcher 通知届时都该被跳过
@@ -418,6 +510,11 @@ class DirStoreModel(QAbstractItemModel):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        # 存活模型登记：目录大小算完后逐一通知刷新（分屏显示同一目录的另一侧
+        # 也在看），弱引用集，模型 GC 自动消失
+        if DirStoreModel._LIVE_MODELS is None:
+            DirStoreModel._LIVE_MODELS = _weakref.WeakSet()
+        DirStoreModel._LIVE_MODELS.add(self)
         self._nodes = {}           # dirkey -> DirNode
         self._top_node = None      # 当前显示的目录节点（作为模型唯一顶层行）
         self._top_key = ""         # 顶层节点 key
@@ -434,6 +531,9 @@ class DirStoreModel(QAbstractItemModel):
         self._loader = _LoadSignals(self)
         self._loader.finished.connect(self._on_entries_loaded)
         self._loader.cancelled.connect(self._on_load_cancelled)
+        # 目录占用计算结果投递：以本模型为父（模型销毁 → 投递自动失效，同 _loader）
+        self._size_signals = _SizeSignals(self)
+        self._size_signals.computed.connect(self._on_dir_size_computed)
         # dirkey -> 在飞的 `_LoadTask`。只由主线程写（注册在 `_start_load`、除名在
         # 两个采纳槽里），worker 只读自己那个任务的布尔 —— 字典不会跨线程改动。
         self._pending = {}
@@ -685,6 +785,8 @@ class DirStoreModel(QAbstractItemModel):
         node = self._nodes.get(key)
         if node is None:
             return
+        # 节点被作废 = 内容待重扫：其下已算出的目录占用一并失效
+        DirStoreModel._dir_size_invalidate(node.path)
         if node.entries:
             node._stale = node.entries
         node.entries = None
@@ -768,6 +870,8 @@ class DirStoreModel(QAbstractItemModel):
 
     def _reload_top(self, node):
         self._cache_invalidate(node.path)
+        # 重扫（F5 / watcher 通知）：子树占用可能已变，已算出的目录大小全部作废
+        DirStoreModel._dir_size_invalidate(node.path)
         with self._rows_signal():
             if node.loaded and node.entries:
                 parent_idx = self.createIndex(0, 0, node)
@@ -984,6 +1088,63 @@ class DirStoreModel(QAbstractItemModel):
         node.abandoned = False   # 本代次已结清，节点回到「可被重新发起」的中性态
         self._forget_scan(node, task)
 
+    # ---- 目录占用计算（右键「计算目录大小」）----
+    @classmethod
+    def dir_size(cls, path):
+        """已计算出的目录占用（字节）；未计算或算过但不可读返回 None（排序用）。"""
+        return cls._DIR_SIZES.get(_key(path))
+
+    @classmethod
+    def _dir_size_invalidate(cls, path):
+        """path 本身或其子树里的目录占用缓存全部作废（重扫/改名后防陈旧显示）。"""
+        key = _key(path)
+        prefix = key + os.sep
+        for k in [k for k in cls._DIR_SIZES
+                  if k == key or k.startswith(prefix)]:
+            cls._DIR_SIZES.pop(k, None)
+
+    def request_dir_size(self, path):
+        """后台递归统计该目录占用；完成后大小列自动刷新（本模型及显示同目录的其它窗格）。
+
+        已有结果（或正在算）时不重算，只刷新显示。结果按路径进类级缓存，
+        所在目录被重扫/改名后整棵子树失效（见 `_dir_size_invalidate`）。
+        """
+        key = _key(path)
+        if key in self._DIR_SIZES or key in DirStoreModel._SIZE_PENDING:
+            self._refresh_size_display(path)
+            return
+        DirStoreModel._SIZE_PENDING.add(key)
+        size_pool().start(_DirSizeTask(path, self._size_signals))
+
+    @pyqtSlot(str, object)
+    def _on_dir_size_computed(self, path, total):
+        key = _key(path)
+        DirStoreModel._SIZE_PENDING.discard(key)
+        if len(DirStoreModel._DIR_SIZES) >= DirStoreModel._DIR_SIZES_MAX:
+            DirStoreModel._DIR_SIZES.clear()
+        DirStoreModel._DIR_SIZES[key] = total
+        for model in list(DirStoreModel._LIVE_MODELS):
+            try:
+                model._refresh_size_display(path)
+            except RuntimeError:
+                continue   # 模型 C++ 部分已销毁，等 WeakSet 回收
+        try:
+            self.dirSizeComputed.emit(path, total)
+        except RuntimeError:
+            pass
+
+    def _refresh_size_display(self, path):
+        """让大小列重取该目录条目的显示值（data() 按类级缓存/在算集合现算）。"""
+        node = self._top_node
+        if node is None or not node.loaded or not node.entries:
+            return
+        key = _key(path)
+        for r, e in enumerate(node.entries):
+            if e.is_dir and _key(e.path) == key:
+                idx = self.createIndex(r, COL_SIZE, e)
+                self.dataChanged.emit(idx, idx, [Qt.ItemDataRole.DisplayRole])
+                return
+
     # ---- QAbstractItemModel 必需实现 ----
     def index(self, *args, **kwargs):
         # 路径形式：index(path_str)
@@ -1099,7 +1260,17 @@ class DirStoreModel(QAbstractItemModel):
             if col == COL_NAME:
                 return e.name
             if col == COL_SIZE:
-                return "" if e.is_dir else self._fmt_size(e.size)
+                if e.is_dir:
+                    # 目录：枚举不递归，默认留空；右键「计算目录大小」后显示占用，
+                    # 计算中显示「…」，算过但不可读显示「—」
+                    key = _key(e.path)
+                    if key in self._DIR_SIZES:
+                        total = self._DIR_SIZES[key]
+                        return "—" if total is None else self._fmt_size(total)
+                    if key in DirStoreModel._SIZE_PENDING:
+                        return "…"
+                    return ""
+                return self._fmt_size(e.size)
             if col == COL_TYPE:
                 return self._type_text(e)
             if col == COL_DATE:
@@ -1142,6 +1313,8 @@ class DirStoreModel(QAbstractItemModel):
         node = e.node
         # 就地更新条目并 emit dataChanged：不重置模型，保留选中/滚动；
         # 名称变化后 PaneSortProxyModel 的 dynamicSortFilter 会自动重排。
+        # 改名后旧路径子树下缓存的目录占用全部失效（防陈旧显示）
+        DirStoreModel._dir_size_invalidate(old_path)
         e.name = new_name
         e.path = os.path.normpath(new_path)
         if node is not None:
