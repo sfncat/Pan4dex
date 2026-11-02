@@ -953,10 +953,16 @@ def test_stale_entries_released_only_at_safe_point(qtbot, tree, tmp_path):
 
 @pytest.fixture
 def _clean_dir_sizes():
-    """目录占用缓存/在算集合是类级共享状态，测试前后清干净，不串其它用例。"""
+    """目录占用缓存/在算集合是类级共享状态，测试前后清干净，不串其它用例。
+
+    清理前等计算线程池排空：上一用例发起的在算任务可能晚于清理落回缓存，
+    不排空会把下一用例的断言弄脏。
+    """
+    dm.size_pool().waitForDone(2000)
     DirStoreModel._DIR_SIZES.clear()
     DirStoreModel._SIZE_PENDING.clear()
     yield
+    dm.size_pool().waitForDone(2000)
     DirStoreModel._DIR_SIZES.clear()
     DirStoreModel._SIZE_PENDING.clear()
 
@@ -1044,3 +1050,14 @@ def test_dir_size_invalidated_on_rename(qtbot, tree, _clean_dir_sizes):
     r = next(r for r in range(m.rowCount(di)) if m.fileName(m.index(r, 0, di)) == "dir_a")
     assert m.setData(m.index(r, 0, di), "dir_renamed", Qt.ItemDataRole.EditRole)
     assert DirStoreModel.dir_size(str(tree / "dir_a")) is None
+
+
+def test_current_subdirs(qtbot, tree, _clean_dir_sizes):
+    """空白处「计算所有目录大小」的取数：只含已加载条目里的目录，纯内存零 syscall。"""
+    m = DirStoreModel()
+    assert m.current_subdirs() == []          # 尚未导航：无顶层节点
+    (tree / "z_dir").mkdir()
+    di = _load(qtbot, m, tree)                # tree 下有 dir_a + z_dir，外加若干文件
+    subs = m.current_subdirs()
+    assert sorted(os.path.basename(p) for p in subs) == ["dir_a", "z_dir"]
+    assert all(os.path.normpath(p) == p for p in subs)

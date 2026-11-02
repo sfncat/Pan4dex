@@ -1681,6 +1681,7 @@ class Pane(QWidget):
             # 后台递归统计（资源管理器同款交互），可多选一起算
             dir_paths = [p for p in paths if os.path.isdir(p)]
             if dir_paths:
+                # 构造菜单时已 isdir 过滤过，触发在点击瞬间，不必再 stat 一遍
                 calc_size_action = QAction("计算目录大小(&U)", self)
                 calc_size_action.triggered.connect(
                     lambda checked=False, dp=tuple(dir_paths): self._calc_dir_sizes(dp))
@@ -1737,6 +1738,13 @@ class Pane(QWidget):
             paste_action.setShortcut(QKeySequence("Ctrl+V"))
             paste_action.triggered.connect(self.paste)
             menu.addAction(paste_action)
+
+            menu.addSeparator()
+
+            # 当前目录下所有子目录的占用（逐项右键「计算目录大小」的整批入口）
+            calc_all_action = QAction("计算所有目录大小(&U)", self)
+            calc_all_action.triggered.connect(self._calc_all_dir_sizes)
+            menu.addAction(calc_all_action)
             
             menu.addSeparator()
             
@@ -2026,8 +2034,12 @@ class Pane(QWidget):
         return f"{size:.1f} PB"
 
     def _calc_dir_sizes(self, paths):
-        """右键「计算目录大小」：交给模型后台递归统计，完成后大小列自动刷新"""
-        dirs = [p for p in paths if os.path.isdir(p)]
+        """右键「计算目录大小」：交给模型后台递归统计，完成后大小列自动刷新。
+
+        传入的必须是已确认的目录路径（菜单构造时过滤），本方法不再 stat——
+        网络目录上那是每目录一次往返。
+        """
+        dirs = list(paths)
         if not dirs:
             return
         for d in dirs:
@@ -2036,6 +2048,18 @@ class Pane(QWidget):
             self.status_label.setText(f"正在计算 {os.path.basename(dirs[0])} 的占用空间…")
         else:
             self.status_label.setText(f"正在计算 {len(dirs)} 个目录的占用空间…")
+
+    def _calc_all_dir_sizes(self):
+        """空白处右键「计算所有目录大小」：当前目录的每个子目录都参与统计。
+
+        目录列表来自模型已加载的条目（纯内存，零 syscall）；目录还没加载完
+        （异步枚举在飞）时没有可算的项，静默忽略——用户过会儿再点即可。
+        """
+        dirs = self.model.current_subdirs()
+        if not dirs:
+            self.status_label.setText("当前目录没有子目录")
+            return
+        self._calc_dir_sizes(dirs)
 
     def _on_dir_size_computed(self, path, total):
         """目录占用算完（主线程）：状态栏报结果；算到一半切走目录时不打扰当前状态"""

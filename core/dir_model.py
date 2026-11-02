@@ -1145,6 +1145,16 @@ class DirStoreModel(QAbstractItemModel):
                 self.dataChanged.emit(idx, idx, [Qt.ItemDataRole.DisplayRole])
                 return
 
+    def current_subdirs(self):
+        """当前显示目录下的子目录路径列表（纯内存，零 syscall；未加载完返回 []）。
+
+        空白处右键「计算所有目录大小」的取数入口。
+        """
+        node = self._top_node
+        if node is None or not node.loaded or not node.entries:
+            return []
+        return [e.path for e in node.entries if e.is_dir]
+
     # ---- QAbstractItemModel 必需实现 ----
     def index(self, *args, **kwargs):
         # 路径形式：index(path_str)
