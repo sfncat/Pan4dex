@@ -358,7 +358,7 @@ debugpy.wait_for_client()  # 等待 VS Code 连接
 
 | 文档 | 何时更新 |
 |---|---|
-| `AGENT.md` | 只改导航与铁律条目，**不往里复制正文** |
+| `AGENTS.md` | 只改导航与铁律条目，**不往里复制正文** |
 | `docs/architecture.md` | 模块职责、数据流、关键设计决策变更时 |
 | `docs/gotchas.md` | 每踩过一个会复发的坑，当场记一条（编号连续，别插空号） |
 | `docs/changelog.md` | 每次发布新增一节 |

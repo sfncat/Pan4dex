@@ -20,7 +20,7 @@ python scripts/build_windows.py
 
 | 文档 | 说明 |
 |------|------|
-| [`AGENT.md`](AGENT.md) | 入口索引：代码怎么串、铁律、去哪读 |
+| [`AGENTS.md`](AGENTS.md) | 入口索引：代码怎么串、铁律、去哪读 |
 | [`docs/BUILD-GUIDE.md`](docs/BUILD-GUIDE.md) | **详细构建指南**（含 230 Docker 构建） |
 | [`docs/architecture.md`](docs/architecture.md) | 模块职责与关键设计决策 |
 | [`docs/development-guide.md`](docs/development-guide.md) | 开发指南（环境、加模块、文档维护） |

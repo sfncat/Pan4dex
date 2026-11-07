@@ -115,7 +115,7 @@ python scripts/build_windows.py
 
 | 文档 | 说明 |
 |------|------|
-| [`AGENT.md`](AGENT.md) | **AI 与新会话的入口索引**：项目是什么、代码怎么串、铁律、去哪读 |
+| [`AGENTS.md`](AGENTS.md) | **AI 与新会话的入口索引**：项目是什么、代码怎么串、铁律、去哪读 |
 | [`QUICKSTART.md`](QUICKSTART.md) | **快速开始**（一键构建、常用命令） |
 | [`docs/BUILD-GUIDE.md`](docs/BUILD-GUIDE.md) | **构建指南**（Linux/Windows 构建、230 Docker 详解）← 构建的当前真相 |
 | [`docs/architecture.md`](docs/architecture.md) | 模块职责、数据流、关键设计决策 |

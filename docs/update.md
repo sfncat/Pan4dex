@@ -54,7 +54,7 @@
 
 ### 2.1 版本号只有一个来源
 
-`config/app_config.py:18` 的 `VERSION` 是运行时版本号，`pyproject.toml:3` 与其保持同步；发布流程要求两者一起改（`AGENT.md:83-84`）。更新检查必须以 `VERSION` 为准，不能另建一份版本常量。
+`config/app_config.py:18` 的 `VERSION` 是运行时版本号，`pyproject.toml:3` 与其保持同步；发布流程要求两者一起改（`AGENTS.md:83-84`）。更新检查必须以 `VERSION` 为准，不能另建一份版本常量。
 
 ### 2.2 两个平台的产物形态完全不同
 
@@ -76,7 +76,7 @@
 
 ### 2.5 线程与生命周期约定
 
-后台→UI 必须用信号，接收者就是目标 QObject，延后执行用 `call_later`，退出走 `exec_and_drain`（`AGENT.md:55-57`；`core/lifecycle.py:69`、`:132`；`core/file_op_runner.py:44-59` 是现成范式）。更新检查/下载沿用同一模式，不引入新线程模型。
+后台→UI 必须用信号，接收者就是目标 QObject，延后执行用 `call_later`，退出走 `exec_and_drain`（`AGENTS.md:55-57`；`core/lifecycle.py:69`、`:132`；`core/file_op_runner.py:44-59` 是现成范式）。更新检查/下载沿用同一模式，不引入新线程模型。
 
 ### 2.6 230 是现成的构建/测试机
 
@@ -264,7 +264,7 @@ core/update_runner.py      # 后台线程 → 信号回主线程（检查 / 下�
 widgets/update_dialog.py   # 发现新版本 / 下载进度 / 安装确认
 ```
 
-不新建包；沿用 `core/` + `widgets/` 的扁平结构（`AGENT.md:27-41`）。
+不新建包；沿用 `core/` + `widgets/` 的扁平结构（`AGENTS.md:27-41`）。
 
 `core/updater.py` 只依赖标准库 + `config.app_config`，**不 import Qt**；线程封装在
 `core/update_runner.py`（信号接收者就是目标 QObject），便于核心逻辑单测。安装阶段启动
@@ -523,7 +523,7 @@ SHA-256（不初始化 Qt）。退出码：`0` 已是最新、`3` 有新版本�
 - Linux：230 上从 `releases/` 运行与 `/opt` 只读目录各一次；`.desktop` 启动路径不变；
 - 断网、服务器停机、下载中途取消、替换中途杀进程（手工模拟回滚）。
 
-全量 `tests/` 的既有挂起问题按 `AGENT.md:76-79` 处理（同时排除 `test_new_features.py` 与 `test_m5_tools.py`），新增用例不得引入模态阻塞。
+全量 `tests/` 的既有挂起问题按 `AGENTS.md:76-79` 处理（同时排除 `test_new_features.py` 与 `test_m5_tools.py`），新增用例不得引入模态阻塞。
 
 ---
 
@@ -535,7 +535,7 @@ SHA-256（不初始化 Qt）。退出码：`0` 已是最新、`3` 有新版本�
 | 2 | 客户端核心：`core/updater.py`（检查/下载/校验/安装），无 UI | 单元测试全绿 | ✅ `tests/test_updater.py` 20 项 |
 | 3 | 客户端 UI：菜单项、`UpdateDialog`、设置页、启动检查、CLI `--check-update` | 手工走查第 8 节 1-6、10 | ✅ `tests/test_update_ui.py` 11 项 + 本机真实 HTTP 下载链路冒烟 |
 | 4 | Windows/Linux 安装器联调 + 回滚演练 | 两平台各完成一次真实升级 | ⏳ 待做 |
-| 5 | 文档与发布：changelog、AGENT.md 索引、feature-checklist、版本号 1.9.029（当前工作树已有 1.9.028 的 UI 改动，版本号届时按发布流程统一） | 完整 `tests/` 出汇总行 | ⏳ 文档已同步，版本号/产物待发布流程 |
+| 5 | 文档与发布：changelog、AGENTS.md 索引、feature-checklist、版本号 1.9.029（当前工作树已有 1.9.028 的 UI 改动，版本号届时按发布流程统一） | 完整 `tests/` 出汇总行 | ⏳ 文档已同步，版本号/产物待发布流程 |
 
 预估：服务器半天到一天；客户端核心 + UI 一天；两平台联调与回滚半天。合计约 2-3 个工作日。
 
@@ -570,6 +570,6 @@ SHA-256（不初始化 Qt）。退出码：`0` 已是最新、`3` 有新版本�
 ## 附：与现有文档的关系
 
 - 构建产物与发布流程：`docs/build/build-windows.md`、`docs/build/build-linux.md`（不复制到本文）。
-- 线程/生命周期铁律：`AGENT.md:55-57`、`core/lifecycle.py`。
+- 线程/生命周期铁律：`AGENTS.md:55-57`、`core/lifecycle.py`。
 - 230 机器信息：`docs/build/legacy-multimachine.md:29`。
-- 本文新增后，应在 `AGENT.md` 的「去哪读」表加一行「版本更新机制 → docs/update.md」，并在实现完成后同步 `docs/changelog.md` 与 `docs/feature-checklist.md`。
+- 本文新增后，应在 `AGENTS.md` 的「去哪读」表加一行「版本更新机制 → docs/update.md」，并在实现完成后同步 `docs/changelog.md` 与 `docs/feature-checklist.md`。

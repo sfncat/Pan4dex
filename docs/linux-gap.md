@@ -214,8 +214,8 @@
 | 3.2 ✅已修 | `packaging/Dockerfile-linux` 的 pip 列表：`PyInstaller send2trash Pillow qdarkstyle cairosvg pyte` | **缺 `pillow-heif`**（→ HEIC 静默不可用，只记一条 debug 日志）；`cairosvg` 是早年遗留项（全仓没有任何地方引用它，也没有 SVG→PNG 的调用）→ 已补 pillow-heif、删 cairosvg | 📖 与 `pyproject.toml` 依赖表逐项对 + `rg cairosvg` |
 | 3.3 ✅已修 | 镜像是 `python:3.10-bullseye`，而 `pyproject.toml` 写 `requires-python = ">=3.11"`、`.python-version` 是 3.13 | 自相矛盾。静态扫过：没有 3.11+ 专属 API，3.10 确实能跑 —— 但声明与工具链不一致本身就是坑。已把镜像升 `python:3.11-bullseye`（glibc 仍 2.31，目标机 2.35 约束不变），声明与构建环境对齐 | 📖 + ✅ 3.11 镜像出包（v1.9.015-p27） |
 | 3.3b ⚠️新发现 | bullseye 的 LTS support 刚结束 | `deb.debian.org/debian-security` 上的 `+deb11uNN` 包全部 404 → **旧 Dockerfile 从此不可重建**（`apt-get update` exit 100）。镜像源已改 `archive.debian.org`（main + updates），security 通道在 archive 里不存在、已删；archive 的 Release 过期，需 `-o Acquire::Check-Valid-Until=false`。代价：不再有安全更新 —— 这是编译镜像不是运行环境，可接受。**2026-10-29 更新**：升级 PyQt6 6.12 后基座已换 `python:3.11-bookworm`（glibc 2.36），archive 换源补丁随之删除；目标机 glibc 下限抬到 2.36，Ubuntu 22.04 及更老系统不再支持 | ✅ 404 原文 + archive 上 apt-get update 通过 |
-| 3.4 ✅已修 | `scripts/build.sh` 仍被 `AGENT.md:131-132` 列为 Linux 构建入口 | 它取版本靠 `main.py` 的 `__version__`、注 `__build_time__` 也改 `main.py`（两者早已搬到 `config/app_config.py`）→ 版本退化成 `v0.0.0-dev`、编译时间为空；且 `pyinstaller ... main.py` 不带任何 `--add-data`（图标进不去）；产物名带 `v` 前缀，`install-linux.sh` 按 `pan4dex-<VERSION>-linux`（无前缀）去找 → 找不到。**改法**：Linux 段整段替换为转发 `build-linux-docker.sh`，版本源改 `config/app_config.py` 并去 `v` 前缀 | 📖 `scripts/build.sh:39,76-79,44` vs `scripts/install-linux.sh:19-20`（`docker/README.md:139` 已标注该脚本废弃，但 AGENT.md 没同步） |
-| 3.5 ✅已修 | Linux 构建入口实际有**三条并存**：`build-linux-docker.sh`（canonical）、`packaging/pan4dex.spec`（README:132 与 `docs/development-guide.md:198` 推荐）、`scripts/build.sh`（AGENT.md 推荐，已废弃） | spec 路线今天确实能跑（✅ 实测 exit 0，还自动收了 QtSvg/imageformats/pillow_heif），但它不带 `resources/tools/*` 与输入法插件，产物能力面与 docker 路线不同；README:136 那行（Windows）**`--icon=resources/icons/pan4dex.ico` 指向不存在的文件**（现在叫 `resources/icons/icon.ico`），而缺 icon 在 PyInstaller 6 是 `FileNotFoundError` 硬失败。现在文档里只剩一条 canonical 路线，spec 明确标注为「手动/降级路线」并修掉了不存在的 `--icon` | ✅ + 📖 |
+| 3.4 ✅已修 | `scripts/build.sh` 仍被 `AGENTS.md:131-132` 列为 Linux 构建入口 | 它取版本靠 `main.py` 的 `__version__`、注 `__build_time__` 也改 `main.py`（两者早已搬到 `config/app_config.py`）→ 版本退化成 `v0.0.0-dev`、编译时间为空；且 `pyinstaller ... main.py` 不带任何 `--add-data`（图标进不去）；产物名带 `v` 前缀，`install-linux.sh` 按 `pan4dex-<VERSION>-linux`（无前缀）去找 → 找不到。**改法**：Linux 段整段替换为转发 `build-linux-docker.sh`，版本源改 `config/app_config.py` 并去 `v` 前缀 | 📖 `scripts/build.sh:39,76-79,44` vs `scripts/install-linux.sh:19-20`（`docker/README.md:139` 已标注该脚本废弃，但 AGENTS.md 没同步） |
+| 3.5 ✅已修 | Linux 构建入口实际有**三条并存**：`build-linux-docker.sh`（canonical）、`packaging/pan4dex.spec`（README:132 与 `docs/development-guide.md:198` 推荐）、`scripts/build.sh`（AGENTS.md 推荐，已废弃） | spec 路线今天确实能跑（✅ 实测 exit 0，还自动收了 QtSvg/imageformats/pillow_heif），但它不带 `resources/tools/*` 与输入法插件，产物能力面与 docker 路线不同；README:136 那行（Windows）**`--icon=resources/icons/pan4dex.ico` 指向不存在的文件**（现在叫 `resources/icons/icon.ico`），而缺 icon 在 PyInstaller 6 是 `FileNotFoundError` 硬失败。现在文档里只剩一条 canonical 路线，spec 明确标注为「手动/降级路线」并修掉了不存在的 `--icon` | ✅ + 📖 |
 | 3.6 | `releases/` 无任何 Linux 产物；最后一次 Linux 构建工作记在 v0.9.644–v0.9.684 | 从 0.9.68x 到 1.9.012 约 50 个版本的改动**从没进过 Linux 包**，Linux 现状只能靠读代码判断 | 📖 `git log -- docker/ packaging/ scripts/*linux*` + changelog |
 | 3.7 ✅已修（真机抓出） | 崩溃日志落点硬编码在 exe 同级，且 `install_signal_handlers()` 不包异常 | **Linux 装到 root 拥有的目录（`/opt`）时每次启动即死**，Windows 装 `Program Files` 同理。栈：`main()` → `install_signal_handlers` → `PermissionError: releases/pan4dex_crash.log`。安全网自己成了扳机，而且它比窗口创建还早 → 用户连错误框都看不到。已改为候选序列（exe 同级 → 用户缓存 → 临时）+ `'a'` 试探 + 缓存 + 全失败也不抛 | ✅ 真机 exit 1 → 修复后 124（`docs/gotchas.md` 第 45 条）。**顺带查出第 2 坑**：三处写入点都用 `'w'`，每次启动截断上一次的现场 —— 长期“crash 日志是空的”、拿不到段错误栈就是这个原因（直接妨碍 av-watch 与残余崩率调查）。现在三处都追加 + 超 256KB 才轮转，`setup_logging()` 也按同样标准包了 |
 | 3.8 ⚠️新发现 | 构建脚本里 `docker run ... bash -c "... $DATA_ARGS ..."` 的变量未转义 | 宿主 bash 先把它展开成**数组的第 0 个元素**，容器里收到 `--add-data main.py` → PyInstaller 只报「`--add-data` 语法错」，绝不提示 `main.py` 消失了。必须写 `\$DATA_ARGS` 把展开推迟到容器侧 | ✅ p24 第一轮构建失败原文（见 gotchas 46.2） |
@@ -367,7 +367,7 @@ offscreen 下能起，日志里 `延迟创建 pane2-4: 189.2ms` 正常完成。
    `requires-python`，也不动 glibc 基线）。附带发现：bullseye LTS 已结束，镜像源必须换
    archive.debian.org，否则 Dockerfile 本身不可重建（见 3.3b）。
 3. ✅ **Linux 构建入口收敛成一条**：`build-linux-docker.sh`。`scripts/build.sh` 的 Linux 段
-   改成转发它（不再是第二套实现）；`AGENT.md`/README/`docs/development-guide.md` 已同步，
+   改成转发它（不再是第二套实现）；`AGENTS.md`/README/`docs/development-guide.md` 已同步，
    spec 降为“手动/降级路线”并修掉了不存在的 `--icon=resources/icons/pan4dex.ico`。
 4. ✅ `apply_windows_native_icon()` 加了 `sys.platform != "win32"` 早退。~~每次启动白抛两次~~
    —— **本条结论已推翻**：两个调用点（`main.py:584-601`）早已在 `if sys.platform == "win32":`
@@ -411,7 +411,7 @@ offscreen 下能起，日志里 `延迟创建 pane2-4: 189.2ms` 正常完成。
 
 - ✅（已闭环）`docs/feature-checklist.md` 18.4「支持 7z/rar」原标 🔴，实际 `core/archive_ops.py`
   早已通过 7z 命令行支持 —— 0f9e6e9 已把该行改为 🟢，本条记账结清。
-- ✅（已重写）`AGENT.md` 曾整体落后（技术栈写 Python 3.10+、目录结构缺 `dir_model.py` 等十余个
+- ✅（已重写）`AGENTS.md` 曾整体落后（技术栈写 Python 3.10+、目录结构缺 `dir_model.py` 等十余个
   模块、版本号规则仍写 `0.9.5XX`、构建入口指向已废弃的 `build.sh`、机器表停在 win54/55）。
-  2026-09-23 起 `AGENT.md` 改为**纯索引 + 铁律**，正文一律指向本文档与 `architecture.md`，
+  2026-09-23 起 `AGENTS.md` 改为**纯索引 + 铁律**，正文一律指向本文档与 `architecture.md`，
   不再复制细节 —— 复制一份就会过期一份。

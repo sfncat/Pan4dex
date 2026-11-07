@@ -673,7 +673,7 @@
   代码不读该目录）；`resources/icons` 缺了仍是硬错
 - **Linux 构建入口收敛成一条**：`scripts/build.sh` 的 Linux 段整段删掉（它早已失真：从 `main.py`
   取版本得到 `v0.0.0-dev`、不带任何 `--add-data`、产物名多一个 `v` 前缀让 `install-linux.sh`
-  找不到），改为转发 `build-linux-docker.sh`；版本源改 `config/app_config.py`。`AGENT.md` /
+  找不到），改为转发 `build-linux-docker.sh`；版本源改 `config/app_config.py`。`AGENTS.md` /
   `README.md` / `docs/development-guide.md` / `docker/README.md` 同步，`pyinstaller packaging/pan4dex.spec`
   降为“手动/降级路线”并修掉不存在的 `--icon=resources/icons/pan4dex.ico`
 - **两个只在真机跑构建时才暴露的坑**：① 参数传递 —— `bash -c "... $DATA_ARGS ..."` 里的变量由
@@ -816,7 +816,7 @@
 - 新增 `docs/linux-gap.md`（Linux 能力对照与差距，47 处行号引用逐条核对命中）；本版的
   三项改动在它 §6「第二批」里标 ✅，§3.4 实测表同步为 v1.9.013 的口径
 - `architecture.md` 新增 `mounts.py` 一行，`dir_model.py` / `bookmarks.py` 两行措辞改为真实形状；
-  `AGENT.md` 新增一条「平台判据必须两边都有」的设计决策，并把“网络目录完全不挂”两处
+  `AGENTS.md` 新增一条「平台判据必须两边都有」的设计决策，并把“网络目录完全不挂”两处
   说法订正为“网络/慢位置”（判据两端同一个）
 - `feature-checklist.md` 新增 3.5（网络/慢位置识别）与 8.5（首启动默认收藏），2.4 / 12.10
   的验证措辞改为两端都算；**补记 v1.9.012 漏写的更新记录行**
@@ -1194,7 +1194,7 @@
 
 #### 📝 文档更新
 - `docs/gotchas.md` 第 29（筛选只改可见行：不叠代理、不碰磁盘）、第 30 条（清除必须无条件发空信号）
-- `docs/architecture.md` 更新 `filter_bar.py` / `pane.py` 职责行；`AGENT.md` 新增设计决策
+- `docs/architecture.md` 更新 `filter_bar.py` / `pane.py` 职责行；`AGENTS.md` 新增设计决策
   「列表筛选只用一层代理」
 - `docs/feature-checklist.md` 按代码实况校正（文档 v1.2）：筛选 9.1–9.7 接通；永久删除/重命名/
   操作取消/导航历史/路径补全改 🟢；**查实为未实现并标回 🔴** 的有 Ctrl+Tab、Ctrl+L、
@@ -1309,7 +1309,7 @@
   自变更、防抖、进程级 hub、只监视当前目录、登记推到事件循环顶层），新增第 24 条（行信号
   重入 `rowCount`）、第 25 条（不要到达即重扫）、第 26 条（枚举不用全局线程池）、
   第 27 条（类级注册表要判死 + 入册时机）+ 审查清单 4 项
-- `AGENT.md`：改写“不挂 `QFileSystemWatcher`”的旧说法，新增目录监视六约束
+- `AGENTS.md`：改写“不挂 `QFileSystemWatcher`”的旧说法，新增目录监视六约束
 - `docs/architecture.md`：`dir_model.py` 行补充本地 watcher / 网络不挂，并补“为何只监视
   一个目录”
 - `docs/unsolved-issues.md` 问题 13：补入本段取证（完整的崩溃率 A/B 表，以及
@@ -1791,7 +1791,7 @@
 - 创建开发指南 (`docs/development-guide.md`)
 - 创建功能清单与规划 (`docs/feature-checklist.md`)
 - 创建实现设计文档 (`docs/implementation.md`)
-- 创建项目指南 (`AGENT.md`)
+- 创建项目指南 (`AGENTS.md`)
 - 创建更新日志 (`docs/changelog.md`)
 
 #### 🔧 工程
