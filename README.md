@@ -125,7 +125,7 @@ python scripts/build_windows.py
 | [`docs/todo.md`](docs/todo.md) | **待办唯一正文**：还剩什么、卡在哪儿、怎样算销账 |
 | [`docs/linux-gap.md`](docs/linux-gap.md) | Linux 能力对照：哪些没做、哪些只是没验证 |
 | [`docs/gotchas.md`](docs/gotchas.md) | 踩坑记录 #1–#56（为什么不能那么写） |
-| [`docs/changelog.md`](docs/changelog.md) | 更新日志 |
+| [`CHANGELOG.md`](CHANGELOG.md) | 变更记录（面向使用者的版本变化） |
 | [`docs/unsolved-issues.md`](docs/unsolved-issues.md) | 还挂着的问题 |
 
 ---

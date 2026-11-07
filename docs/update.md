@@ -572,4 +572,4 @@ SHA-256（不初始化 Qt）。退出码：`0` 已是最新、`3` 有新版本�
 - 构建产物与发布流程：`docs/build/build-windows.md`、`docs/build/build-linux.md`（不复制到本文）。
 - 线程/生命周期铁律：`AGENTS.md:55-57`、`core/lifecycle.py`。
 - 230 机器信息：`docs/build/legacy-multimachine.md:29`。
-- 本文新增后，应在 `AGENTS.md` 的「去哪读」表加一行「版本更新机制 → docs/update.md」，并在实现完成后同步 `docs/changelog.md` 与 `docs/feature-checklist.md`。
+- 本文新增后，应在 `AGENTS.md` 的「去哪读」表加一行「版本更新机制 → docs/update.md」，并在实现完成后同步 `CHANGELOG.md` 与 `docs/feature-checklist.md`。

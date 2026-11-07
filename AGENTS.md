@@ -12,6 +12,14 @@
 - 只写能确认的事实，未知写「待补充」，不编造。
 - 动笔前先读规范：技能 `agents-md-authoring` 的 `references/project-status.md`。
 
+## 变更记录
+
+- 根目录 `CHANGELOG.md` 是本项目的变更记录，面向使用者，按版本组织，**最新在最上面**。
+- 每次发版前更新；日常小改动不必逐条写，攒到发版时归并。
+- 格式：`## [版本号] - YYYY-MM-DD`，下面按 `Added` / `Changed` / `Fixed` / `Removed` 分类；只写用户能感知的变化，不写实现细节，也不写「优化代码结构」这类空话。
+- 与 `PROJECT_STATUS.md` 的 `## 最近完成`、`git log` 分工不同，不要互相复制。
+- 动笔前先读规范：技能 `agents-md-authoring` 的 `references/changelog.md`。
+
 ## 这是什么
 
 跨平台四窗格文件管理器（对标 Windows 的 Q-Dir）。Python 3.11+（开发机 3.13，依赖由 uv 管理）
@@ -28,7 +36,7 @@
 | 开发流程、加测试、代码规范、文档维护 | `docs/development-guide.md`；测试策略见 `docs/testing.md` |
 | 某功能做没做、还剩什么 | `docs/feature-checklist.md`（状态表）；**待办看 `docs/todo.md`**；Linux 半边另看 `docs/linux-gap.md` |
 | 为什么不能那么写（踩过一次的都在这） | `docs/gotchas.md`（#1–#56，第六/七节是模型与生命周期） |
-| 发布改了什么 | `docs/changelog.md` |
+| 发布改了什么 | `CHANGELOG.md` |
 | 版本更新机制（230 更新服务器 + 客户端自动更新） | `docs/update.md` |
 | 现在还挂着的问题 | `docs/unsolved-issues.md` |
 
@@ -92,7 +100,7 @@ python scripts/build_windows.py                 # Windows 本机 → releases/pa
 
 1. `config/app_config.py` 的 `VERSION` 与 `pyproject.toml` 的 `version` 同步（末位 +1，人工控制，
    不要自动递增）。
-2. `docs/changelog.md` 新增分节；功能状态变了就同步 `docs/feature-checklist.md`（状态表）、
+2. `CHANGELOG.md` 新增分节；功能状态变了就同步 `docs/feature-checklist.md`（状态表）、
    `docs/todo.md`（销账那条改 ✅ 但**保留整行**）、`docs/linux-gap.md` / `docs/gotchas.md`——
    **状态改了正文没跟上，比没改更坏**。
 3. `BUILD_TIME` 不回写源码：构建脚本打包前生成 `config/_build_info.py`（已 gitignore），

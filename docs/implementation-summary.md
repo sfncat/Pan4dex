@@ -12,7 +12,7 @@
 > ④ 更糟的是那条错误路径会弹**模态框**，于是 offscreen 下「用两个文件路径构造 `FileCompareDialog`」
 > 就永久挂住 —— `tests/test_new_features.py`（6 处）与 `tests/test_m5_tools.py`（3 处）两档都中招，
 > 本仓全量测试自 v1.9.020 起跑不完（gotchas 第 56 条、`docs/todo.md` T4/T5）。
-> 版本的发布叙事看 `docs/changelog.md` v1.9.020 一节。
+> 版本的发布叙事看 `CHANGELOG.md` v1.9.020 一节。
 
 ## 已完成的中优先级功能 (P2-P3)
 
