@@ -14,6 +14,12 @@
 > 本仓全量测试自 v1.9.020 起跑不完（gotchas 第 56 条、`docs/todo.md` T4/T5）。
 > 版本的发布叙事看 `CHANGELOG.md` v1.9.020 一节。
 
+> **追记（2026-11-10）**：上面 ①③④ 指的缺陷已在 **v1.9.028** 修复 —— `highlight_diffs()` 补上定义、
+> `escape_html` 改 `html_lib.escape`、`QKeySequenceValidator` 无效引用删除；当天全量复跑
+> **793 passed / 4 skipped**，`docs/todo.md` T4/T5 销账。清单 16.1/16.3 回 🟢、21.1 改 🟡
+>（import 好了但入口仍缺，见 T2 第二步）。②（7z/RAR 已做完）维持原判断。本段原文保留作历史审计记录，
+> 现状一律以 `docs/feature-checklist.md` 与 `docs/todo.md` 为准。
+
 ## 已完成的中优先级功能 (P2-P3)
 
 ### ✅ 16.2 - 二进制文件比较

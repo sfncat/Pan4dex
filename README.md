@@ -4,8 +4,8 @@
 
 > A cross-platform quad-pane file manager inspired by Q-Dir
 
-![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
-![PyQt6](https://img.shields.io/badge/PyQt6-6.6%2B-green)
+![Python](https://img.shields.io/badge/Python-3.11%2B-blue)
+![PyQt6](https://img.shields.io/badge/PyQt6-6.12%2B-green)
 ![License](https://img.shields.io/badge/License-MIT-yellow)
 ![Platform](https://img.shields.io/badge/Platform-Linux%20%7C%20Windows-lightgrey)
 
@@ -21,9 +21,9 @@ Pan4dex 是一个跨平台四窗格文件管理器，功能对标 Windows 下的
 * 📁 跨窗格拖拽复制 / 移动文件
 * 🔍 快速预览面板（文本 / 图片 / 文件信息）
 * 📑 多标签页
-* 🎨 深色 / 浅色主题 + 自定义主题
+* 🎨 深色 / 浅色主题（热切换）
 * ⚡ 可配置外部终端和文件关联
-* 📦 单文件可执行，零依赖运行
+* 📦 免安装运行（Linux 单文件 ELF / Windows 解压即用）
 
 ---
 
@@ -85,15 +85,10 @@ python main.py
 QT_QPA_PLATFORM=offscreen pytest tests/ -q
 ```
 
-无显示环境必须设离屏平台变量。**当前全量会挂住**（不是慢）：只要用两个文件路径构造
-`FileCompareDialog`，它就立刻比较并在错误路径弹模态框，offscreen 下没人点 OK 就永不返回；踩中这一点
-的用例在 `tests/test_new_features.py` 与 `tests/test_m5_tools.py` 两档里，**两个都要排除**才跑得完：
-
-```bash
-QT_QPA_PLATFORM=offscreen pytest tests/ -q --ignore=tests/test_new_features.py --ignore=tests/test_m5_tools.py
-```
-
-详情见 [`docs/testing.md`](docs/testing.md) §5 与 [`docs/todo.md`](docs/todo.md) T4/T5。
+无显示环境必须设离屏平台变量。全量能跑完，无需 `--ignore`（2026-11-10 基线：
+**793 passed / 4 skipped**，见 [`docs/testing.md`](docs/testing.md) §5）。历史上 v1.9.020–027
+曾因 `FileCompareDialog` 的模态错误框挂住两档测试，v1.9.028 修复、T4/T5 已销账
+（[`docs/todo.md`](docs/todo.md)、gotchas 第 56 条）。
 
 ### 打包
 
@@ -124,7 +119,7 @@ python scripts/build_windows.py
 | [`docs/feature-checklist.md`](docs/feature-checklist.md) | 功能清单与实现状态（状态表） |
 | [`docs/todo.md`](docs/todo.md) | **待办唯一正文**：还剩什么、卡在哪儿、怎样算销账 |
 | [`docs/linux-gap.md`](docs/linux-gap.md) | Linux 能力对照：哪些没做、哪些只是没验证 |
-| [`docs/gotchas.md`](docs/gotchas.md) | 踩坑记录 #1–#56（为什么不能那么写） |
+| [`docs/gotchas.md`](docs/gotchas.md) | 踩坑记录 #1–#57（为什么不能那么写） |
 | [`CHANGELOG.md`](CHANGELOG.md) | 变更记录（面向使用者的版本变化） |
 | [`docs/unsolved-issues.md`](docs/unsolved-issues.md) | 还挂着的问题 |
 
@@ -157,7 +152,7 @@ python scripts/build_windows.py
 * [QDarkStyle](https://github.com/QDarkStyleSheet/qdarkstyle) — 深色主题
 * [send2trash](https://github.com/Sharachchandra/send2trash) — 安全删除（网络位置一律永久删除）
 * [pyte](https://pyte.readthedocs.io/) + [pywinpty](https://github.com/pywinpty/pywinpty)（Windows）— 内嵌终端
-* [PyInstaller](https://pyinstaller.org/) — 单文件打包
+* [PyInstaller](https://pyinstaller.org/) — 冻结打包（Linux onefile / Windows onedir + zip）
 
 ## 里程碑
 

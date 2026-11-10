@@ -18,6 +18,8 @@
 | 1.6 | 拖拽目标高亮 | P0 | 🟢 | 跨窗格拖拽时目标窗格边框高亮（蓝色） | QSS 动态样式 | pane.py dragEnterEvent |
 | 1.7 | 主窗口框架 | P0 | 🟢 | 菜单栏、工具栏、状态栏、QDockWidget 区域 | QMainWindow | main_window.py |
 | 1.8 | 列头排序 | P0 | 🟢 | 点「名称/大小/修改日期」列头切换升降序；**任一方向下目录都排在文件前**；大小按字节数而非“4.0 KB”字符串。v1.9.020 补上规模证据：真 CIFS 上 10,000 条目**读全表逐条断言单调**（目录块在大小列按名称、文件块按字节不增；降序时同类内部反转），排序期 **0 次文件系统查询**；产物版真鼠标点表头两次画面从 `d00000` 起翻成 `d00199` 起（p59e / p60d，取证坑见 gotchas 53） | `PaneSortProxyModel.lessThan` 只读条目缓存属性（不 stat、不碰网络） | pane.py |
+| 1.9 | 目录占用大小 | P2 | 🟢 | 右键目录（可多选）→「计算目录大小」，大小列从 `…` 变为占用字节；空白处右键→「计算所有目录大小」一键统计当前目录全部子目录（无子目录时状态栏提示）；不可读显示 `—`；按大小排序时已计算的目录按占用字节参与比较 | 后台迭代 scandir（不跟随符号链接防环），独立 2 线程池不抢目录枚举槽位；类级缓存（上限 4096）+ 重扫/改名自动失效，F5 后按需重算 | core/dir_model.py `calc_dir_size()` / `size_pool()` + core/pane.py 菜单（v1.9.047/048）；tests/test_dir_size.py |
+| 1.10 | 文件视图模式 | P2 | 🟢 | 查看按钮循环：图标 → 平铺 → 超大图标 → 详细信息 → 列表；各模式多选/右键/拖拽/筛选/双击行为一致，拖入后立刻显示（039/044 修复） | 平铺（034，瓦片附注：exe/dll 版本资源、其他大小+类型）与列表（041，资源管理器式多栏小图标，042/043/045 纠偏）复用超大图标同一 QListWidget 实例换外观；图标/详细信息走 QTreeView | core/pane.py `on_view_mode_changed()` + widgets/thumbnail_view.py `set_tile_mode()` / `set_simple_list_mode()` |
 
 ## 2. 文件操作
 
@@ -189,9 +191,9 @@
 
 | # | 功能 | 优先级 | 状态 | 验证方式 | 说明 | 实现情况 |
 |---|---|---|---|---|---|---|
-| 16.1 | 文本比较 | P1 | 🔴 | 对比两个文本文件，高亮差异 | difflib + QTextEdit | **坏的**：`compare_text()` 调 `self.highlight_diffs()`（`file_compare.py:316`），全仓没有这个定义 → 文本比较必抛 `AttributeError`，被外层 `except` 吞成一句 `QMessageBox.warning("比较失败：...")`（模态框；2026-09-23 探针实测）。而且 `FileCompareDialog(file1, file2)` 构造末尾就直接 `compare()`，所以「带两个文件构造」这个用法一打开就弹错误框，offscreen 下表现为**永久挂住**（没人点 OK）。登记在 `docs/todo.md` **T4** |
-| 16.2 | 二进制比较 | P2 | 🟢 | 逐字节对比两个文件 | 分块读取、十六进制转储、差异分组 | `file_compare.py compare_binary()` + `show_binary_results()` —— 2026-09-23 探针实跑通：绕开文本模式、直接 `compare_mode=BINARY` 调 `compare()`，`binary_result` 正常出报告。**前提是别走 16.1 那条路**，否则先撞上 T4 |
-| 16.3 | 比较结果导出 | P2 | 🔴 | 导出比较结果为 HTML/文本 | 报告生成，带元数据 | **HTML 那半是坏的**：`_export_html()` 调 `self.escape_html()`，同样是未定义方法 → 导出 HTML 直接 `AttributeError`；`_export_text()` 未发现同类问题但也没跑过。与 16.1 一起登记在 **T4** |
+| 16.1 | 文本比较 | P1 | 🟢 | 对比两个文本文件，高亮差异 | difflib + QTextEdit | v1.9.028 修复（原 T4）：补上 `highlight_diffs()`（`file_compare.py:332`），两栏互不对应的行加底色、与差异统计同源；`tests/test_new_features.py` 里曾永久挂住的构造用例全绿（2026-11-10 全量 793 passed / 4 skipped，见 `docs/testing.md` §5） |
+| 16.2 | 二进制比较 | P2 | 🟢 | 逐字节对比两个文件 | 分块读取、十六进制转储、差异分组 | `file_compare.py compare_binary()` + `show_binary_results()` —— 2026-09-23 探针实跑通：`compare_mode=BINARY` 调 `compare()`，`binary_result` 正常出报告；`TestBinaryCompare` 3 条用例在全量里持续绿 |
+| 16.3 | 比较结果导出 | P2 | 🟢 | 导出比较结果为 HTML/文本 | 报告生成，带元数据 | v1.9.028 修复（原 T4）：HTML 模板原用 `str.format` 把 CSS 花括号当占位符（`KeyError`）、`escape_html` 从未定义，现改标记替换 + `html_lib.escape`（`file_compare.py:_export_html`）；HTML/文本报告都能导出，二进制报告补「文件大小不同」提示。`test_export_html_report` / `test_export_text_report` 在全量里绿（2026-11-10） |
 
 ## 17. 目录同步
 
@@ -233,7 +235,7 @@
 
 | # | 功能 | 优先级 | 状态 | 验证方式 | 说明 | 实现情况 |
 |---|---|---|---|---|---|---|
-| 21.1 | 自定义操作 | P3 | 🔴 | 用户定义快捷操作（如打开编辑器、转换格式） | JSON 配置 + 对话框 | `config/user_operations.py`（配置层）可用且有测试；`widgets/user_operations_dialog.py` **连 import 都失败** —— 模块第 4 行从 `PyQt6.QtWidgets` 导入 `QKeySequenceValidator`，这个名字在 QtWidgets 和 QtGui 里都不存在，`ImportError` 是硬错（2026-09-23 实跑）。所以它不是「建好没接线」，是**没建好**：全仓除测试外零引用，那 5 条测试全红。登记在 `docs/todo.md` **T2** |
+| 21.1 | 自定义操作 | P3 | 🟡 | 用户定义快捷操作（如打开编辑器、转换格式） | JSON 配置 + 对话框 | `config/user_operations.py`（配置层）可用且有测试；`widgets/user_operations_dialog.py` 的无效 `QKeySequenceValidator` 引用已在 v1.9.028 去掉，import 与配套 5 条用例转绿（2026-11-10 全量复核）。**但全仓除测试外仍零引用**：没有菜单/右键入口，用户拿不到，按铁律第 9 条不能标 🟢。入口接线登记在 `docs/todo.md` **T2** 第二步 |
 | 21.2 | 操作快捷键 | P3 | 🔴 | 为自定义操作绑定快捷键 | 快捷键配置框架 | 未实现：`user_operations.py` 与对话框里没有任何 shortcut/hotkey 代码，21.1 的入口也没接上。与入口一起登记在 **T2** |
 
 ## 22. 目录树与窗格内标签页
@@ -256,8 +258,10 @@
 **本节内容已搬出，独立成 `docs/todo.md`（待办的唯一正文）。**
 
 编号（`L<n>` 需真实环境的验证项 / `T<n>` 代码层任务）保持不变，历史引用照旧可查：
-16.1 / 16.3 的 🔴 对应 **T4**，21.1 / 21.2 对应 **T2**，22.2 的 🟡 对应 **T3**，
-「全量测试跑不完」是 **T5**。做与不做、验收判据、销账规矩都去那边改，本文件只留功能状态表。
+16.1 / 16.3 曾 🔴 对应 **T4**（v1.9.028 修复，2026-11-10 全量跑绿后销账，现 🟢）；
+21.1 / 21.2 对应 **T2**（import 已修，入口未接，21.1 现 🟡）；22.2 的 🟡 对应 **T3**；
+「全量测试跑不完」曾是 **T5**（现全量可跑完，已销账）。做与不做、验收判据、销账规矩都去那边改，
+本文件只留功能状态表。
 
 ## 24. 版本更新
 
@@ -267,8 +271,8 @@
 | 24.2 | 管理页手动上传 | P1 | 🟢 | 选择文件自动带出平台/版本，上传显示进度；重复版本需勾选替换 | 服务端校验 zip 顶层 `pan4dex/`、含 `pan4dex.exe`、ELF x86-64 头 | `server/update-server/templates/admin.html`、`static/app.js` |
 | 24.3 | 客户端检查更新 | P1 | 🟢 | 启动 3 秒后后台检查；帮助菜单可手动检查；失败不打断启动 | 标准库 urllib（Windows 包无 QtNetwork） | `core/updater.py`、`core/update_runner.py`、`core/main_window.py` |
 | 24.4 | 客户端下载与校验 | P1 | 🟢 | 进度/速度/取消；哈希或大小不符自动清理临时文件并提示重试 | `.part` 下载 → 校验 → 改名 | `core/updater.py:download_update` |
-| 24.5 | Windows 自动安装 | P1 | 🟡 | 1.9.028 → 1.9.029 真机升级一次并重启，失败可回滚 | PowerShell 脚本等旧进程退出后替换目录 | 已实现（`prepare_windows_install`），真机升级/回滚待做 |
-| 24.6 | Linux 自动安装 | P1 | 🟡 | 230 上从 releases 目录升级一次；`/opt` 只读目录给出手动命令 | 同目录 `.part` + `os.replace` | 已实现（`apply_linux_update`），真机升级待做 |
+| 24.5 | Windows 自动安装 | P1 | 🟢 | 真机升级一次并重启，失败可回滚 | PowerShell 脚本等旧进程退出后替换目录 | 已实现（`prepare_windows_install`）；v1.9.032 修复「安装脚本从未执行」（`DETACHED_PROCESS` 下 PowerShell 初始化即死，改 `CREATE_NO_WINDOW`），实测脱离模式端到端通过，自动安装链路至此真正跑通（028–031 均受影响）；035/040 又加固备份步目录锁竞争与改名被挡时降级 robocopy |
+| 24.6 | Linux 自动安装 | P1 | 🟢 | 真机应用内升级一次；`/opt` 只读目录给出手动命令 | 同目录 `.part` + `os.replace`（跨文件系统降级拷贝） | 已实现（`apply_linux_update`）；v1.9.046 修复升级后新版本秒死（`_PYI_*`/`_MEI*` 标记被升级子进程继承，见 `docs/update.md` §5.6），**真机应用内升级成功（两台机器两次实证）**；044 补跨文件系统降级、启动日志与手动命令绝对路径 |
 | 24.7 | 设置「更新」页 | P2 | 🟢 | 服务器地址、启动检查、自动下载/安装、清除已跳过版本 | 保存前校验 http(s) 地址 | `widgets/settings_dialog.py`、`core/main_window.py:open_settings` |
 | 24.8 | 构建一键上传 | P2 | 🟢 | `build_all.py -U` 一次构建两平台并在服务器看到新版本 | `-U` 走管理页同一条 `/admin/upload`；地址在 `scripts/update_server.json`，口令在 `.local.json`/环境变量 | `scripts/upload_release.py`、`scripts/build_all.py`、`scripts/build_windows.py`、`scripts/build-linux-docker.sh`；上传通道测试 4 项 |
 
@@ -308,8 +312,9 @@
 | 2026-09-23 | **全仓文档审计（AGENTS.md 索引化那一轮）+ 跑代码复核，回写本表**：①**16.1 文本比较 🟢→🔴、16.3 HTML 导出 🟢→🔴**（`file_compare.py:316` 调不存在的 `highlight_diffs()`、`:578` 等调不存在的 `escape_html()`，`0f9e6e9` 起就没跑过；16.2 二进制实测可用，留 🟢）；②**21.1 🟢→🔴**、21.2 🟢→🔴 —— `widgets/user_operations_dialog.py:4` 从 `PyQt6.QtWidgets` 导入不存在的 `QKeySequenceValidator`，模块 import 即 `ImportError`，配套 5 条用例全红，且全仓除测试外零引用；③新增待办 **T2**（先修 import 再谈接入入口与快捷键）、**T4**（file_compare 两个幽灵方法）、**T5**（全量测试自 v1.9.020 起跑不完，最后一条全量绿记录停在 v1.9.019）；④审计中另查到 **T3**：`widgets/tree_sidebar.py:121`、`:180` 仍直接判 `_active_pane`，是 gotchas 47/49 那一类在 Linux/X11 上会静默失灵的落点，22.2 因此从 🟢 改 🟡；⑤第 22 节补齐自初版就缺的表标题、把行首多出来的那截竖线规范成普通表格行，13.11 改号 13.10（13.10 从未存在过，纯编号断档）。**产品代码与测试本轮一行未动**，全部是登记与回写 | - |
 | 2026-09-24 | **第 23 节「待办事项」整表搬出本文件，独立成 `docs/todo.md`**：清单从此只保留功能状态表 + 优先级说明 + 本更新记录，第 23 节改为一节指路占位（编号 L/T 不变，历史引用不断链）。全仓原先写「清单第 23 节 T4/T5」的引用统一改指 `docs/todo.md`。本文件的既有账目不迁移，仍留在上面几行 | - |
 | 2026-10-30 | 新增第 24 节「版本更新」：更新服务器（管理页 + API）与客户端检查/下载/安装已实现并各有测试，Windows/Linux 真机升级与回滚演练仍为 🟡 | - |
+| 2026-11-10 | 全量测试复跑 **793 passed / 4 skipped**（Windows offscreen，111.06s），据此回写：16.1/16.3 🔴→🟢、21.1 🔴→🟡（v1.9.028 已修 import 与幽灵方法，入口仍缺）、24.5/24.6 🟡→🟢（032 Windows 端到端、046 Linux 真机升级成功）；T4/T5 在 `docs/todo.md` 销账。补录 028–048 遗漏的功能行：1.9 目录占用大小（047/048）、1.10 文件视图模式（平铺 034 / 列表 041） | - |
 
 ---
 
 **文档版本**：v1.9  
-**最后更新**：2026-10-30
+**最后更新**：2026-11-10

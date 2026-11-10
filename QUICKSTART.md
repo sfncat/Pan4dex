@@ -37,11 +37,12 @@ python scripts/build_windows.py
 # 跑起来
 python main.py
 
-# 运行测试（无显示的环境用离屏平台）
-QT_QPA_PLATFORM=offscreen pytest tests/ -q --ignore=tests/test_new_features.py --ignore=tests/test_m5_tools.py
+# 运行测试（无显示的环境用离屏平台）—— 全量能跑完，无需 --ignore
+QT_QPA_PLATFORM=offscreen pytest tests/ -q
 #   Windows PowerShell 先执行：$env:QT_QPA_PLATFORM='offscreen'
-#   ⚠️ 不加那两个 --ignore 会挂住：两档里有 9 处「用两个文件路径构造 FileCompareDialog」，
-#      它在 offscreen 下弹模态框永不返回。只排一个会在 50% 处卡住。原因见 docs/testing.md §5
+#   基线（2026-11-10）：793 passed / 4 skipped，见 docs/testing.md §5。
+#   历史：v1.9.020–027 曾需排除 test_new_features / test_m5_tools 两档（FileCompareDialog
+#   模态框挂死），v1.9.028 修复、T4/T5 已销账，别再把那两个 --ignore 抄回来
 
 # 清理构建缓存
 rm -rf build/ dist/ build_onefile/ dist_onefile/ .pytest_cache

@@ -23,7 +23,7 @@
 | 收藏夹树 `BookmarkStore` | `tests/test_bookmarks.py` | 注入临时目录做 JSON 落盘（gotchas 第 39 条：测持久化组件必须注入临时目录） |
 | 文件关联 / 已保存搜索 | `tests/test_saved_search.py`、`test_search_results.py`、`test_open_with.py` | 临时目录注入做 JSON 落盘（gotchas 第 39 条）；`test_open_with.py` 在 Windows 上真读注册表 |
 | 崩溃日志落点 | `tests/test_crash_log_path.py` | 只读安装目录时要能退到用户级落点（gotchas 第 45 条） |
-| 各工具对话框（比较/预览/操作） | `tests/test_new_features.py`、`tests/test_m5_tools.py` | ⚠️ **这两档当前会把整场测试挂住**：合计 9 处「用两个文件路径构造 `FileCompareDialog`」即撞模态错误框，见 §5 顶部的当前状态说明与 `docs/todo.md` T4/T5 |
+| 各工具对话框（比较/预览/操作） | `tests/test_new_features.py`、`tests/test_m5_tools.py` | v1.9.020–027 期间这两档会因 `FileCompareDialog` 的模态错误框把整场测试挂住（gotchas 第 56 条），v1.9.028 修复后全量可跑完（2026-11-10：793 passed / 4 skipped，见 §5） |
 
 （`DragDrop` / `Terminal` / `Settings` / `FileModel` 这些**模块在本仓不存在**，旧表里那几行
 是按设想写的。拖放判据实际住在 `file_operations.decide_drop_action()`，终端住在
@@ -133,8 +133,6 @@ def qt_exceptions():              # 收集 Qt 抛出的 Python 异常
 | 场景 | 验证点 |
 |---|---|
 | 切换内置主题 | UI 颜色更新 |
-| 加载自定义主题 | 应用新颜色 |
-| 主题文件损坏 | 保持当前主题，不崩溃 |
 | 自定义主题接口 | **没有这个接口可测**：主题只有 `theme_manager.py` 内嵌的两套（dark/light），不存在外置 JSON 主题加载（2026-09-23 核查，见 `docs/architecture.md` §3.3） |
 
 ## 5. 测试命令
@@ -147,21 +145,18 @@ Qt 对象，控件用例用 `qtbot`）。
 QT_QPA_PLATFORM=offscreen pytest tests/ -q
 ```
 
-> **当前状态（2026-09-23 实测）**：上面这条**不会返回**。触发点是**「用两个文件路径构造
-> `FileCompareDialog`」**这个动作本身：`__init__` 里两个路径都给就立刻 `self.compare()`，走错误分支
-> 弹 `QMessageBox.warning`，模态框在 offscreen 下没人点 OK，进程就此停住。全仓 9 处踩中，分属两档
-> ——`tests/test_new_features.py` 6 处（:59 :76 :93 :121 :145 :581）、`tests/test_m5_tools.py` 3 处
-> （:191 :200 :213）。
+> **当前基线（2026-11-10 实测）**：上面这条**能跑完**，不需要任何 `--ignore`：
+> Windows / Python 3.13（`.venv`）/ offscreen → **793 passed, 4 skipped in 111.06s**。
+> 命令用 venv 的解释器：`QT_QPA_PLATFORM=offscreen .venv/Scripts/python.exe -m pytest tests/ -q`
+> （系统 `python` 没装 pytest，直接跑会报 `No module named pytest` 且退出码为 0 —— 别把这种
+> 空输出当通过）。
 >
-> **所以 `--ignore` 只列一个文件没用**（我第一次就这么错过）：加 `--ignore=tests/test_new_features.py`
-> 后全量能跑到 50%，然后原样卡在 `tests/test_m5_tools.py::TestFileCompare::test_file_compare_dialog_creation`。
-> 两档都要排除才跑得完：
-> `QT_QPA_PLATFORM=offscreen pytest tests/ -q --ignore=tests/test_new_features.py --ignore=tests/test_m5_tools.py`。
-> 2026-09-23 本机实测这条：Windows / Python 3.13 / offscreen → **644 passed, 4 skipped in 85.56s**
-> （`tmp/p62_fullsuite_minus2.log`，日志不入库）。
-> 根因与销账条件写在 `docs/todo.md` T4/T5、`docs/gotchas.md` 第 56 条。
-> **修好之前别在任何文档里写「全量通过」** —— v1.9.020 起就没有过一次跑完的 `tests/`；
-> 排除两档跑出的数字是「次全量」，报的时候要照实写排除了什么。
+> **历史**：v1.9.020–027 期间这条命令不会返回 —— 「用两个文件路径构造 `FileCompareDialog`」
+> 会在 `__init__` 里立刻 `compare()`，错误分支弹模态框，offscreen 下没人点 OK（9 处、跨
+> `test_new_features.py` 与 `test_m5_tools.py` 两档，`--ignore` 必须同时排两档才出得来
+> 644 passed / 4 skipped 的次全量）。根因在 v1.9.028 修复，`docs/todo.md` T4/T5 于 2026-11-10
+> 销账，完整现场见 `docs/gotchas.md` 第 56 条。**规矩不变：报「全量通过」必须真的跑完整场
+> `tests/` 并拿到汇总行**，排除任何一档跑出的数字都要照实写排除了什么。
 
 ```bash
 # 按文件 / 按用例

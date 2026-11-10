@@ -64,8 +64,8 @@ pywinpty>=3.0.0; sys_platform == "win32"   # 内嵌终端的 PTY
 3. **编写实现**：在 `core/` 或 `widgets/` 中编写代码
 4. **运行测试确认通过**：还是单跑，然后补一轮**相关模块**的用例
 5. **重构**：优化代码结构
-6. **提交前跑全量**：`QT_QPA_PLATFORM=offscreen pytest tests/ -q`（当前需把挂住的两档一起
-   `--ignore` 掉，见 §2.3）。**别拿第 4 步的单跑当「测试通过」** ——
+6. **提交前跑全量**：`QT_QPA_PLATFORM=offscreen pytest tests/ -q`（现在能跑完，无需
+   `--ignore`；基线见 `docs/testing.md` §5）。**别拿第 4 步的单跑当「测试通过」** ——
    gotchas 第 56 条那次回归就是因为只跑了针对性文件
 
 覆盖率检查这一步暂时没有：`pytest-cov` 未声明（§1.4）。
@@ -86,9 +86,10 @@ QT_QPA_PLATFORM=offscreen pytest tests/test_dir_model.py -q
 QT_QPA_PLATFORM=offscreen pytest tests/ -q
 ```
 
-> **第 2 步当前跑不完**：`tests/test_new_features.py` 与 `tests/test_m5_tools.py` 里共 9 处「用两个文件
-> 路径构造 `FileCompareDialog`」，会弹模态框把套件挂死（只排除前者会在 50% 处卡在后者上）。当前能跑到
-> 汇总行的命令，以及销账条件，都在 `docs/testing.md` §5 与 `docs/todo.md` T4/T5。
+> **第 2 步现在跑得完**（2026-11-10 基线：793 passed / 4 skipped，见 `docs/testing.md` §5）。
+> 历史：v1.9.020–027 期间 `test_new_features.py` 与 `test_m5_tools.py` 里共 9 处「用两个文件
+> 路径构造 `FileCompareDialog`」会弹模态框把套件挂死，v1.9.028 修复、T4/T5 已销账
+> （`docs/todo.md`、gotchas 第 56 条）。规矩没变：**跑不完就是跑不过**，全量必须出汇总行。
 
 ```bash
 # 3. 静态检查：仓库里既没有 ruff/mypy 配置也没有这两个依赖（见 §1.4）。
@@ -185,8 +186,8 @@ def test_navigate_to_directory(qtbot, tmp_path):
 ### 4.3 运行测试
 
 ```bash
-# 全部（无显示的环境必须离屏）—— 少一个 --ignore 就会挂住，见 §2.3 与 testing.md §5
-QT_QPA_PLATFORM=offscreen pytest tests/ -q --ignore=tests/test_new_features.py --ignore=tests/test_m5_tools.py
+# 全部（无显示的环境必须离屏）—— 现在能跑完，无需 --ignore；基线见 testing.md §5
+QT_QPA_PLATFORM=offscreen pytest tests/ -q
 
 # 按文件 / 按用例
 pytest tests/test_dir_model.py -v

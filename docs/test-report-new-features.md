@@ -16,6 +16,12 @@
 > 下面原文照旧保留（含那张 14/27 的表），但**别再拿它当「已验证」的证据**；结论一律以
 > `docs/feature-checklist.md` 与本仓 `docs/gotchas.md` 第 56 条为准。
 
+> **追记（2026-11-10）**：上表点名的两处硬伤已在 **v1.9.028** 修复 —— `highlight_diffs` /
+> `escape_html` 幽灵方法补齐（文本比较与 HTML/文本导出转绿）、`QKeySequenceValidator` 无效引用删除
+>（那 5 条对话框用例转绿）。当天全量 `pytest tests/ -q`（offscreen）出汇总行 **793 passed / 4 skipped**，
+> 不再挂住，`docs/todo.md` T4/T5 销账。仍未闭环的是 21.1 的**入口接线**（组件能 import 但产品里零引用，
+> 见 T2 第二步），所以清单 21.1 只标 🟡。本复核表与下方原文都是历史记录，现状以清单与待办为准。
+
 ## 测试执行时间
 **日期**: 2026-09-18  
 **测试文件**: `tests/test_new_features.py`
