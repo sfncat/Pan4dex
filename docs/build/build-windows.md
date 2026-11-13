@@ -36,7 +36,8 @@ Copy-Item 'C:\Program Files\7-Zip\7z.exe','C:\Program Files\7-Zip\7z.dll','C:\Pr
 
 > `7z.exe` 少了同目录 `7z.dll` 会被 `find_7z()` 跳过，等于没带；脚本的警告用的是同一判据。
 > Linux 专用的 `exiftool-linux/` 与 `7z/7zz` 不进 Windows 包（构建时临时移出，**失败也还原**）。
-> 1.9.049 及之前的 Windows 包一直没有内置 7-Zip（构建机只部署了 Linux 的 `7zz`），见待办 T13。
+> 1.9.049 及之前的 Windows 包一直没有内置 7-Zip（构建机只部署了 Linux 的 `7zz`）；待办 T13 已修，
+> **从 1.9.050 起 Windows 包内置 7-Zip**（构建机已部署 `7z.exe` + `7z.dll`，见上表）。
 
 ---
 

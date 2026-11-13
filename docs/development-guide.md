@@ -86,7 +86,7 @@ QT_QPA_PLATFORM=offscreen pytest tests/test_dir_model.py -q
 QT_QPA_PLATFORM=offscreen pytest tests/ -q
 ```
 
-> **第 2 步现在跑得完**（2026-11-13 基线：883 passed / 5 skipped，见 `docs/testing.md` §5）。
+> **第 2 步现在跑得完**（2026-11-13 基线：895 passed / 5 skipped，见 `docs/testing.md` §5）。
 > 历史：v1.9.020–027 期间 `test_new_features.py` 与 `test_m5_tools.py` 里共 9 处「用两个文件
 > 路径构造 `FileCompareDialog`」会弹模态框把套件挂死，v1.9.028 修复、T4/T5 已销账
 > （`docs/todo.md`、gotchas 第 56 条）。规矩没变：**跑不完就是跑不过**，全量必须出汇总行。

@@ -86,7 +86,7 @@ QT_QPA_PLATFORM=offscreen pytest tests/ -q
 ```
 
 无显示环境必须设离屏平台变量。全量能跑完，无需 `--ignore`（2026-11-13 基线：
-**883 passed / 5 skipped**，见 [`docs/testing.md`](docs/testing.md) §5）。历史上 v1.9.020–027
+**895 passed / 5 skipped**，见 [`docs/testing.md`](docs/testing.md) §5）。历史上 v1.9.020–027
 曾因 `FileCompareDialog` 的模态错误框挂住两档测试，v1.9.028 修复、T4/T5 已销账
 （[`docs/todo.md`](docs/todo.md)、gotchas 第 56 条）。
 

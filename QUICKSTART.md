@@ -40,7 +40,7 @@ python main.py
 # 运行测试（无显示的环境用离屏平台）—— 全量能跑完，无需 --ignore
 QT_QPA_PLATFORM=offscreen pytest tests/ -q
 #   Windows PowerShell 先执行：$env:QT_QPA_PLATFORM='offscreen'
-#   基线（2026-11-13）：883 passed / 5 skipped，见 docs/testing.md §5。
+#   基线（2026-11-13）：895 passed / 5 skipped，见 docs/testing.md §5。
 #   历史：v1.9.020–027 曾需排除 test_new_features / test_m5_tools 两档（FileCompareDialog
 #   模态框挂死），v1.9.028 修复、T4/T5 已销账，别再把那两个 --ignore 抄回来
 

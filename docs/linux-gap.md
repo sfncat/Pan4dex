@@ -149,7 +149,7 @@
 | HEIC/HEIF 预览 | 打包带 `_pillow_heif` | 同一套：`packaging/Dockerfile-linux:61` 的 pip 列表里已有 `pillow-heif`，v1.9.015 起的产物实测带 `_pillow_heif*.so`（见 §3.2）；真机渲染见 §5.2 L7 | 🟢 | `widgets/thumbnail_view.py:24-37`、`packaging/Dockerfile-linux` |
 | 类型列文案 | 「PNG 文件」「文件夹」（不是 shell 描述） | 相同 | 🟢 一致但都弱 | `core/dir_model.py:966-972` |
 | 符号链接识别 | `islink` + 重分析点 | `os.path.islink`（非 nt 直接用它） | 🟢 | `core/file_operations.py:353-363` |
-| 拍摄日期列 | 系统/内置 exiftool | `resources/tools/exiftool-linux/`（**未入库**）或系统 exiftool | 🟡 | `core/media_metadata.py:36-98` |
+| 拍摄日期列 | 系统/内置 exiftool | `resources/tools/exiftool-linux/`（**未入库**）或系统 exiftool | 🟡 **包内已恢复**：1.9.038–1.9.046 的 Linux 产物实测**一个 exiftool 条目都没有**（036/037/049 各 247 个，038/042/046 为 0；按包内字节计数，不是按体积猜），根因是 Windows 构建失败后没还原临时移出的 Linux 二进制（gotchas **#66**，T12 已修：还原挪进 `finally`）；047/048 没出 Linux 包。049 起重新带上，**真机读取效果仍待复测**（L16） | `core/media_metadata.py:36-98` |
 | **POSIX 权限 / 所有者显示** | 概念不适用 | **完全没有**；「加运行权限」的注释写着「让权限列立即更新」，但列表只有 5 列、没有权限列 | 🔴 | `core/pane.py:1247-1258`、`core/dir_model.py:37` |
 | 属性对话框 | 未做 | 未做（Linux 更需要：权限/所有者/符号链接目标） | 🔴 plan §7 欠账 | — |
 

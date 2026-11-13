@@ -146,11 +146,10 @@ QT_QPA_PLATFORM=offscreen pytest tests/ -q
 ```
 
 > **当前基线（2026-11-13 实测）**：上面这条**能跑完**，不需要任何 `--ignore`：
-> Windows / Python 3.13（`.venv`）/ offscreen → **883 passed, 5 skipped in 134.15s**
-> （同日 T6①/T7/T8/T9/T10/T11 落地那轮；上一基线是 2026-11-10 的 800 passed / 5 skipped，
-> 新增 83 条：键位矩阵 `test_view_keys.py` 29、定位合一 `test_reveal.py` 36、
-> 拍摄日期预读 `test_shot_prefetch.py` 8、行落地 `test_sort_landing.py` 4、
-> 平铺/简单列表 flow 与退出排空 6）。
+> Windows / Python 3.13（`.venv`）/ offscreen → **895 passed, 5 skipped in 136.98s**
+> （1.9.050 发布前置、版本号改完后那轮；同日 T12/T13 落地那轮是 895 passed / 5 skipped in 125.36s。
+> 上一基线是同日的 883 passed / 5 skipped，新增 12 条：构建脚本守卫 `test_build_windows.py` 6、
+> 包内 7-Zip 兜底 `test_archive_ops.py` 6。再往前是 2026-11-10 的 800 passed / 5 skipped → T6–T11 那轮 +83）。
 > 命令用 venv 的解释器：`QT_QPA_PLATFORM=offscreen .venv/Scripts/python.exe -m pytest tests/ -q`
 > （系统 `python` 没装 pytest，直接跑会报 `No module named pytest` 且退出码为 0 —— 别把这种
 > 空输出当通过）。
