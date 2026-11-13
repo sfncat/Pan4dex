@@ -1506,6 +1506,31 @@ Windows fast-fail（0xC0000409），用户侧就是「关掉程序时报错」�
 
 ---
 
+### 66. Windows 构建失败后，临时移出的 Linux 二进制不还原 → 下一个 Linux 包静默缺 ExifTool
+
+**现象**：`scripts/build_windows.py` 打包前把 `resources/tools/exiftool-linux` 与
+`resources/tools/7z/7zz` 移到 `build/*-build-bak`（免得打进 Windows 包）。2026-11-13 出 1.9.049 时
+PyInstaller 清 `dist` 撞上正在运行的 `dist\pan4dex\pan4dex.exe` 占住 `qgif.dll`
+（`PermissionError: [WinError 5]`）而失败，脚本 `sys.exit(1)` —— **还原函数写在成功路径上**，
+两个 Linux 二进制就留在了 `build/` 里。紧接着跑 Linux 构建：`rsync` 排除 `build/`，
+容器里的源码缺 `exiftool-linux`，脚本只打印一行「! 本包不含 …」**照样出包**：
+产物 101,097,672 字节、ELF 头正常、`--version` 也对，拍摄日期能力却没了。
+
+**根因**：`try/finally` 只包住 `_build_info.py` 的清理，资源还原在
+`if result.returncode != 0: sys.exit(1)` 之后；再叠加「`resources/tools/` 是构建机本地部署目录、
+缺失只提示不失败」（问题 3.1 的设计），缺口就一路静默传到产物。
+
+**修法（本次手工）**：`mv build/exiftool-linux-build-bak resources/tools/exiftool-linux`、
+`mv build/7zz-build-bak resources/tools/7z/7zz`，重跑 Linux 构建 →
+产物 **108,139,968 字节**（+7.0 MB），「本包不含」只剩本机从未部署的 `qt6-im-plugins`。
+
+**规矩**：Windows 构建**失败**后，先 `ls resources/tools/` 确认 `exiftool-linux` 与 `7z/7zz` 在位，
+再跑 Linux 构建；验收别只看「构建成功」，要拿**产物大小差**与「本包不含」那行当观测量。
+脚本侧根治（还原挪进 `finally`）已登记 `docs/todo.md` T12，待批。
+另：`dist` 被运行中的产物占住时，不要杀进程 —— 用 `--distpath` 指到别处即可绕开。
+
+---
+
 ## 八、回归防护机制
 
 ### 部署脚本
