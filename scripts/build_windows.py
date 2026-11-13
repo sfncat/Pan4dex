@@ -101,13 +101,31 @@ def _restore_linux_binaries():
             print(f"Restored {src.name}")
 
 
+def _missing_tool_warnings(tools_dir):
+    """构建机本地部署的工具缺哪样就返回哪条警告（缺失不失败，只提示）。
+
+    resources/tools/ 整体 gitignore，丢了构建照样成功但功能静默缺失：曾因此连续多个版本
+    Windows 包不含 ExifTool；1.9.049 又查出包内一直没有 Windows 版 7-Zip（只有 Linux 的 7zz）。
+    """
+    warnings = []
+    if not (tools_dir / "exiftool" / "exiftool.exe").is_file():
+        warnings.append(
+            "!! 缺 resources/tools/exiftool/exiftool.exe：本包不含 ExifTool，"
+            "「拍摄日期」列将不可用（从 https://exiftool.org 下载 _64.zip 解压到该目录）")
+    z = tools_dir / "7z"
+    # 与 core/archive_ops.py:_resource_7z() 同一判据：7z.exe 少了同目录 7z.dll 不算数
+    if not ((z / "7za.exe").is_file()
+            or ((z / "7z.exe").is_file() and (z / "7z.dll").is_file())):
+        warnings.append(
+            "!! 缺 resources/tools/7z/7za.exe（或 7z.exe + 同目录 7z.dll）：本包不含内置 7-Zip，"
+            "没装系统 7-Zip 的机器上压缩/解压不可用（可从本机 7-Zip 安装目录复制）")
+    return warnings
+
+
 _exclude_linux_binaries()
 
-# resources/tools/ 整体 gitignore（构建机本地部署），丢了构建照样成功但功能静默缺失
-# ——曾因此连续多个版本 Windows 包不含 ExifTool，拍摄日期列失效。打包前显式检查。
-if not (tools_dir / "exiftool" / "exiftool.exe").is_file():
-    print("!! 缺 resources/tools/exiftool/exiftool.exe：本包不含 ExifTool，"
-          "「拍摄日期」列将不可用（从 https://exiftool.org 下载 _64.zip 解压到该目录）")
+for _warning in _missing_tool_warnings(tools_dir):
+    print(_warning)
 
 # Build with PyInstaller (onedir mode — faster startup, no extraction overhead)
 # --windowed：GUI 应用不显示控制台黑窗（原 --console 会让每次启动都带终端窗口）；
@@ -163,12 +181,12 @@ try:
     result = subprocess.run(cmd)
 finally:
     build_info.unlink(missing_ok=True)
+    # 失败也必须还原：否则 Linux 二进制留在 build/，而 Linux 构建的 rsync 排除 build/，
+    # 下一个 Linux 包就静默缺 ExifTool（gotchas #66）
+    _restore_linux_binaries()
 if result.returncode != 0:
     print("Build failed!")
     sys.exit(1)
-
-# 还原构建前临时移出的 Linux 二进制（构建完成后，避免被打进 Windows 包）
-_restore_linux_binaries()
 
 # Copy to releases (onedir mode: copy entire folder + create zip)
 releases_dir = project_root / "releases"
