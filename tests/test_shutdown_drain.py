@@ -61,6 +61,77 @@ def test_drain_leaves_pool_idle(qapp, big_dir):
     assert dir_pool().waitForDone(0) is True
 
 
+def test_drain_covers_every_background_pool(qapp):
+    """排空名单要逐个点名：全局池 + 枚举池 + 占用池 + 拍摄日期预读池，少一个等于没排
+
+    `dir_model` 早已不用全局池，只排全局池的话在飞任务一个都收不到。
+    **新增专用池时必须同时加进这里与 `_pools_to_drain()`。**
+    """
+    from PyQt6.QtCore import QThreadPool
+
+    from core.dir_model import size_pool
+    from core.lifecycle import _pools_to_drain
+    from core.media_metadata import shot_pool
+
+    pools = _pools_to_drain()
+    for expected in (QThreadPool.globalInstance(), dir_pool(), size_pool(), shot_pool()):
+        assert any(p is expected for p in pools), "有线程池没进排空名单"
+
+
+def test_drain_covers_each_thumbnail_view_pool(qapp, qtbot):
+    """缩略图池是每视图一个，只在 closeEvent 里排空 —— 退出时并非每个控件都收得到"""
+    from core.lifecycle import _pools_to_drain
+    from widgets.thumbnail_view import ThumbnailView, live_thumbnail_pools
+
+    v = ThumbnailView()
+    qtbot.addWidget(v)
+    assert v._thread_pool in live_thumbnail_pools()
+    assert any(p is v._thread_pool for p in _pools_to_drain())
+
+
+def test_drain_waits_for_inflight_dir_size_and_delivers_it(qapp, tmp_path, monkeypatch):
+    """占用计算还在飞时排空：必须等它跑完并把结果派发掉，不能留给析构阶段
+
+    观测量取「在飞」而不是「已算完」：任务算完后再排空，光靠空转事件循环也能收到
+    结果，那样即使名单里漏了占用池也照样通过（实测对照组假绿）。
+    """
+    import time
+
+    from core import dir_model
+    from core.dir_model import DirStoreModel, _key, size_pool
+
+    target = tmp_path / "sized"
+    target.mkdir()
+    (target / "a.bin").write_bytes(b"x" * 1024)
+    (target / "b.bin").write_bytes(b"y" * 2048)
+    key = _key(str(target))
+    DirStoreModel._DIR_SIZES.pop(key, None)
+    DirStoreModel._SIZE_PENDING.discard(key)
+
+    real_calc = dir_model.calc_dir_size
+
+    def slow_calc(path, cancel=None):
+        # 0.25s 远大于空转事件循环的耗时，又远小于排空的 5s 预算
+        time.sleep(0.25)
+        return real_calc(path, cancel)
+
+    monkeypatch.setattr(dir_model, "calc_dir_size", slow_calc)
+
+    m = DirStoreModel()
+    m.request_dir_size(str(target))
+    # 必须确认任务真的开跑了：排空第一步是 clear()，还没起跑的排队任务会被丢掉
+    deadline = time.monotonic() + 5
+    while size_pool().activeThreadCount() == 0 and time.monotonic() < deadline:
+        time.sleep(0.005)
+    assert size_pool().activeThreadCount() > 0, "前置条件不成立：任务没起跑"
+
+    drain_background_pool()
+    assert DirStoreModel._DIR_SIZES.get(key) == 3072
+    assert key not in DirStoreModel._SIZE_PENDING
+    assert size_pool().waitForDone(0) is True
+    DirStoreModel._DIR_SIZES.pop(key, None)
+
+
 def test_exec_and_drain_drains_right_after_the_loop(monkeypatch):
     """生产退出路径的接线：事件循环一返回就必须排空，两者不得拆开
 

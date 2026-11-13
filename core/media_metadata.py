@@ -19,6 +19,10 @@ import subprocess
 import sys
 import tempfile
 import threading
+import weakref
+
+from PyQt6 import sip
+from PyQt6.QtCore import QObject, QRunnable, QThreadPool, pyqtSignal
 
 logger = logging.getLogger("pan4dex.media_metadata")
 
@@ -32,6 +36,28 @@ _EXIFTOOL_VERSION = None   # None=未探测，''=未知
 _CACHE: dict = {}          # {path: 'YYYY-MM-DD HH:MM' 或 None}
 _CACHE_LOCK = threading.Lock()
 _VERSION_LOCK = threading.Lock()
+
+# ---------- 拍摄日期预读专用线程池（限流） ----------
+
+_SHOT_POOL = None
+_SHOT_POOL_THREADS = 2   # 一个任务拉起一个 exiftool 子进程，并发必须封顶
+
+
+def shot_pool():
+    """拍摄日期预读专用的全进程线程池（**不用**全局池，也不每窗格一个）。
+
+    旧实现是裸 daemon 线程：实测 20 次快速导航堆出 17 个同时在飞的线程 ——
+    换成真 exiftool 就是 17 个并发子进程啃同一批文件（SMB 上尤其糟），而且窗格
+    销毁后 21 个任务全部照跑完。上限取 2：与目录占用池同一量级，既给子进程数封顶，
+    又不至于让一个慢目录把预读全堵死。每窗格一个池会让四窗格变成 4×N，同样失控。
+    """
+    global _SHOT_POOL
+    if _SHOT_POOL is None:
+        pool = QThreadPool()
+        pool.setMaxThreadCount(_SHOT_POOL_THREADS)
+        pool.setObjectName("pan4dex.shotpool")
+        _SHOT_POOL = pool
+    return _SHOT_POOL
 
 
 def _find_exiftool():
@@ -179,10 +205,14 @@ def _norm(path: str) -> str:
 _EXIFTOOL_CHUNK = 500  # 单次 exiftool 调用最多处理文件数（防命令行超长）
 
 
-def batch_get_shot_dates(paths) -> dict:
+def batch_get_shot_dates(paths, cancel=None) -> dict:
     """批量获取拍摄日期，返回 {path: 'YYYY-MM-DD HH:MM' 或 None}。
 
     只对未缓存的文件发起 exiftool 调用（按 500 个一批），结果入缓存。
+    `cancel` 是「该停了吗」令牌（可调用或带 `abandoned` 属性），**每批之间**探一次：
+    命中就不再啃后续批，返回已得结果。局限要清楚（gotchas #58）：取消标志拦不住
+    已经阻塞在子进程调用里的那一批，所以浪费上限是 500 个文件（≤30s 超时），
+    不是整个目录。被取消时**不给未处理的路径写 None 缓存**，否则它们再也不会被重试。
     """
     paths = [p for p in paths if p]
     if not paths:
@@ -195,7 +225,12 @@ def batch_get_shot_dates(paths) -> dict:
         with _CACHE_LOCK:
             return {p: _CACHE.get(keys[p]) for p in paths}
 
+    aborted = False
     for i in range(0, len(todo), _EXIFTOOL_CHUNK):
+        if cancel is not None:
+            aborted = bool(cancel()) if callable(cancel) else bool(cancel.abandoned)
+            if aborted:
+                break
         chunk = todo[i:i + _EXIFTOOL_CHUNK]
         data = _run_exiftool(chunk)
         if data is None:
@@ -209,10 +244,67 @@ def batch_get_shot_dates(paths) -> dict:
                     _CACHE[src] = _clean_date(item.get('DateTimeOriginal') or item.get('CreateDate'))
 
     with _CACHE_LOCK:
-        for p in todo:
-            if keys[p] not in _CACHE:
-                _CACHE[keys[p]] = None  # 失败也缓存，避免反复调用
+        if not aborted:
+            for p in todo:
+                if keys[p] not in _CACHE:
+                    _CACHE[keys[p]] = None  # 失败也缓存，避免反复调用
         return {p: _CACHE.get(keys[p]) for p in paths}
+
+
+class ShotCancel:
+    """「该停了吗」令牌（方向见 gotchas #54：返回真 = 该停，别写反）。
+
+    只持窗格弱引用与一个代际整数，不碰 Qt 对象，worker 线程读它安全。
+    窗格没了（Python 对象被回收，或 C++ 对象已 sip.delete）、或又发起了一次新预读
+    （代际变了），旧任务就该停下后续批。**两种「没了」都要判**：sip.delete 之后
+    Python 包装对象可能还被别处引用着，只看弱引用会漏掉这一支。
+    """
+    __slots__ = ("_pane", "_gen", "abandoned")
+
+    def __init__(self, pane, gen):
+        self._pane = weakref.ref(pane)
+        self._gen = gen
+        self.abandoned = False
+
+    def __call__(self):
+        if self.abandoned:
+            return True
+        pane = self._pane()
+        if pane is None or sip.isdeleted(pane):
+            return True
+        return pane._shot_gen != self._gen
+
+
+class ShotDateSignals(QObject):
+    """预读结果回投：**以窗格为父**，窗格销毁时已排队的投递被 Qt 一并剔除。
+
+    接收者必须是窗格这个 QObject（同 `dir_model._LoadSignals(self)` 的理由，见
+    docs/unsolved-issues.md 问题 13）：改成无 QObject 归属的 closure，投递就会在
+    窗格销毁后照旧派发，实测把崩溃点从槽内部前推到分发处。
+    """
+    done = pyqtSignal(int)      # 发起预读时的代际
+
+
+class ShotDateTask(QRunnable):
+    """一次拍摄日期预读：后台只跑 exiftool 子进程，不触碰 Qt 模型。"""
+
+    def __init__(self, paths, signals, gen, cancel):
+        super().__init__()
+        self.paths = paths
+        self.signals = signals
+        self.gen = gen
+        self.cancel = cancel
+        self.setAutoDelete(True)
+
+    def run(self):
+        try:
+            batch_get_shot_dates(self.paths, cancel=self.cancel)
+        except Exception as e:
+            logger.debug(f"拍摄日期预读失败: {e}")
+        try:
+            self.signals.done.emit(self.gen)
+        except RuntimeError:
+            pass        # 窗格已销毁：投递目标没了，丢掉这一帧
 
 
 def get_shot_date_cached(path) -> str | None:

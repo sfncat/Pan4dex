@@ -6,6 +6,7 @@ import os
 import json
 import logging
 import time
+import weakref
 from collections import OrderedDict
 from PyQt6.QtWidgets import (QAbstractItemView, QListWidget, QListWidgetItem,
                              QApplication, QListView, QStyledItemDelegate,
@@ -15,6 +16,7 @@ from PyQt6.QtCore import (QMimeData, QSize, Qt, QTimer, QUrl, QRunnable,
 from PyQt6.QtGui import QDrag, QPixmap, QIcon, QImage, QImageReader, QFontMetrics, QFont
 
 from core.lifecycle import call_later
+from widgets.view_keys import handle_edge_jump
 
 logger = logging.getLogger("pan4dex.thumbnail_view")
 
@@ -205,6 +207,26 @@ class ThumbnailLoader(QRunnable):
             self.signals.failed.emit(self.path)
 
 
+# 还活着的视图（弱引用，销毁即自动除名）：退出排空要逐个点名它们各自的线程池
+_LIVE_VIEWS = weakref.WeakSet()
+
+
+def live_thumbnail_pools():
+    """当前存活视图的缩略图线程池清单，供 `core.lifecycle._pools_to_drain()` 收拢。
+
+    每个视图一个池（4 线程），只在 `closeEvent` 里排空 —— 而应用退出时并非每个
+    控件都会收到 closeEvent，漏掉的池会把未派发的跨线程投递留到解释器收尾阶段
+    被 Qt 释放，Windows 上退化为 fast-fail（docs/unsolved-issues.md 问题 13）。
+    """
+    pools = []
+    for view in list(_LIVE_VIEWS):
+        try:
+            pools.append(view._thread_pool)
+        except RuntimeError:
+            continue        # C++ 对象已销毁，池也没了
+    return pools
+
+
 class ThumbnailView(QListWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -255,6 +277,9 @@ class ThumbnailView(QListWidget):
         
         self._thread_pool = QThreadPool()
         self._thread_pool.setMaxThreadCount(4)
+        # 登记进弱引用集合：退出排空要逐个点名每个视图的池（closeEvent 不是每条
+        # 退出路径都会走到），见 live_thumbnail_pools 与 lifecycle._pools_to_drain
+        _LIVE_VIEWS.add(self)
         
         self._lazy_timer = QTimer()
         self._lazy_timer.setInterval(100)
@@ -285,6 +310,8 @@ class ThumbnailView(QListWidget):
         self._tile_mode = on
         self._lazy_timer.stop()
         self._thread_pool.clear()
+        # 平铺是网格：简单列表留下的 TopToBottom 会把图标排成一条横带
+        self.setFlow(QListView.Flow.LeftToRight)
         if on:
             self.setItemDelegate(self._tile_delegate)
             self.setIconSize(TILE_ICON)
@@ -339,6 +366,8 @@ class ThumbnailView(QListWidget):
             self.setUniformItemSizes(False)
         else:
             self.setViewMode(QListWidget.ViewMode.IconMode)
+            # 上面 on 分支设的 TopToBottom 必须显式设回来，否则图标排成一条横带
+            self.setFlow(QListView.Flow.LeftToRight)
             self.setIconSize(QSize(128, 128))
             self.setGridSize(QSize(160, 190))
             self.setSpacing(15)
@@ -644,6 +673,12 @@ class ThumbnailView(QListWidget):
         drag = QDrag(self)
         drag.setMimeData(mime)
         drag.exec(Qt.DropAction.CopyAction | Qt.DropAction.MoveAction)
+
+    def keyPressEvent(self, event):
+        # Ctrl+End / Ctrl+Home：与详情视图共用一份处理（光标+滚动+选中一起走）
+        if handle_edge_jump(self, event):
+            return
+        super().keyPressEvent(event)
 
     # 拖放事件统一转交 Pane（与 FileListTreeView 同一套逻辑），
     # 这样图标视图也能接外部拖入、以及拖到文件夹图标上

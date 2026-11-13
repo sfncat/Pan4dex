@@ -83,17 +83,30 @@ def call_later(receiver, msec: int, fn):
 
 
 def _pools_to_drain():
-    """需要收拢的线程池：全局池 + 目录枚举专用池。
+    """需要收拢的线程池：全局池 + 目录枚举池 + 目录占用池 + 拍摄日期预读池 + 各视图的缩略图池。
 
     `dir_model` 不再用全局池（并发数按 CPU 核数，对 SMB 和稳定性都是负担，见
-    `dir_model.dir_pool`），所以排空要逐个点名，不能只照顾一个。
-    延迟 import：`dir_model` 也属于核心层，不在模块级互相依赖。
+    `dir_model.dir_pool`），所以排空要逐个点名，不能只照顾一个。漏掉一个，它未派发的
+    跨线程投递就会留到解释器收尾阶段被 Qt 释放，Windows 上退化为 fast-fail
+    （见 `drain_background_pool` 与 docs/unsolved-issues.md 问题 13）。
+    延迟 import：这些模块也属于核心/控件层，不在模块级互相依赖。
     """
     pools = [QThreadPool.globalInstance()]
     try:
-        from core.dir_model import dir_pool
+        from core.dir_model import dir_pool, size_pool
         pools.append(dir_pool())
+        pools.append(size_pool())
     except Exception:         # 核心模块不可用时（单测/早期崩溃）只要有全局池就行
+        pass
+    try:
+        from core.media_metadata import shot_pool
+        pools.append(shot_pool())
+    except Exception:
+        pass
+    try:
+        from widgets.thumbnail_view import live_thumbnail_pools
+        pools.extend(live_thumbnail_pools())
+    except Exception:
         pass
     return pools
 
@@ -101,7 +114,8 @@ def _pools_to_drain():
 def drain_background_pool(wait_ms: int = 5000, spin: int = 5) -> None:
     """退出前收拢后台线程：丢弃/等待在飞任务，并把挂起的跨线程投递派发完。
 
-    不能留给析构阶段去做：线程池（全局池与目录枚举专用池）要等 `~QCoreApplication`
+    不能留给析构阶段去做：线程池（全局池与各专用池，名单见 `_pools_to_drain()`）要等
+    `~QCoreApplication`
     （甚至更晚的静态析构）才销毁，那时 CPython 可能已开始 finalize；而未派发的 queued
     投递事件里持有着一批 Python 对象（枚举出的条目、目录节点），Qt 销毁它们时
     会从非主线程触碰已死的解释器状态。Windows 上实测退化为 fast-fail（退出码

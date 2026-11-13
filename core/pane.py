@@ -18,12 +18,15 @@ import sys
 
 from widgets.path_bar import PathBar
 from widgets.pane_tree_view import PaneTreeView
+from widgets.view_keys import handle_edge_jump
 from core.dir_model import Entry, COL_DATE, COL_SIZE, DirStoreModel
+from core.media_metadata import ShotCancel, ShotDateSignals, ShotDateTask, shot_pool
 from core.file_operations import (
     FileOperations, FileOperationType, FileOperationResult, _is_network_path,
     describe_removal, move_target_inside_sources, same_volume, decide_drop_action)
 from core.file_op_runner import FileOpRunner
 from core import archive_ops
+from core.reveal import reveal_in_file_manager, win_unc_fix as reveal_win_unc_fix
 from core.lifecycle import call_later, safe_event_filter
 from config.theme_manager import ThemeManager
 
@@ -131,8 +134,12 @@ class PaneSortProxyModel(QSortFilterProxyModel):
             r = right.data(Qt.ItemDataRole.DisplayRole) or ""
             if l != r:
                 return l < r
-        # 名称列：不区分大小写
+        # 名称列：不区分大小写。直接用手上的 Entry.name，不回模型取 DisplayRole：
+        # 一万条目一次排序要跑 5 万次比较，每次 data() 都是一趟模型调用（实测占
+        # 落地停摆的一半，见 docs/improvement-plan-t6-t9.md §2.2）
         if col == 0:
+            if le is not None and re is not None:
+                return le.name.lower() < re.name.lower()
             l = left.data(Qt.ItemDataRole.DisplayRole) or ""
             r = right.data(Qt.ItemDataRole.DisplayRole) or ""
             return l.lower() < r.lower()
@@ -207,6 +214,9 @@ class FileListTreeView(QTreeView):
         self._pane.dropEvent(event)
 
     def keyPressEvent(self, event):
+        # Ctrl+End / Ctrl+Home：光标+滚动+选中一起到末/首条（Qt 默认只动光标）
+        if handle_edge_jump(self, event):
+            return
         # Ctrl+F：唤出本窗格筛选栏（资源管理器习惯：搜索框只筛当前目录）
         if (event.key() == Qt.Key.Key_F
                 and event.modifiers() & Qt.KeyboardModifier.ControlModifier):
@@ -628,6 +638,12 @@ class Pane(QWidget):
 
         # 后台 prefetch 完成后刷新视图（信号跨线程自动 QueuedConnection，安全）
         self.shot_dates_ready.connect(self._refresh_shot_date_column)
+        # 预读的代际与回投：每发起一次 +1，旧代际的结果一律丢弃（不刷新新目录的列）。
+        # 信号对象以本窗格为父 → 窗格销毁时已排队的投递被 Qt 一并剔除（问题 13）
+        self._shot_gen = 0
+        self._shot_cancel = None
+        self._shot_signals = ShotDateSignals(self)
+        self._shot_signals.done.connect(self._on_shot_dates_done)
         # 目录异步加载完成后：预读拍摄日期 + 恢复待恢复的选中/滚动 + 刷新状态栏概要
         model.directoryLoaded.connect(self._on_directory_loaded_shot_dates)
         model.directoryLoaded.connect(self._on_dir_loaded_restore)
@@ -870,7 +886,9 @@ class Pane(QWidget):
         """后台批量预读当前目录文件的拍摄日期，填充缓存后刷新视图。
 
         注意：Qt 模型只能在主线程访问，因此目录枚举在主线程完成，
-        后台线程只调用 exiftool 子进程（纯 IO，不触碰 Qt 对象）。
+        后台只调用 exiftool 子进程（纯 IO，不触碰 Qt 对象）。任务走全进程有界池
+        `shot_pool()`（2 线程，封顶并发子进程数），带代际与取消令牌：再次导航或
+        窗格销毁后，旧任务不再啃后续批，旧结果也不刷新新目录的列。
 
         性能：拍摄日期列默认隐藏，而主线程枚举整表 + 拉起 exiftool 子进程
         在 SMB 上代价极高。故仅在该列真正可见时才预读；列隐藏时直接返回。
@@ -900,19 +918,22 @@ class Pane(QWidget):
         except Exception:
             return
 
-        import threading
+        # 旧任务就地作废：它至多再啃完在飞的那一批（≤500 个文件），不再继续后续批
+        if self._shot_cancel is not None:
+            self._shot_cancel.abandoned = True
+        self._shot_gen += 1
+        gen = self._shot_gen
+        cancel = ShotCancel(self, gen)
+        self._shot_cancel = cancel
+        shot_pool().start(ShotDateTask(paths, self._shot_signals, gen, cancel))
 
-        def work():
-            try:
-                from core.media_metadata import batch_get_shot_dates
-                batch_get_shot_dates(paths)
-                # 用信号通知主线程刷新（QTimer.singleShot 在无事件循环的后台线程调用不生效，
-                # 会导致缓存已填充但视图不刷新、列一直空白的问题）
-                self._emit_ui("shot_dates_ready")
-            except Exception:
-                pass
-
-        threading.Thread(target=work, daemon=True).start()
+    @pyqtSlot(int)
+    def _on_shot_dates_done(self, gen):
+        """预读回投：只认当前代际。旧导航的结果丢弃，不去刷新新目录的列。"""
+        if gen != self._shot_gen:
+            return
+        # 仍走原来那个信号（签名不变，外部接线与用例都照旧）；此刻已在主线程
+        self._emit_ui("shot_dates_ready")
 
     def _refresh_shot_date_column(self):
         """拍摄日期缓存就绪后重绘视图。"""
@@ -2113,33 +2134,19 @@ class Pane(QWidget):
             pass
     
     def _reveal_in_file_manager(self, path):
-        """在系统文件管理器中选中并显示该项"""
+        """在系统文件管理器中选中并显示该项（执行细节在 core.reveal，全仓唯一一份）"""
         if not path:
             return
-        try:
-            import subprocess
-            norm = os.path.normpath(path)
-            if sys.platform == 'win32':
-                # os.path.normpath 会去掉 UNC 前缀双斜杠（\\server → \server），
-                # explorer 不识别，需还原
-                norm = self._win_unc_fix(norm)
-                subprocess.Popen(['explorer', '/select,', norm])
-            elif sys.platform == 'darwin':
-                subprocess.Popen(['open', '-R', norm])
-            else:
-                from PyQt6.QtGui import QDesktopServices
-                url = QUrl.fromLocalFile(os.path.dirname(norm) if os.path.exists(norm) else norm)
-                QDesktopServices.openUrl(url)
-        except Exception as e:
-            self.status_label.setText(f"无法在文件管理器中显示: {e}")
-    
+        result = reveal_in_file_manager(path)
+        if result.failed:
+            self.status_label.setText(f"无法在文件管理器中显示: {result.error}")
+        elif not result.selected:
+            self.status_label.setText("已打开所在目录（未能选中该文件）")
+
     @staticmethod
     def _win_unc_fix(norm):
-        """还原被 normpath 压掉的 UNC 双前导斜杠"""
-        p = norm.replace('/', '\\')
-        if not p.startswith('\\\\') and p.startswith('\\'):
-            p = '\\' + p
-        return p
+        """还原被 normpath 压掉的 UNC 双前导斜杠（转发到共用助手，用例钉着这个方法名）"""
+        return reveal_win_unc_fix(norm)
     
     def _thumbnail_active(self) -> bool:
         """超大图标视图是否是当前显示的文件视图"""

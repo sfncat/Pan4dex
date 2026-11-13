@@ -23,6 +23,7 @@ from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
 from widgets.filter_bar import glob_to_regex
 from core.file_op_runner import FileOpRunner
 from core.file_operations import describe_removal, move_target_inside_sources
+from core.reveal import REVEAL_LIMIT, reveal_in_file_manager
 
 logger = logging.getLogger("pan4dex.advanced_search")
 
@@ -764,25 +765,24 @@ class AdvancedSearchDialog(QDialog):
         self.status_label.setText(f"已打开所在目录：{dirs[0]}{extra}")
 
     def reveal_in_system_manager(self, paths=None):
-        """在系统文件管理器里定位选中项（这是旧版双击的行为，现在进右键菜单）"""
+        """在系统文件管理器里定位选中项（执行细节在 core.reveal，全仓唯一一份）
+
+        上限与文案留在这儿：助手只管执行，不认识对话框，也不该决定往哪写状态。
+        """
         if paths is None:
             paths = self.selected_paths()
         if not paths:
             return
-        import subprocess
-        import sys
-        for p in paths[:5]:
-            try:
-                if sys.platform == "win32":
-                    subprocess.Popen(f'explorer /select,"{p}"')
-                elif sys.platform == "darwin":
-                    subprocess.Popen(["open", "-R", p])
-                else:
-                    subprocess.Popen(["xdg-open", os.path.dirname(p)])
-            except OSError as e:
-                logger.warning("定位 %s 失败: %s", p, e)
-        if len(paths) > 5:
-            self.status_label.setText(f"共 {len(paths)} 项，只在系统文件管理器里定位前 5 个")
+        result = reveal_in_file_manager(paths)
+        notes = []
+        if len(paths) > REVEAL_LIMIT:
+            notes.append(f"共 {len(paths)} 项，只在系统文件管理器里定位前 {REVEAL_LIMIT} 个")
+        if result.failed:
+            notes.append(f"{result.failed} 项定位失败：{result.error}")
+        if not result.selected:
+            notes.append("只打开了所在目录（未能选中文件）")
+        if notes:
+            self.status_label.setText("；".join(notes))
 
     def copy_paths_to_clipboard(self):
         """把选中项的路径作为文本复制进系统剪贴板（Ctrl+C）

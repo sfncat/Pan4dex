@@ -179,6 +179,8 @@ def test_simple_list_mode_switches_view_mode(qtbot, tile_dir):
     v.set_simple_list_mode(False)
     assert v._simple_list_mode is False
     assert v.viewMode() == QListWidget.ViewMode.IconMode
+    # ListMode 设的 TopToBottom 会漏到 IconMode：图标排成一条横带，只有横向滚动条
+    assert v.flow() == QListView.Flow.LeftToRight
     assert v.gridSize() == QSize(160, 190)
     assert v.uniformItemSizes() is True
     assert v.viewport().acceptDrops() is True
@@ -229,3 +231,72 @@ def test_pane_view_mode_simple_list_wiring(qtbot, tmp_dir):
     pane.on_view_mode_changed('list')
     assert pane.thumbnail_view.isHidden()
     assert not pane.tree_view.isHidden()
+
+
+@pytest.fixture
+def many_dir(tmp_path):
+    """条目多到一屏放不下：滚动条方向才能作为「排成横带」的观测量"""
+    for i in range(60):
+        (tmp_path / f"{i:03d}_file.txt").write_text("x")
+    return tmp_path
+
+
+def _assert_grid_scroll(v):
+    """网格外观的判据：纵向能滚、横向不需要滚（横带则是反过来）"""
+    v.doItemsLayout()
+    assert v.flow() == QListView.Flow.LeftToRight
+    assert v.verticalScrollBar().maximum() > 0
+    assert v.horizontalScrollBar().maximum() == 0
+
+
+def test_leaving_simple_list_restores_grid_scroll(qtbot, many_dir):
+    """简单列表 → 超大图标：TopToBottom 残留会把 60 个图标排成一条横带"""
+    v = ThumbnailView()
+    qtbot.addWidget(v)
+    v.resize(400, 300)
+    v.show()
+    qtbot.waitExposed(v)
+    v.set_simple_list_mode(True)
+    v.load_directory(str(many_dir))
+    assert v.flow() == QListView.Flow.TopToBottom
+
+    v.set_simple_list_mode(False)
+    _assert_grid_scroll(v)
+
+
+def test_tile_after_simple_list_restores_grid_scroll(qtbot, many_dir):
+    """简单列表 → 平铺：平铺也是网格，同样不能被 TopToBottom 带歪
+
+    按窗格的真实次序走（`Pane.on_view_mode_changed` 先关简单列表再开平铺）。
+    """
+    v = ThumbnailView()
+    qtbot.addWidget(v)
+    v.resize(400, 300)
+    v.show()
+    qtbot.waitExposed(v)
+    v.set_simple_list_mode(True)
+    v.load_directory(str(many_dir))
+
+    v.set_simple_list_mode(False)
+    v.set_tile_mode(True)
+    assert v.viewMode() == QListWidget.ViewMode.IconMode
+    assert v.gridSize() == TILE_SIZE
+    _assert_grid_scroll(v)
+
+
+def test_pane_mode_roundtrip_keeps_grid_scroll(qtbot, many_dir):
+    """走真实入口（路径栏视图循环）转一圈：列表 → 平铺 → 超大图标仍是网格"""
+    from core.pane import Pane
+    pane = Pane("t_flow_roundtrip", start_path=str(many_dir))
+    qtbot.addWidget(pane)
+    pane.resize(400, 300)
+    pane.show()
+    qtbot.waitExposed(pane)
+    v = pane.thumbnail_view
+
+    pane.on_view_mode_changed('simple_list')
+    pane.on_view_mode_changed('tile')
+    _assert_grid_scroll(v)
+
+    pane.on_view_mode_changed('xlarge')
+    _assert_grid_scroll(v)
