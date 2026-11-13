@@ -18,6 +18,28 @@
 
 ---
 
+## 内置工具（构建机本地部署，**不入库**）
+
+`resources/tools/` 整体被 `.gitignore` 排除，PyInstaller 用 `--add-data=resources;resources` 全量打入。
+**缺了构建照样成功，只是产物静默少一项能力**，所以脚本打包前会逐条打印警告（`_missing_tool_warnings`）：
+
+| 放什么 | 缺了会怎样 |
+|---|---|
+| `resources/tools/exiftool/exiftool.exe`（Windows 版 ExifTool，含 Perl 运行时） | 「拍摄日期」列不可用 |
+| `resources/tools/7z/7z.exe` + **同目录** `7z.dll`（完整版，支持 RAR 等），或 `7z/7za.exe`（独立版兜底） | 没装系统 7-Zip 的机器上压缩/解压不可用（`core/archive_ops.py:find_7z()` 三级兜底全空） |
+
+Windows 版 7-Zip 从本机安装目录复制即可（本机装的是 7-Zip 26.04，`License.txt` 一并带上）：
+
+```powershell
+Copy-Item 'C:\Program Files\7-Zip\7z.exe','C:\Program Files\7-Zip\7z.dll','C:\Program Files\7-Zip\License.txt' resources\tools\7z\
+```
+
+> `7z.exe` 少了同目录 `7z.dll` 会被 `find_7z()` 跳过，等于没带；脚本的警告用的是同一判据。
+> Linux 专用的 `exiftool-linux/` 与 `7z/7zz` 不进 Windows 包（构建时临时移出，**失败也还原**）。
+> 1.9.049 及之前的 Windows 包一直没有内置 7-Zip（构建机只部署了 Linux 的 `7zz`），见待办 T13。
+
+---
+
 ## W1：直接在那台 Windows 本机编
 
 ```powershell
@@ -26,10 +48,13 @@ cd C:\workspace\Pan4dex
 python scripts\build.py windows      # 或直接：python scripts\build_windows.py [版本号]
 ```
 
-`build.py windows` 只是转发到 `build_windows.py`，并会自读版本号。它做三件事：
+`build.py windows` 只是转发到 `build_windows.py`，并会自读版本号。它做四件事：
 1. 打包前生成 `config/_build_info.py`（编译时间，已 gitignore，打包后删除），时间戳随产物进「关于」；
-2. 临时移出 Linux 专用二进制（`resources/tools/exiftool-linux`、`7z/7zz`）后跑 PyInstaller `--onedir --windowed`；
-3. 产物拷到 `releases/pan4dex-<版本>/`，并压成 `releases/pan4dex-<版本>.zip`（包内顶层目录为 `pan4dex`，不带版本号）。
+2. 检查构建机本地部署的内置工具，缺哪样打印哪条警告（**缺失不失败**，见上面「内置工具」）；
+3. 临时移出 Linux 专用二进制（`resources/tools/exiftool-linux`、`7z/7zz`）后跑 PyInstaller `--onedir --windowed`；
+   还原写在 `finally` 里，**构建失败也会还原** —— 否则 Linux 二进制留在 `build/`，而 Linux 构建的 rsync 排除 `build/`，
+   下一个 Linux 包就静默缺 ExifTool（gotchas #66、待办 T12）；
+4. 产物拷到 `releases/pan4dex-<版本>/`，并压成 `releases/pan4dex-<版本>.zip`（包内顶层目录为 `pan4dex`，不带版本号）。
 
 **验证**：
 ```powershell
@@ -77,7 +102,10 @@ scp 'sshuser@192.168.5.54:C:\workspace\Pan4dex\releases\pan4dex-1.9.027.zip' ./r
 - **不要用 `tar | ssh` 往 Windows 灌源码**：落地会按 GBK 码页，带中文注释的源文件变乱码，触发
   `UnicodeDecodeError: 'utf-8' can't decode byte 0x94`。要同步源码用 `git`(bundle/pull) 或 `rsync/scp`，
   且 `build_windows.py` 读 `config/app_config.py` 已做 utf-8→gbk 回退解码兜底。
-- **运行中的 exe 删不掉**：替换/重编前先 `taskkill /F /IM pan4dex*`。
+- **运行中的 exe 删不掉**：`dist\pan4dex\` 被正在运行的产物占住时，PyInstaller 清目录会报
+  `PermissionError: [WinError 5]`。**别急着 `taskkill /F /IM pan4dex*` 掉用户正在用的程序** ——
+  给 PyInstaller 传 `--distpath` 指到另一个目录（如 `build/dist-<版本>`）即可绕开，产物照样拷进 `releases/`。
+  只有真要替换那份正在运行的产物时，才先关掉它。（2026-11-13 出 1.9.049 时实测，gotchas #66）
 - **Windows 侧 PyInstaller 的 `--add-data` 分隔符是 `;` 不是 `:`**（`build_windows.py` 内部已处理，别手改 Linux 那套）。
 
 ### W2.4 验证（拉回本机后）

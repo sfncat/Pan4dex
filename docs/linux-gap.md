@@ -184,7 +184,7 @@
 |---|---|---|---|---|
 | 高级搜索（名/内容/大小/日期） | `os.walk` | 同一套；**搜根目录会把 `/proc`、`/sys`、`/dev` 扫进去**（无跨设备开关、无排除表） | 🟡 「不可取消」那一半已修（2026-11-10），排除表仍未做：**只按名字筛时无害**（`/dev` 623 项 0.01s、`/proc` 212,416 项 5.25s、`/sys` 49,011 项 1.15s，全部自然结束）；p49 实测的「勾选内容搜索后 worker 阻塞在伪文件 `read` 里、`stop()` 叫不回」（`/dev/ptmx`、`/proc/<pid>/task/<pid>/fd/9`、`/sys/kernel/security/apparmor/revision`，stop 后 3s 仍 `isRunning()`）已修：`open` 之前用已取到的 `st_mode/st_size` 筛掉非常规文件与 0 字节，取消标志重新管得住（规与用例见 gotchas 第 58 条）。⚠️ 未修：伪文件仍会被**遍历**（不进 `open`），搜 `/` 依旧是分钟级全盘扫；跨设备开关与排除表（`/proc`、`/sys`、`/dev`、`/run`）另案 | `widgets/advanced_search.py` `SearchWorker.run()`；`widgets/advanced_search.py:87`；p49 探针（模块级 `open` 换带日志的壳 + 逐根单进程跑）；真机复测待跑（Windows 侧只能靠 FIFO 用例离线钉住）|
 | 搜索结果批量操作 | 🟢 v1.9.011 | 共用 `FileOpRunner` | 🟢 | `widgets/advanced_search.py` |
-| 压缩/解压（7z 后端） | 系统 7-Zip → 内置 `resources/tools/7z/7z.exe` | 系统 `7z/7za/7zz/7zr` → 内置 `7zz`（**未入库**）→ 都没有则功能不可用 | 🟡 | `core/archive_ops.py:48-113` |
+| 压缩/解压（7z 后端） | 系统 7-Zip → 内置 `resources/tools/7z/7z.exe`（需同目录 `7z.dll`）或 `7za.exe` | 系统 `7z/7za/7zz/7zr` → 内置 `7zz`（**未入库**）→ 都没有则功能不可用 | 🟡 **Windows 内置已补齐**（T13，2026-11-13：构建机部署本机 7-Zip 26.04 的 `7z.exe`+`7z.dll`+`License.txt`，产物实测带上且包内那份能跑；049 及之前一直没带，装了系统 7-Zip 的机器看不出来）；Linux 内置 `7zz` 已在包内。**干净机器上真做一次压缩/解压仍待一轮** | `core/archive_ops.py:48-113`；`tests/test_archive_ops.py`（6 条，屏蔽系统 PATH 与 Program Files 后验包内兜底，含「什么都不带 → None」的对照组） |
 | 校验和 / 批量改名 / 文件比较 / 目录同步 / 分割合并 / 时间戳 | 纯 Python | 平台无关 | 🟢 | `widgets/*.py`（这些文件里平台分支数 = 0） |
 | 内嵌终端 | `pywinpty`（winpty 层，历史上脆弱） | `pty` + `fcntl` + `termios` 真 PTY；zsh 补齐噪声用临时 `ZDOTDIR` 关掉 | 🟢 **Linux 路径更正** | `widgets/terminal_panel.py:143-245,341-362` |
 | 终端内自动切英文输入法 | IMM/TSF 双路径 | 无（IBus/fcitx 不管） | 🟡 可接受降级 | `widgets/terminal_panel.py:37-127,684-707` |

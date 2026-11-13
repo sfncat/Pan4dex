@@ -1526,8 +1526,14 @@ PyInstaller 清 `dist` 撞上正在运行的 `dist\pan4dex\pan4dex.exe` 占住 `
 
 **规矩**：Windows 构建**失败**后，先 `ls resources/tools/` 确认 `exiftool-linux` 与 `7z/7zz` 在位，
 再跑 Linux 构建；验收别只看「构建成功」，要拿**产物大小差**与「本包不含」那行当观测量。
-脚本侧根治（还原挪进 `finally`）已登记 `docs/todo.md` T12，待批。
 另：`dist` 被运行中的产物占住时，不要杀进程 —— 用 `--distpath` 指到别处即可绕开。
+
+**根治（T12 已销账，2026-11-13）**：`_restore_linux_binaries()` 挪进覆盖 PyInstaller 调用的 `finally`，
+与 `_build_info.py` 的清理同一层。守卫 `tests/test_build_windows.py::test_restore_runs_even_when_pyinstaller_fails`
+（用 ast 判「还原是否在 finally 里」，脚本顶层会真跑构建所以不能 import）；
+**对照组**：同一条判据跑改前形状判定 `False`、改后 `True`（`tmp/t12_control.py`）。
+**真造一次失败**：把 `--distpath` 占成同名文件 → `FileExistsError [WinError 183]`、退出码 1，
+日志出现 `Restored exiftool-linux` / `Restored 7zz`，`resources/tools/` 齐全、`build/` 无残留暂存，占位文件同轮回滚。
 
 ---
 
