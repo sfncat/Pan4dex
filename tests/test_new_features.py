@@ -391,15 +391,76 @@ class TestUserOperationsConfig:
         op_ids = [op['id'] for op in ops]
         assert op_id in op_ids
     
-    def test_execute_command(self):
-        """测试执行命令"""
-        # 创建一个简单的测试命令
-        command = 'echo test_success'
-        
-        success, output = self.config_manager.execute_command(command, '/dev/null')
-        
-        # 命令执行应成功
-        assert success is True
+    def test_execute_command_passes_path_as_single_arg(self, monkeypatch):
+        """`{}` 换成的路径永远独立成一个 argv 项，且不经 shell 解释
+
+        旧写法 `command.replace('{}', path)` + `shell=True`：含空格/引号/& 的
+        文件名会被拆碎，还会被当成命令语法执行。
+        """
+        import subprocess as sp
+        import shutil as sh
+        captured = {}
+
+        class _Result:
+            returncode = 0
+            stdout = "ok"
+            stderr = ""
+
+        def fake_run(argv, **kw):
+            captured['argv'] = argv
+            captured['shell'] = kw.get('shell')
+            return _Result()
+
+        monkeypatch.setattr(sp, 'run', fake_run)
+        monkeypatch.setattr(sh, 'which', lambda name: None)  # 不让本机 PATH 影响断言
+
+        weird = 'C:\\temp\\my "weird" file & more.txt'
+        ok, out = self.config_manager.execute_command('code {}', weird)
+
+        assert ok is True
+        assert captured['argv'] == ['code', weird]
+        assert captured['shell'] is False
+
+    def test_execute_command_real_run(self):
+        """真起进程跑一次（跨平台用当前解释器），输出能拿回来"""
+        command = f'"{sys.executable}" -c "print(1)"'
+        ok, out = self.config_manager.execute_command(command, 'C:\\unused.bin')
+        assert ok is True, out
+        assert "1" in out
+
+    def test_disabled_operation_survives_reload(self):
+        """禁用状态要能落盘读回：旧 _load_config 会把所有条目强制改回 enabled=True"""
+        op_id = self.config_manager.add_operation({
+            'name': 'Keep Disabled',
+            'command': 'test {}',
+            'description': 'd',
+            'file_types': ['.txt'],
+        })
+        self.config_manager.enable_operation(op_id, enabled=False)
+
+        from config.user_operations import UserOperationsConfig
+        again = UserOperationsConfig(self.temp_config_dir)
+        enabled_ids = [op['id'] for op in again.get_operations(enabled_only=True)]
+        assert op_id not in enabled_ids
+        all_ids = [op['id'] for op in again.get_operations(enabled_only=False)]
+        assert op_id in all_ids
+
+    def test_default_config_dir_delegates_to_paths(self, monkeypatch, tmp_path):
+        """默认配置目录必须向 config/paths.py 委托（全仓用户级 JSON 的唯一落点）
+
+        旧写法写死 `Path.home()/.config/pan4dex`，Windows 上不落 %APPDATA%，
+        与 associations.json / saved_searches.json 分居两处。
+        """
+        from pathlib import Path
+        from config.paths import default_config_dir
+        if sys.platform == 'win32':
+            monkeypatch.setenv('APPDATA', str(tmp_path))
+        else:
+            monkeypatch.setattr(Path, 'home', lambda: tmp_path)
+
+        from config.user_operations import UserOperationsConfig
+        cfg = UserOperationsConfig()
+        assert cfg.config_file == Path(default_config_dir()) / "user_operations.json"
     
     def test_unique_operation_id(self):
         """测试生成唯一操作 ID"""
@@ -617,6 +678,14 @@ class TestIntegration:
         ops = self.config.get_operations()
         assert any(op['id'] == op_id for op in ops)
         
-        # 3. 执行命令
-        success, output = self.config.execute_command(operation['command'], self.test_file)
-        assert success is True
+        # 3. 执行命令：用当前解释器把「作为独立参数传入的文件」读回来
+        #    （文件名故意带空格 —— 路径不再拼进 shell 字符串，才能完整送达）
+        spaced = os.path.join(self.temp_dir, "spaced name.txt")
+        with open(spaced, 'w') as f:
+            f.write("Integration test content")
+        command = ('"{exe}" -c "import sys; '
+                   'print(open(sys.argv[1], encoding=\'utf-8\').read())" {{}}'
+                   ).format(exe=sys.executable)
+        success, output = self.config.execute_command(command, spaced)
+        assert success is True, output
+        assert "Integration test content" in output

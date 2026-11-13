@@ -118,7 +118,7 @@ class TreeSidebar(QDockWidget):
     def _show_context_menu(self, position):
         """目录树右键菜单：转发到活动窗格，与窗格文件列表一致"""
         mw = self._main_window_ref
-        pane = getattr(mw, '_active_pane', None) if mw else None
+        pane = mw.target_pane() if mw is not None else None
         if pane is None:
             return
         
@@ -177,8 +177,9 @@ class TreeSidebar(QDockWidget):
     
     def on_follow_clicked(self):
         mw = self._main_window_ref
-        if mw and hasattr(mw, '_active_pane') and mw._active_pane:
-            path = mw._active_pane.current_path
+        pane = mw.target_pane() if mw is not None else None
+        if pane is not None:
+            path = pane.current_path
             logger.info(f"[DEBUG] TreeSidebar.follow: path={path}")
             self.expand_to_path(path)
     

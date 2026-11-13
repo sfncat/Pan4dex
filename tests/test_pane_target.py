@@ -105,3 +105,35 @@ class TestHandlersFollowTargetPane:
         pane.current_path = "/tmp/当前目录"
         assert win._target_pane_path() == "/tmp/当前目录"
         assert win.bookmark_sidebar.current_dir_provider() == "/tmp/当前目录"
+
+
+class TestTreeSidebarUsesTargetPane:
+    """todo T3：侧边栏的右键菜单与「跟随当前目录」两处曾直接判 `_active_pane`，
+    在没点过窗格期间（Linux/X11 上初始焦点不在窗格，这一段时间必然存在）静默失灵。
+    这里把两处钉在 `target_pane()` 上 —— 判据就是清空 `_active_pane` 后功能仍生效。"""
+
+    @pytest.fixture
+    def sidebar(self, win):
+        # 目录树延迟 300ms 才创建（首屏优化），测试里不等事件循环，直接建出来
+        win._create_tree_sidebar_lazy()
+        assert win.tree_sidebar is not None
+        return win.tree_sidebar
+
+    def test_context_menu_opens_without_ever_activated_pane(self, win, sidebar, monkeypatch):
+        from PyQt6.QtCore import QPoint
+        from PyQt6.QtWidgets import QMenu
+
+        win._active_pane = None          # 模拟启动后一次都没点过窗格
+        popped = []
+        monkeypatch.setattr(QMenu, 'exec', lambda self, *a, **k: popped.append(True))
+        sidebar._show_context_menu(QPoint(5, 5))   # 空白区域分支
+        assert popped, "没点过窗格时右键目录树，菜单没弹出来"
+
+    def test_follow_uses_target_pane_path(self, win, sidebar, monkeypatch):
+        pane = first_pane(win)
+        pane.current_path = "/tmp/跟随目标"
+        win._active_pane = None
+        seen = []
+        monkeypatch.setattr(sidebar, 'expand_to_path', lambda p: seen.append(p))
+        sidebar.on_follow_clicked()
+        assert seen == ["/tmp/跟随目标"]

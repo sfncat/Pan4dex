@@ -11,6 +11,7 @@ Pan4dex 万格 — 高级搜索工具
 import logging
 import os
 import re
+from stat import S_ISREG
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, 
     QPushButton, QLineEdit, QTreeWidget, QTreeWidgetItem,
@@ -119,6 +120,12 @@ class SearchWorker(QThread):
                 
                 # 内容搜索（“区分大小写”对名与内容同一个口径，不另设选项）
                 if content_search:
+                    # 只读「常规文件且非零大小」：/proc、/sys、/dev 下的伪文件要么
+                    # 不是常规文件、要么报 0 字节，而 read 它们可能永不返回 ——
+                    # p49 实测 worker 卡在 /dev/ptmx 上 stop() 都叫不回。空文件
+                    # 匹配不到任何内容，跳过 open 不改变结果
+                    if not S_ISREG(stat.st_mode) or stat.st_size == 0:
+                        continue
                     try:
                         with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
                             content = f.read(1024 * 1024)  # 只读前 1MB
@@ -192,6 +199,8 @@ class AdvancedSearchDialog(QDialog):
         self.setMinimumSize(700, 500)
         
         self.worker = None
+        # 本轮搜索是否被用户点停：完成回调据此区分「已停止（部分结果）」与「搜索完成」
+        self._stop_requested = False
         # 已保存搜索的存储：由主窗口注入（全仓一份，与 file_associations 同做法）；
         # 没注入时惰性建一个（单用这个对话框 / 测试时）
         self._store = store
@@ -447,6 +456,7 @@ class AdvancedSearchDialog(QDialog):
         self.result_tree.clear()
         self._pending_results = []
         self._shown_count = 0
+        self._stop_requested = False
         self._flush_timer.start()
         self.search_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
@@ -597,6 +607,7 @@ class AdvancedSearchDialog(QDialog):
     
     def stop_search(self):
         """停止搜索"""
+        self._stop_requested = True
         if self.worker:
             self.worker.stop()
     
@@ -636,7 +647,10 @@ class AdvancedSearchDialog(QDialog):
         self._flush_results()  #  flush 最后一批
         self.search_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
-        if self._shown_count >= 5000 and total > self._shown_count:
+        if self._stop_requested:
+            # 与「跑完」分开说：旧文案一模一样，用户看不出屏幕上是部分结果
+            self.status_label.setText(f"已停止，已找到 {total} 个文件（部分结果）")
+        elif self._shown_count >= 5000 and total > self._shown_count:
             self.status_label.setText(
                 f"共 {total} 个，仅显示前 {self._shown_count} 项")
         else:
@@ -842,9 +856,10 @@ class AdvancedSearchDialog(QDialog):
         if not paths or self._refuse_if_busy():
             return
         title, body = describe_removal(paths, permanent)
+        # 默认 Yes（资源管理器里回车就是删除）；取消要靠明确点 No/Esc
         if QMessageBox.question(self, title, body,
                                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                                QMessageBox.StandardButton.No) \
+                                QMessageBox.StandardButton.Yes) \
                 != QMessageBox.StandardButton.Yes:
             self.status_label.setText("已取消删除")
             return

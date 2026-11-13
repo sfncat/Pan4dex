@@ -628,9 +628,10 @@ class Pane(QWidget):
 
         # 后台 prefetch 完成后刷新视图（信号跨线程自动 QueuedConnection，安全）
         self.shot_dates_ready.connect(self._refresh_shot_date_column)
-        # 目录异步加载完成后：预读拍摄日期 + 恢复待恢复的选中/滚动
+        # 目录异步加载完成后：预读拍摄日期 + 恢复待恢复的选中/滚动 + 刷新状态栏概要
         model.directoryLoaded.connect(self._on_directory_loaded_shot_dates)
         model.directoryLoaded.connect(self._on_dir_loaded_restore)
+        model.directoryLoaded.connect(self._on_dir_loaded_status)
         # 本窗格改动目录（如行内改名）后，让其它显示同一目录的窗格一并重扫
         model.dirChanged.connect(self._on_model_dir_changed)
         # 目录占用计算完成：状态栏报结果
@@ -1509,28 +1510,39 @@ class Pane(QWidget):
     def update_status_bar(self):
         """更新状态栏
 
-        旧实现先 os.listdir 再对每个条目 os.path.isfile/isdir 二次 stat，
-        在 SMB 上等于双倍网络往返。改用 os.scandir：一次枚举、DirEntry
-        自带类型缓存，is_dir() 通常不额外 syscall。结果存为概要基串，
-        供选中计数拼接使用。
+        概要计数读 DirStoreModel 已加载的条目，不再自己扫盘：旧实现在主线程
+        os.scandir 整个目录，等于对刚被后台枚举过的目录**再扫一遍**，万条目或
+        慢盘上就是一次白送的停摆。节点未加载完时先显示「正在读取…」，加载信号
+        到达后经 `_on_dir_loaded_status` 再刷新（缓存命中的目录本就是已加载态，
+        计数立即可得，不依赖该信号）。
         """
-        try:
-            dirs = files = 0
-            with os.scandir(self.current_path) as it:
-                for entry in it:
-                    try:
-                        if entry.is_dir():
-                            dirs += 1
-                        else:
-                            files += 1
-                    except OSError:
-                        files += 1
-            self._status_summary = f"{dirs} 个目录, {files} 个文件"
-        except PermissionError:
-            self._status_summary = "无权限访问"
-        except OSError:
-            self._status_summary = ""
+        counts = None
+        if getattr(self, 'model', None) is not None:
+            counts = self.model.loaded_counts(self.current_path)
+        if counts is None:
+            self._status_summary = "正在读取…"
+        else:
+            dirs, files = counts
+            if counts == (0, 0):
+                # 只有「看着是空」这一支需要回头碰一次磁盘，分清三种情况
+                if not os.path.isdir(self.current_path):
+                    self._status_summary = ""          # 目录已被别处删掉
+                elif not os.access(self.current_path, os.R_OK):
+                    self._status_summary = "无权限访问"
+                else:
+                    self._status_summary = "0 个目录, 0 个文件"
+            else:
+                self._status_summary = f"{dirs} 个目录, {files} 个文件"
         self._update_selection_status()
+
+    def _on_dir_loaded_status(self, path):
+        """目录加载完成：正是当前窗格显示的目录时刷新概要计数。"""
+        try:
+            if os.path.normpath(path) != os.path.normpath(self.current_path):
+                return
+        except Exception:
+            return
+        self.update_status_bar()
     
     def show_column_menu(self, position):
         """列标题右键菜单：勾选要显示的列（名称/大小/类型/修改日期）"""
@@ -2449,10 +2461,11 @@ class Pane(QWidget):
             return
 
         title, body = describe_removal(paths, permanent)
+        # 默认 Yes（资源管理器里回车就是删除）；取消要靠明确点 No/Esc
         reply = QMessageBox.question(
             self, title, body,
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No
+            QMessageBox.StandardButton.Yes
         )
         
         if reply == QMessageBox.StandardButton.Yes:

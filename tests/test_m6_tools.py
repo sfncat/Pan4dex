@@ -187,3 +187,45 @@ class TestAdvancedSearch:
         
         # 应该找到 5 个 txt 文件
         # 注意：worker 通过信号发射结果，这里直接测试不崩溃
+
+    @pytest.mark.skipif(not hasattr(os, "mkfifo"),
+                        reason="FIFO 是 POSIX 伪文件，Windows 上造不出来")
+    def test_content_search_does_not_open_pseudo_files(self, tmp_path):
+        """内容搜索只读常规文件
+
+        /proc、/sys、/dev 下的伪文件一读就可能永不返回，而那时 `_stop` 位已经
+        设了也叫不回（线程正阻塞在 `open`/`read` 里）。真机 Linux 上搜过 /dev
+        之后停止按钮按下去毫无反应。用 FIFO 把这一类钉住。
+        """
+        import threading
+        from widgets.advanced_search import SearchWorker
+
+        os.mkfifo(str(tmp_path / "blackhole.txt"))
+        (tmp_path / "note.txt").write_text("needle here", encoding="utf-8")
+
+        hits = []
+        worker = SearchWorker({'directory': str(tmp_path), 'pattern': '*.txt',
+                               'content': 'needle'})
+        worker.result.connect(lambda p, s, m: hits.append(p))
+        # daemon：万一防护被拆掉，这个线程卡在 read 上，不能让它拖死整个测试会话
+        thread = threading.Thread(target=worker.run, daemon=True)
+        thread.start()
+        thread.join(5)
+        assert not thread.is_alive(), "worker 卡在伪文件上读不回来，stop() 也叫不动"
+        assert hits == [os.path.join(str(tmp_path), "note.txt")]
+
+    def test_stopped_search_says_partial_results(self, qtbot):
+        """「已停止」和「搜索完成」必须是两句话：旧文案一模一样，看不出屏幕上是部分结果"""
+        from widgets.advanced_search import AdvancedSearchDialog
+
+        dialog = AdvancedSearchDialog()
+        qtbot.addWidget(dialog)
+
+        dialog._stop_requested = True
+        dialog.on_search_finished(37)
+        assert "已停止" in dialog.status_label.text()
+        assert "部分结果" in dialog.status_label.text()
+
+        dialog._stop_requested = False
+        dialog.on_search_finished(37)
+        assert dialog.status_label.text() == "搜索完成，共找到 37 个文件"

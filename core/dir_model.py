@@ -1007,6 +1007,18 @@ class DirStoreModel(QAbstractItemModel):
             node.abandoned = True
             logger.debug("放弃在飞枚举（导航离开慢位置）：%s", node.path)
 
+    def loaded_counts(self, path):
+        """已加载目录的 `(目录数, 文件数)`；节点不存在或未加载完返回 None。
+
+        只数内存里的条目，绝不碰磁盘 —— 状态栏概要的取数处（同铁律：统计不做
+        文件系统调用，见 gotchas 第 29/30 条）。
+        """
+        node = self._nodes.get(_key(path))
+        if node is None or not node.loaded or node.entries is None:
+            return None
+        dirs = sum(1 for e in node.entries if e.is_dir)
+        return dirs, len(node.entries) - dirs
+
     def cancel_load(self, path=None):
         """中断一个目录的在飞枚举（产品侧唯一的枚举取消入口，也是它的手工验证入口）。
 

@@ -63,18 +63,43 @@ class TestPane:
         assert pane.current_path == original_path
     
     def test_status_bar_update(self, qtbot, tmp_dir):
-        """测试状态栏更新"""
+        """状态栏的目录概要么即时要么等加载完，且计数只读模型（不再自己扫盘）"""
         from core.pane import Pane
         
         pane = Pane(pane_id="test_pane")
         qtbot.addWidget(pane)
         
-        pane.navigate_to(str(tmp_dir))
+        # 模型后台枚举，加载完成后由 directoryLoaded 刷新概要
+        with qtbot.waitSignal(pane.model.directoryLoaded, timeout=5000):
+            pane.navigate_to(str(tmp_dir))
         
         # 状态栏应该显示目录和文件数量
         status_text = pane.status_label.text()
         assert "个目录" in status_text
         assert "个文件" in status_text
+        assert status_text.startswith("1 个目录, 2 个文件"), status_text
+
+    def test_status_bar_does_not_scan_the_disk(self, qtbot, tmp_dir, monkeypatch):
+        """概要计数不许碰磁盘：旧实现用 `os.scandir` 把后台刚扫过的目录在主线程
+        再扫一遍，万条目或慢盘上等于白送一次停摆（同「统计不做文件系统调用」铁律）。"""
+        from core.pane import Pane
+
+        pane = Pane(pane_id="test_pane")
+        qtbot.addWidget(pane)
+        with qtbot.waitSignal(pane.model.directoryLoaded, timeout=5000):
+            pane.navigate_to(str(tmp_dir))
+
+        calls = []
+        real_scandir = os.scandir
+
+        def spy(path, *a, **k):
+            calls.append(path)
+            return real_scandir(path, *a, **k)
+
+        monkeypatch.setattr(os, "scandir", spy)
+        pane.update_status_bar()
+        assert calls == [], f"状态栏概要又自己去扫盘了：{calls}"
+        assert pane.status_label.text().startswith("1 个目录, 2 个文件")
     
     def test_new_folder(self, qtbot, tmp_dir):
         """测试新建文件夹"""
