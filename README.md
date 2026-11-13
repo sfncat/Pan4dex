@@ -85,8 +85,8 @@ python main.py
 QT_QPA_PLATFORM=offscreen pytest tests/ -q
 ```
 
-无显示环境必须设离屏平台变量。全量能跑完，无需 `--ignore`（2026-11-10 基线：
-**793 passed / 4 skipped**，见 [`docs/testing.md`](docs/testing.md) §5）。历史上 v1.9.020–027
+无显示环境必须设离屏平台变量。全量能跑完，无需 `--ignore`（2026-11-13 基线：
+**883 passed / 5 skipped**，见 [`docs/testing.md`](docs/testing.md) §5）。历史上 v1.9.020–027
 曾因 `FileCompareDialog` 的模态错误框挂住两档测试，v1.9.028 修复、T4/T5 已销账
 （[`docs/todo.md`](docs/todo.md)、gotchas 第 56 条）。
 
@@ -119,7 +119,7 @@ python scripts/build_windows.py
 | [`docs/feature-checklist.md`](docs/feature-checklist.md) | 功能清单与实现状态（状态表） |
 | [`docs/todo.md`](docs/todo.md) | **待办唯一正文**：还剩什么、卡在哪儿、怎样算销账 |
 | [`docs/linux-gap.md`](docs/linux-gap.md) | Linux 能力对照：哪些没做、哪些只是没验证 |
-| [`docs/gotchas.md`](docs/gotchas.md) | 踩坑记录 #1–#57（为什么不能那么写） |
+| [`docs/gotchas.md`](docs/gotchas.md) | 踩坑记录 #1–#65（为什么不能那么写） |
 | [`CHANGELOG.md`](CHANGELOG.md) | 变更记录（面向使用者的版本变化） |
 | [`docs/unsolved-issues.md`](docs/unsolved-issues.md) | 还挂着的问题 |
 

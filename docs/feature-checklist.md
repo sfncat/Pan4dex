@@ -13,13 +13,13 @@
 | 1.1 | 四窗格布局 | P0 | 🟢 | 启动后可见 4 个独立窗格，可拖拽调整大小 | QSplitter 2×2 网格 | main_window.py QuadPaneWidget |
 | 1.2 | 单窗格文件浏览 | P0 | 🟢 | 每个窗格独立显示文件列表，双击进入目录 | QTreeView + QFileSystemModel | pane.py |
 | 1.3 | 路径栏 | P0 | 🟢 | 点击路径栏可输入路径，回车跳转，支持下拉历史 | QComboBox + 自动补全 | path_bar.py |
-| 1.4 | 窗格状态栏 | P0 | 🟢 | 底部显示当前路径、文件数、选中项信息 | QLabel 状态栏 | pane.py |
+| 1.4 | 窗格状态栏 | P0 | 🟢 | 底部显示当前路径、目录/文件数、选中项信息；目录还在后台枚举时先显示「正在读取…」，加载完成自动补上计数 | QLabel 状态栏；计数读 `DirStoreModel.loaded_counts()`（内存里的 `Entry`），**不再在主线程 `os.scandir` 重扫一遍**（gotchas 第 59 条） | pane.py `update_status_bar()` / `_on_dir_loaded_status()`；tests/test_m1_core.py `test_status_bar_update`、`test_status_bar_does_not_scan_the_disk` |
 | 1.5 | 窗格底部进度条 | P0 | 🟢 | 文件操作时在窗格底部显示进度条 | QProgressBar 内嵌窗格底部 | pane.py |
 | 1.6 | 拖拽目标高亮 | P0 | 🟢 | 跨窗格拖拽时目标窗格边框高亮（蓝色） | QSS 动态样式 | pane.py dragEnterEvent |
 | 1.7 | 主窗口框架 | P0 | 🟢 | 菜单栏、工具栏、状态栏、QDockWidget 区域 | QMainWindow | main_window.py |
-| 1.8 | 列头排序 | P0 | 🟢 | 点「名称/大小/修改日期」列头切换升降序；**任一方向下目录都排在文件前**；大小按字节数而非“4.0 KB”字符串。v1.9.020 补上规模证据：真 CIFS 上 10,000 条目**读全表逐条断言单调**（目录块在大小列按名称、文件块按字节不增；降序时同类内部反转），排序期 **0 次文件系统查询**；产物版真鼠标点表头两次画面从 `d00000` 起翻成 `d00199` 起（p59e / p60d，取证坑见 gotchas 53） | `PaneSortProxyModel.lessThan` 只读条目缓存属性（不 stat、不碰网络） | pane.py |
+| 1.8 | 列头排序 | P0 | 🟢 | 点「名称/大小/修改日期」列头切换升降序；**任一方向下目录都排在文件前**；大小按字节数而非“4.0 KB”字符串。v1.9.020 补上规模证据：真 CIFS 上 10,000 条目**读全表逐条断言单调**（目录块在大小列按名称、文件块按字节不增；降序时同类内部反转），排序期 **0 次文件系统查询**；产物版真鼠标点表头两次画面从 `d00000` 起翻成 `d00199` 起（p59e / p60d，取证坑见 gotchas 53）。**2026-11-13（T6 第一步）**：名称列比较不再回模型取 `DisplayRole`，改读手上 `Entry.name`，一万条目落地停摆最差一轮 540→359ms（三轮交错 A/B 每轮都赢），**行信号次数不变**；等价性与落地完整性有用例钉住 | `PaneSortProxyModel.lessThan` 只读条目缓存属性（不 stat、不碰网络、**也不回模型取 data()**，gotchas 第 60 条） | pane.py；tests/test_sort_landing.py 4 项 |
 | 1.9 | 目录占用大小 | P2 | 🟢 | 右键目录（可多选）→「计算目录大小」，大小列从 `…` 变为占用字节；空白处右键→「计算所有目录大小」一键统计当前目录全部子目录（无子目录时状态栏提示）；不可读显示 `—`；按大小排序时已计算的目录按占用字节参与比较 | 后台迭代 scandir（不跟随符号链接防环），独立 2 线程池不抢目录枚举槽位；类级缓存（上限 4096）+ 重扫/改名自动失效，F5 后按需重算 | core/dir_model.py `calc_dir_size()` / `size_pool()` + core/pane.py 菜单（v1.9.047/048）；tests/test_dir_size.py |
-| 1.10 | 文件视图模式 | P2 | 🟢 | 查看按钮循环：图标 → 平铺 → 超大图标 → 详细信息 → 列表；各模式多选/右键/拖拽/筛选/双击行为一致，拖入后立刻显示（039/044 修复） | 平铺（034，瓦片附注：exe/dll 版本资源、其他大小+类型）与列表（041，资源管理器式多栏小图标，042/043/045 纠偏）复用超大图标同一 QListWidget 实例换外观；图标/详细信息走 QTreeView | core/pane.py `on_view_mode_changed()` + widgets/thumbnail_view.py `set_tile_mode()` / `set_simple_list_mode()` |
+| 1.10 | 文件视图模式 | P2 | 🟢 | 查看按钮循环：图标 → 平铺 → 超大图标 → 详细信息 → 列表；各模式多选/右键/拖拽/筛选/双击行为一致，拖入后立刻显示（039/044 修复）。**2026-11-13（T10）**：从简单列表/平铺切回超大图标不再残留 `TopToBottom` 流（此前图标排成一条横带、纵向滚动条消失），三条用例断言 flow + 纵向滚动条 >0 + 横向 ==0；**Ctrl+End / Ctrl+Home 在四种视图里选中跟着走**（T7，见 12.22） | 平铺（034，瓦片附注：exe/dll 版本资源、其他大小+类型）与列表（041，资源管理器式多栏小图标，042/043/045 纠偏）复用超大图标同一 QListWidget 实例换外观；图标/详细信息走 QTreeView。**每个外观 setter 都把自己关心的属性全设一遍**（gotchas 第 63 条）；每实例一个缩略图池，存活实例登记进模块级 WeakSet 供退出排空（T11） | core/pane.py `on_view_mode_changed()` + widgets/thumbnail_view.py `set_tile_mode()` / `set_simple_list_mode()`；tests/test_tile_view.py 15 项 |
 
 ## 2. 文件操作
 
@@ -126,7 +126,8 @@
 ## 12. 快捷键
 
 > 快捷键统一由主窗口菜单的 QAction 携带（WindowShortcut，作用于整个主窗口）；
-> 只有少数需要拦在视图内部的（Shift+Delete、Ctrl+F）写在 `FileListTreeView.keyPressEvent`。
+> 只有少数需要拦在视图内部的（Shift+Delete、Ctrl+F、Ctrl+End / Ctrl+Home）写在视图的 `keyPressEvent`
+> （详情视图在 `core/pane.py`，图标类视图在 `widgets/thumbnail_view.py`，后两者共用 `widgets/view_keys.py`）。
 
 | # | 功能 | 优先级 | 状态 | 验证方式 | 说明 | 实现情况 |
 |---|---|---|---|---|---|---|
@@ -151,6 +152,7 @@
 | 12.19 | 搜索结果列表键位 | P2 | 🟢 | Enter 打开、Ctrl+Shift+Enter 打开所在文件夹、Del 回收站、Shift+Del 永久删除、Ctrl+C 复制**路径文本** | 在 `QTreeWidget.keyPressEvent` 里接（不接 Enter 会被对话框的“自动默认按钮”抢走 → 变成关闭对话框） | widgets/advanced_search.py `SearchResultTree`；tests/test_search_results.py |
 | 12.20 | 快捷键与侧边栏点击的**落点** | P1 | 🟢 | 启动后**一次都还没点过窗格**时，Ctrl+L / Delete / F2 / F5 / Ctrl+C·X·V / Ctrl+A / 导航 / 新建 / 目录树与收藏夹点击仍作用于当前页默认窗格；焦点跑到预览面板、终端、侧边栏上时仍归**最后激活那个窗格**（与资源管理器一致） | `MainWindow.target_pane()` 一份规则，16 个入口 + 收藏夹 `current_dir_provider` 全部走它。旧写法直接判 `if self._active_pane:`（只在窗格真拿到焦点时才有值）→ Linux/X11 上初始焦点不在窗格，那批快捷键全部静默失灵；Windows 首屏焦点正好在 pane1 所以多年看不出来（v1.9.016 真机才发现，见 gotchas 第 47 条） | core/main_window.py `target_pane()`；tests/test_pane_target.py 8 项 |
 | 12.21 | 快捷键的**作用面**（焦点在文本控件里时不动文件系统） | P1 | 🟢 | 焦点在路径栏 / 内嵌终端 / 筛选栏时，F2（重命名）、F5（刷新）、F7（新建文件夹）、F8（新建文件）、Ctrl+F（筛选）**不作用于窗格**；焦点在文件列表时这些键照常工作 | `MainWindow._focus_is_text_input()` 守卫五个入口。菜单 QAction 默认 `shortcutContext = WindowShortcut`，抢在焦点控件之前；Qt 的编辑控件只抢标准编辑键（所以 `Delete` / `Ctrl+A` / `Ctrl+L` 安全，未给 `on_delete` 加门，但有用例钉住这个前提）。可编辑 `QComboBox` 的 `focusWidget()` 是 combo 本身而不是 `lineEdit()`，所以单独认一档 `isEditable()`（gotchas 第 49 条）| core/main_window.py `_focus_is_text_input()`、`on_path_entered()` 回焦；tests/test_shortcut_focus_scope.py 20 项 |
+| 12.22 | Ctrl+End / Ctrl+Home 跳到末/首条（**选中跟着走**） | P3 | 🟢 | 四种视图（详情 / 简单列表 / 超大图标 / 平铺）× {End, Ctrl+End, Home, Ctrl+Home, Shift+End, Ctrl+Shift+End}，每条同时断言**光标行、选中行集合、目标行是否真滚进视口**；空目录不异常。2026-11-13（T7）新增，29 条用例全绿，对照组（摘掉助手）红 9 条。**真机手测仍待做**（L16） | Qt 默认把带 Ctrl 的移动当成「只动光标不动选中」（内部 `NoUpdate`），跳到底后按 Delete/Ctrl+C 作用的仍是跳之前那批 —— 现在光标 + 整行选中 + 滚到视口中央一起走。普通 End/Home 与 Shift 组合不拦；`Ctrl+Shift+End` 保持 Qt 默认（光标到末行、选区不扩展），PgDn 的「一行网格」页大小算术也不另造绑定（gotchas 第 61/62 条） | widgets/view_keys.py `handle_edge_jump()`（详情视图与图标类视图共用一份）；tests/test_view_keys.py 29 项 |
 
 ## 13. 右键菜单
 
@@ -226,8 +228,8 @@
 | # | 功能 | 优先级 | 状态 | 验证方式 | 说明 | 实现情况 |
 |---|---|---|---|---|---|---|
 | 20.1 | 文件名搜索 | P2 | 🟢 | 按文件名模式搜索：`*.txt` 按整名通配匹配、`report` 按包含匹配、正则勾选后走 `search` | 通配符与筛选栏共用 `filter_bar.glob_to_regex`（旧版把 `*.txt` 当字面量，按提示写必然 0 结果，v1.9.009 修） | advanced_search.py `build_name_matcher` / SearchWorker |
-| 20.2 | 内容搜索 | P2 | 🟢 | 在文件内容中搜索字符串/正则 | 文件遍历 + 搜索（只读前 1MB） | advanced_search.py |
-| 20.3 | 搜索结果操作 | P2 | 🟢 | 结果列表可多选；右键/按键批量**打开**、**打开所在文件夹**、**在系统文件管理器中选中**、**复制路径文本**、**复制到…／移动到…**（选目标目录 + 进度框 + 同名冲突询问 + 可取消）、**删除／永久删除**（确认框按实际后果说话）；搬走/删掉的行从结果中移除并让相关窗格重扫 | 多选 `QTreeWidget` + 右键菜单；后台执行走与窗格同一份 `core/file_op_runner.FileOpRunner`（旧版只有“双击→系统文件管理器定位”，且那个机制长在窗格私有代码里） | widgets/advanced_search.py `SearchResultTree` / `show_results_menu` / `_transfer_selected`；tests/test_search_results.py 36 项 + tests/test_file_op_runner.py 10 项 |
+| 20.2 | 内容搜索 | P2 | 🟢 | 在文件内容中搜索字符串/正则；搜 `/` 时勾选内容搜索**仍然能中途停止**（此前 worker 会卡在 `/dev/ptmx`、`/proc/<pid>/fd/9`、`/sys/.../revision` 这类伪文件的 `read` 里，`stop()` 叫不回，p49 实测） | 文件遍历 + 搜索（只读前 1MB）；`open` 之前用已经 stat 过的那份 `st_mode/st_size` 筛掉非常规文件与 0 字节（不新增盘调用，结果集不变）—— 取消标志挡不住阻塞在 syscall 里的线程，只能在调用前筛（gotchas 第 58 条） | advanced_search.py `SearchWorker.run()`（`from stat import S_ISREG`）；tests/test_m6_tools.py `test_content_search_does_not_open_pseudo_files`（POSIX FIFO，Windows skipif） |
+| 20.3 | 搜索结果操作 | P2 | 🟢 | 结果列表可多选；右键/按键批量**打开**、**打开所在文件夹**、**在系统文件管理器中选中**、**复制路径文本**、**复制到…／移动到…**（选目标目录 + 进度框 + 同名冲突询问 + 可取消）、**删除／永久删除**（确认框按实际后果说话）；搬走/删掉的行从结果中移除并让相关窗格重扫。**2026-11-13（T8）**：定位与窗格右键共用 `core/reveal.py` 一份实现（不再依赖窗格，`pane_for_ops()` 为 None 也能定位），失败与「只打开目录未选中」都会在状态栏说明 | 多选 `QTreeWidget` + 右键菜单；后台执行走与窗格同一份 `core/file_op_runner.FileOpRunner`（旧版只有“双击→系统文件管理器定位”，且那个机制长在窗格私有代码里） | widgets/advanced_search.py `SearchResultTree` / `show_results_menu` / `_transfer_selected`；tests/test_search_results.py 37 项 + tests/test_reveal.py 36 项 + tests/test_file_op_runner.py 10 项 |
 | 20.4 | 保存搜索 | P3 | 🟢 | 高级搜索里点「保存当前条件…」起名存下 → 下次在「已保存」下拉选中即按原值填回所有输入框（不自动开搜）；「删除」移除一条 | JSON 单文件 `saved_searches.json`（与 `associations.json` 同目录，路径规则统一到 `config/paths.py`）；存的是**真正喂给 worker 的那份 params**，`collect_params ↔ apply_params` 双向可逆 | config/saved_searches.py + widgets/advanced_search.py；tests/test_saved_search.py 30 项 |
 | 20.5 | 搜索窗口非模态 | P2 | 🟡 | 搜索对话框开着时还能用窗格（切目录、用应用内剪贴板 Ctrl+C/V）并一边搜一边看结果 | `QDialog` 改非模态（`show()` + 保留任务栏入口）；现仍为 `exec()` 模态，所以结果列表只能“选目标目录搬运”，不能先复制到应用内剪贴板再到窗格粘贴 | main_window.py `open_advanced_search()` |
 
@@ -235,7 +237,7 @@
 
 | # | 功能 | 优先级 | 状态 | 验证方式 | 说明 | 实现情况 |
 |---|---|---|---|---|---|---|
-| 21.1 | 自定义操作 | P3 | 🟡 | 用户定义快捷操作（如打开编辑器、转换格式） | JSON 配置 + 对话框 | `config/user_operations.py`（配置层）可用且有测试；`widgets/user_operations_dialog.py` 的无效 `QKeySequenceValidator` 引用已在 v1.9.028 去掉，import 与配套 5 条用例转绿（2026-11-10 全量复核）。**但全仓除测试外仍零引用**：没有菜单/右键入口，用户拿不到，按铁律第 9 条不能标 🟢。入口接线登记在 `docs/todo.md` **T2** 第二步 |
+| 21.1 | 自定义操作 | P3 | 🟡 | 用户定义快捷操作（如打开编辑器、转换格式） | JSON 配置 + 对话框 | `config/user_operations.py`（配置层）可用且有测试；`widgets/user_operations_dialog.py` 的无效 `QKeySequenceValidator` 引用已在 v1.9.028 去掉，import 与配套 5 条用例转绿（2026-11-10 全量复核）。**但全仓除测试外仍零引用**：没有菜单/右键入口，用户拿不到，按铁律第 9 条不能标 🟢。入口接线登记在 `docs/todo.md` **T2** 第二步。<br>2026-11-10 配置层四处硬伤已修（用例见 `tests/test_new_features.py::TestUserOperationsConfig`）：①`execute_command` 不再 `shell=True` 拼字符串 —— 改 `shlex.split(posix=False)` 拆词 + `{}` 单独成一个 argv，含空格/引号/`&` 的文件名既不会被拆碎也不会被当命令语法执行，argv[0] 过 `shutil.which`（Windows 的 `.cmd` 垫片可用）；②配置文件落点统一到 `config/paths.default_config_dir()`（此前写死 `~/.config/pan4dex`，Windows 上落到用户主目录下的点目录）；③读盘不再强制 `enabled=True`（用户禁用的操作原先活不过重启）；④`print` 改 `logger.warning` |
 | 21.2 | 操作快捷键 | P3 | 🔴 | 为自定义操作绑定快捷键 | 快捷键配置框架 | 未实现：`user_operations.py` 与对话框里没有任何 shortcut/hotkey 代码，21.1 的入口也没接上。与入口一起登记在 **T2** |
 
 ## 22. 目录树与窗格内标签页
@@ -245,7 +247,7 @@
 | # | 功能 | 优先级 | 状态 | 验证方式 | 说明 | 实现情况 |
 |---|---|---|---|---|---|---|
 | 22.1 | 目录树侧边栏 | P1 | 🟢 | 左侧显示目录树，双击导航到当前活动窗格 | QTreeView + QFileSystemModel | tree_sidebar.py TreeSidebar |
-| 22.2 | 活动窗格跟踪 | P1 | 🟡 | 焦点在哪个窗格，目录树导航就作用于哪个窗格 | 点击导航走 `MainWindow.on_tree_folder_clicked`→`target_pane()`（正确）；但右键菜单与「跟随当前目录」仍直接判 `_active_pane` | tree_sidebar.py:121 `_show_context_menu`、:180 `on_follow_clicked`（待办 T3） |
+| 22.2 | 活动窗格跟踪 | P1 | 🟢 | 焦点在哪个窗格，目录树导航就作用于哪个窗格；**启动后一次都没点过窗格时**（Linux/X11 上初始焦点不在窗格，这段必然存在）右键目录树要出菜单、「跟随当前目录」要动 | 三处落点统一走 `MainWindow.target_pane()`：点击导航 `on_tree_folder_clicked`、`_show_context_menu`、`on_follow_clicked`（后两处此前直接判 `_active_pane`，铁律第 6 条） | tree_sidebar.py:121 / :180；tests/test_pane_target.py `TestTreeSidebarUsesTargetPane` 2 项（待办 T3 已销账，2026-11-10） |
 | 22.3 | 自动展开控制 | P1 | 🟢 | 可开关自动展开文件夹功能 | 按钮+状态跟踪 | tree_sidebar.py toggle_auto_expand() |
 | 22.4 | 展开/折叠按钮 | P1 | 🟢 | 一键展开或折叠所有节点 | QTreeView.expandAll/collapseAll | tree_sidebar.py |
 | 22.5 | 每窗格独立目录树 | P1 | 🟢 | 每个窗格左侧内嵌独立目录树，路径栏按钮控制本窗格 | PaneTreeView | widgets/pane_tree_view.py |
@@ -313,8 +315,10 @@
 | 2026-09-24 | **第 23 节「待办事项」整表搬出本文件，独立成 `docs/todo.md`**：清单从此只保留功能状态表 + 优先级说明 + 本更新记录，第 23 节改为一节指路占位（编号 L/T 不变，历史引用不断链）。全仓原先写「清单第 23 节 T4/T5」的引用统一改指 `docs/todo.md`。本文件的既有账目不迁移，仍留在上面几行 | - |
 | 2026-10-30 | 新增第 24 节「版本更新」：更新服务器（管理页 + API）与客户端检查/下载/安装已实现并各有测试，Windows/Linux 真机升级与回滚演练仍为 🟡 | - |
 | 2026-11-10 | 全量测试复跑 **793 passed / 4 skipped**（Windows offscreen，111.06s），据此回写：16.1/16.3 🔴→🟢、21.1 🔴→🟡（v1.9.028 已修 import 与幽灵方法，入口仍缺）、24.5/24.6 🟡→🟢（032 Windows 端到端、046 Linux 真机升级成功）；T4/T5 在 `docs/todo.md` 销账。补录 028–048 遗漏的功能行：1.9 目录占用大小（047/048）、1.10 文件视图模式（平铺 034 / 列表 041） | - |
+| 2026-11-10（第二轮） | 代码审视后的批量收尾：**22.2 🟡→🟢**（T3 销账，目录树右键菜单与「跟随当前目录」两处落点统一走 `target_pane()`）；**1.4** 正文改写（状态栏概要改读 `DirStoreModel.loaded_counts()`，主线程不再 `os.scandir` 重扫，gotchas 第 59 条）；**20.2** 正文改写（内容搜索 `open` 前筛掉非常规文件与 0 字节，p49 那条「搜 `/` 时不可取消」修复，gotchas 第 58 条）；**21.1** 正文补配置层四处修复（`shell=True` 拼命令 → argv、配置落点统一 `default_config_dir()`、读盘不再强制 `enabled=True`、`print` → `logger`）。新登记待办 **T6/T7/T8/T9**。删除确认框默认按钮 No→Yes（2.3/2.4 行为未变，只改默认档，见 linux-gap L3）。全量 **800 passed / 5 skipped**（110.54s，新增 8 条用例）。使用者可感知条目已按用户拍板记账进 `CHANGELOG.md` 的 **`[1.9.049] - 未发布`** 一节（`VERSION`/`pyproject`/tag 仍停在 1.9.048，等下一批一起出包） | - |
+| 2026-11-13 | **T6–T11 落地批**（用户「开工 T6 到 T11」，按 `docs/improvement-plan-t6-t9.md` 的次序做完，回执见该文件 §9）：**1.8** 正文补名称列比较器不再回模型取 `DisplayRole`（T6 第一步，一万条目落地停摆最差一轮 540→359ms，行信号次数不变，gotchas 第 60 条）；**1.10** 正文补 flow 残留修复（T10）与退出排空登记存活视图池（T11）；**新增 12.22**（Ctrl+End / Ctrl+Home 让选中跟着走，T7，四种视图 29 条用例）；**20.3** 正文补定位与窗格共用 `core/reveal.py`（T8，36 条用例）。**T9 销账**（拍摄日期预读改有界池 2 + 代际守卫 + 批间取消，8 条用例；本表无对应功能行，账记在 `docs/todo.md`）。全量 **883 passed / 5 skipped（134.15s）**，比上一基线多 83 条；每条改动都跑对照组证明区分力（T10 红 4 / T11 红 4 / T7 红 9 / T8 红 8 / T9 红 3：峰值 6→≤2）。新登记 **L16**（这批的真机复测，逐项自查命令见 `docs/linux-gap.md` §5.3）；T6 第三步（排序搬后台）等真机数字再决定。gotchas 新增 **#60–#65**，铁律第 3 条补「禁止回模型取 data()」、新增第 10 条。使用者可感知条目记在 `CHANGELOG.md` 的 `[1.9.049] - 2026-11-13（master）`（`VERSION`/`pyproject` 已同步到 1.9.049，tag `v1.9.049`；「用户操作配置层」那条因入口未接线（T2）按括注挪出发布说明） | - |
 
 ---
 
 **文档版本**：v1.9  
-**最后更新**：2026-11-10
+**最后更新**：2026-11-13

@@ -535,7 +535,7 @@ SHA-256（不初始化 Qt）。退出码：`0` 已是最新、`3` 有新版本�
 | 2 | 客户端核心：`core/updater.py`（检查/下载/校验/安装），无 UI | 单元测试全绿 | ✅ `tests/test_updater.py` 20 项 |
 | 3 | 客户端 UI：菜单项、`UpdateDialog`、设置页、启动检查、CLI `--check-update` | 手工走查第 8 节 1-6、10 | ✅ `tests/test_update_ui.py` 11 项 + 本机真实 HTTP 下载链路冒烟 |
 | 4 | Windows/Linux 安装器联调 + 回滚演练 | 两平台各完成一次真实升级 | ✅ Windows：v1.9.032 修 `DETACHED_PROCESS` 致脚本从未执行后，实测脱离模式端到端通过（035/040 又加固锁竞争与 robocopy 降级）；Linux：v1.9.046 修 `_PYI_*`/`_MEI*` 标记继承后**真机应用内升级成功（两台机器两次实证，§5.6）**；回滚路径在 030/035 的真机失败里实际走到过 |
-| 5 | 文档与发布：changelog、AGENTS.md 索引、feature-checklist、版本号 1.9.029（当前工作树已有 1.9.028 的 UI 改动，版本号届时按发布流程统一） | 完整 `tests/` 出汇总行 | ✅ 已按发布流程持续发版至 1.9.048（2026-11-03）；完整 `tests/` 2026-11-10 复跑 **793 passed / 4 skipped**（`docs/testing.md` §5） |
+| 5 | 文档与发布：changelog、AGENTS.md 索引、feature-checklist、版本号 1.9.029（当前工作树已有 1.9.028 的 UI 改动，版本号届时按发布流程统一） | 完整 `tests/` 出汇总行 | ✅ 已按发布流程持续发版至 **1.9.049（2026-11-13）**；完整 `tests/` 2026-11-13 复跑 **883 passed / 5 skipped**（`docs/testing.md` §5） |
 
 预估：服务器半天到一天；客户端核心 + UI 一天；两平台联调与回滚半天。合计约 2-3 个工作日。
 

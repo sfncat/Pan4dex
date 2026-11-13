@@ -145,8 +145,12 @@ Qt 对象，控件用例用 `qtbot`）。
 QT_QPA_PLATFORM=offscreen pytest tests/ -q
 ```
 
-> **当前基线（2026-11-10 实测）**：上面这条**能跑完**，不需要任何 `--ignore`：
-> Windows / Python 3.13（`.venv`）/ offscreen → **793 passed, 4 skipped in 111.06s**。
+> **当前基线（2026-11-13 实测）**：上面这条**能跑完**，不需要任何 `--ignore`：
+> Windows / Python 3.13（`.venv`）/ offscreen → **883 passed, 5 skipped in 134.15s**
+> （同日 T6①/T7/T8/T9/T10/T11 落地那轮；上一基线是 2026-11-10 的 800 passed / 5 skipped，
+> 新增 83 条：键位矩阵 `test_view_keys.py` 29、定位合一 `test_reveal.py` 36、
+> 拍摄日期预读 `test_shot_prefetch.py` 8、行落地 `test_sort_landing.py` 4、
+> 平铺/简单列表 flow 与退出排空 6）。
 > 命令用 venv 的解释器：`QT_QPA_PLATFORM=offscreen .venv/Scripts/python.exe -m pytest tests/ -q`
 > （系统 `python` 没装 pytest，直接跑会报 `No module named pytest` 且退出码为 0 —— 别把这种
 > 空输出当通过）。

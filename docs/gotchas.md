@@ -1054,6 +1054,9 @@ v1.9.013 把删除确认文案的网络分支从 `os.name == 'nt'` 里放出来�
   一次假故障（「Linux 回收站没落地」）。真要点 Yes：`xdotool key alt+y`（Qt 标准按钮是
   `&Yes`，中文界面下按钮文字仍是英文 Yes/No —— 没装 QTranslator）。更根本的教训：
   **自动化的每一步“确认”，都要用磁盘上的结果反证，不能只看弹框弹了**
+  （**2026-11-10 追记**：删除确认框的默认按钮已翻成 `Yes`（资源管理器里回车就是删除），
+  现在 `key Return` = 真删。上面这条对**其它**仍默认 No 的确认框照旧有效，取证脚本
+  按按钮语义写之前先看那一处是哪一档；改动见 linux-gap L3 的销账与 `Pane._delete_paths`）
 - 测「谁进了回收站」不能真用 `send2trash`（会污染开发机的回收站）：用
   `monkeypatch.setitem(sys.modules, "send2trash", fake)` 替模块，只记不删；再反方向钉一条
   「本地文件必须递进去」，否则把整个分支改成「一律 `os.remove`」也能全绿
@@ -1301,6 +1304,206 @@ import 的那一刻才炸；`0f9e6e9`（v1.9.020）之后就没再跑过一次�
 **规矩**：独立控件要自己声明右键策略，别指望「父控件会兜住」；「读选中项」这类能力只能有一个
 出口函数，否则每新增一个视图都要在七八处补一遍，漏一处就是静默失效。
 
+### 58. 取消标志管不住阻塞在 syscall 里的线程：内容搜索读伪文件前必须先用 stat 筛
+
+**现象**（p49，Linux 真机）：高级搜索勾上「内容」再搜 `/`，按「停止」之后 worker
+3s 后仍 `isRunning()`，界面永远显示「搜索中…」；同样的查询不勾内容搜索时秒退。
+
+**根因**：`SearchWorker.run()` 的取消约定是「每处理一个条目探一次 `self._stop`」，
+这对**循环**有效，对**已经陷进 `read()` 的系统调用**完全无效。`/dev/ptmx`、
+`/proc/<pid>/task/<pid>/fd/9`、`/sys/kernel/security/apparmor/revision` 这一类伪文件
+`open` 得下来、`read` 不返回（要么等 writer，要么是根本不可读的接口文件），线程就
+卡在那里 —— 于是「可取消」这个承诺在搜根目录时不成立。
+
+**修法**：进入 `open` 之前用**已经 stat 过**的那份 `st_mode`/`st_size` 筛掉非常规文件
+与 0 字节文件（`widgets/advanced_search.py` 里 `S_ISREG(stat.st_mode) and stat.st_size > 0`）。
+不新增盘调用（stat 本来就在大小筛选那一步做过了），空文件也匹配不到任何内容，
+所以结果集不变。worker 里 `stat` 是局部变量名，遮蔽了 `stat` 模块，故取常量用
+`from stat import S_ISREG`。
+
+**规矩**：
+- 后台线程里任何「可能阻塞的读」都要先问一句：这条卡住了我怎么停它？答不上来就
+  在调用**之前**筛掉，别指望取消标志。
+- 这类用例不能用「当场断言」写死：防护被拆掉时它是**挂住**而不是失败（gotchas 第 56
+  条同型）。写法是 `threading.Thread(daemon=True)` 跑 `worker.run()` + `join(5)` 之后
+  断言线程已结束，见 `tests/test_m6_tools.py::test_content_search_does_not_open_pseudo_files`
+  （`os.mkfifo` 造不出来的 Windows 上 skipif 跳过）。
+
+### 59. 状态栏的目录概要别再扫一遍盘：数据源是模型，不是 `os.scandir`
+
+**现象**：`Pane.update_status_bar()` 在主线程 `os.scandir(self.current_path)` 数目录和文件，
+每次导航都白扫一遍盘。万条目目录与 SMB 上这一次扫盘的代价还没单独量过（L2 量的
+1256ms 主线程停摆归因于「行落地」，见待办 **T6**），但「多扫一遍」这件事读代码就能
+确认，不需要实测。慢位置上它还是双倍网络往返。
+
+**根因**：同一份条目 `DirStoreModel` 早已在后台枚举完并存在内存里，概要却另起一个数据源。
+v1.9.0 那一版把 `os.listdir` + 逐项 `isfile` 改成 `scandir`，是为了少 syscall —— 方向对，
+但「该不该自己扫」这件事当时没问。
+
+**修法**：`DirStoreModel.loaded_counts(path)` 只数内存里的 `Entry`（返回 `(目录数, 文件数)`，
+未加载完返回 `None`）；窗格显示「正在读取…」，`directoryLoaded` 到达后经
+`_on_dir_loaded_status` 刷新一次。缓存命中的目录本就是已加载态，计数立即可得。
+「看着是空」的那一支才回头碰一次磁盘（`isdir` + `access`，用来分清空目录 / 无权限 /
+已被别处删掉三种情况）。
+
+**规矩**：与铁律第 3 条同一条线，只是消费方换了一个 —— **任何为「显示概要」而做的
+统计，读模型已缓存的 `name/is_dir/size/mtime`，不新起文件系统调用**。用例
+`tests/test_m1_core.py::test_status_bar_does_not_scan_the_disk` 用 `monkeypatch` 把
+`os.scandir` 换成探针，钉住「刷新一次概要 = 0 次扫盘」。
+
+---
+
+### 60. 排序比较器里「回模型取一次 DisplayRole」= 一万次模型调用
+
+**现象**：一万条目目录（200 目录 + 9800 文件）行落地时主线程单次停摆 ~1.2s（L2 残余，待办 **T6**）。
+把名称列比较器里那一趟 `left.data(DisplayRole)` 换成手上已有的 `Entry.name`，**行信号次数一次没变**，
+冷态停摆 340→180ms。三轮交错 A/B（Windows offscreen，同一合成靶子）：
+旧写法插入最大 312/493/538ms、心跳最大 314/496/540ms；新写法 186/288/356ms 与 189/292/359ms，
+**每一轮都赢**，最差一轮 359ms 已低于用户拍板的 400ms 判据。
+
+**根因**：`lessThan` 一次排序要跑 O(n log n) 次比较（1 万条目约 5 万次，L2 在真 SMB 上量到
+8.6–11.5 万次）。每次 `data()` 都是一趟「代理 → 源模型 → 角色分支 → 字符串构造」，
+而 `Entry` 早就在手上、`name` 就是 `DisplayRole` 要返回的那个字符串。
+这与第 29/30 条是同一条线的延伸：**不只是不能碰磁盘，连模型往返也不该有**。
+
+**修法**：`core/pane.py` `PaneSortProxyModel.lessThan` 名称列先取两侧 `Entry`，
+两边都在就直接 `le.name.lower() < re.name.lower()`；取不到才退回 `data()`（别把兜底删了，
+排序代理也会被没有 `Entry` 的模型复用）。
+
+**规矩**：比较器与筛选判定里**只读已缓存的字段**。要加新判据时先问「这个值手上有没有」，
+而不是「模型能不能给我」。用例 `tests/test_sort_landing.py` 钉住等价性（逐条断言
+`src.data(DisplayRole) == e.name`，再与 `sorted(key=str.lower)` 的参考序双向对比）
+与落地完整性（1 万行不多不少、目录在前、组内单调）。
+
+**没做的那一步**：把排序整个搬到后台（3–5 天）本轮**没动** —— 本机已达标，
+Linux 按倍率外推约 660ms 仍超判据，但**不凭外推动工**，等真机数字（`docs/linux-gap.md` L16）。
+
+---
+
+### 61. Qt 的 Ctrl+移动只动光标不动选中；拦截前先量默认行为，别凭资源管理器的印象写断言
+
+**现象**：文件列表里 Ctrl+End 跳到了最后一行，紧接着按 Delete / Ctrl+C，作用的却是**跳之前**
+选中的那批文件。三种视图（详情 / 简单列表 / 超大图标）一致。
+
+**根因**：`QAbstractItemView` 对带 Ctrl 的移动用 `NoUpdate` 设当前索引 —— 光标与滚动走了，
+选区不动。这是 Qt 的设计（Ctrl+点击是「加选」的起手），不是缺绑定。
+
+**修法**：`widgets/view_keys.py:handle_edge_jump(view, event)` 一份共用处理，
+详情视图（`QTreeView`）与缩略图/平铺/简单列表（`QListWidget`）都调它 ——
+两者都暴露 `model()/rootIndex()/currentIndex()/selectionModel()/scrollTo()`，
+所以一份代码够。命中后 `setCurrentIndex` + `ClearAndSelect|Rows` + `scrollTo(PositionAtCenter)`。
+
+**量出来的两条默认行为（写断言前必须先量）**：
+- 普通 `End`/`Home` 在 offscreen 源码版里**本来就跳尾并选中末行**（登记 T7 时写的
+  「End 不跳尾」不成立，`MoveToEndOfRow` 这个枚举成员根本不存在）。产物版那次观察另有
+  焦点混淆嫌疑，仍需真机复测。
+- `Ctrl+Shift+End`：光标到 199 行，**选区仍留在原来那一行**（不扩展）。这与「选到末尾」的
+  直觉不同，但本轮**明确不拦**（语义与 Ctrl+End 不同，交给 Qt），用例把这个现状钉住，
+  免得以后有人「顺手修好」却改了别的键位。
+
+**规矩**：合成键事件之后**必须释放 Ctrl/Shift**（第 32 条），否则修饰键状态会泄漏给下一条用例。
+用例 `tests/test_view_keys.py`：4 种视图 × 6 个键位，每条同时断言**光标行、选中行集合、
+目标行是否真滚进视口**（只断言光标会漏掉本条真正的缺口）。
+
+---
+
+### 62. PyQt6 把 `QAbstractListModel.columnCount()` 标成私有方法：整行选中用 `SelectionFlag.Rows`
+
+**现象**：想给「跳到末条」拼一个覆盖整行的 `QItemSelection`，写
+`QItemSelection(idx, model.index(row, model.columnCount(root) - 1, root))` →
+`TypeError: QAbstractListModel.columnCount() is a private method`。
+
+**根因**：PyQt6 对部分「基类已实现、子类通常不重写」的方法做了私有化标注，
+`columnCount` 在其中（`rowCount` 不在）。C++ 里它是 public virtual，Python 侧拿不到。
+
+**修法**：不要问列数，直接让 Qt 自己展开整行：
+`selectionModel().select(idx, QItemSelectionModel.SelectionFlag.ClearAndSelect | QItemSelectionModel.SelectionFlag.Rows)`。
+详情视图是 `SelectRows`，只选第 0 格会只亮一格 —— `Rows` 标志正是为此存在。
+
+**规矩**：与第 40 条同一类（PyQt6 的静默失败面 / 拿不到的 API）。
+**写「跨两种视图共用」的助手时，只用两边都公开的那几个方法**；遇到 `TypeError: ... private method`
+先找 Qt 自带的语义标志，别去补一个手拼的等价物。
+
+---
+
+### 63. 视图外观的 setter 是半个状态机：只设差异项，上一个模式的属性会残留
+
+**现象**：先进「简单列表」再切回「超大图标」，图标排成**一条横向长带**，纵向滚动条消失
+（`flow=TopToBottom hmax=31148 vmax=0`）；直接进超大图标则正常（`flow=LeftToRight hmax=0 vmax=7380`）。
+End 键也跟着横向跳 —— **T7 的键位矩阵曾被它污染**，两条待办因此必须同批修。
+
+**根因**：`widgets/thumbnail_view.py` 的 `set_simple_list_mode` 在 `on` 分支设
+`setFlow(TopToBottom)`（简单列表要多栏纵向流，对的），但 `else` 分支设了
+viewMode/iconSize/gridSize/spacing/wordWrap/wrapping/uniformItemSizes，**唯独没把 flow 设回来**；
+`set_tile_mode` 同样漏。`QListView` 的 ListMode 会顺带把 flow 设成 TopToBottom，
+切回 IconMode 时它不会自己还原。
+
+**修法**：两个 setter 的「离开本模式」分支各补一行 `setFlow(LeftToRight)`。
+
+**规矩**：**每个外观 setter 都要把自己关心的属性全设一遍，不能只设与上一个模式的差异项** ——
+模式之间没有「谁一定在谁之后」的保证。用例 `tests/test_tile_view.py` 三条：
+离开简单列表 / 简单列表→平铺（产品里真实可达的那条序列）/ 窗格级模式往返，
+每条都断言 `flow`、`verticalScrollBar().maximum()>0`、`horizontalScrollBar().maximum()==0`。
+
+**顺带一条取证纪律**：`set_tile_mode` **不重置 viewMode**，所以「简单列表开着时直接调
+`set_tile_mode(True)`」在产品里到不了（`core/pane.py` 总是先关简单列表）。
+用例最初按那个不可达序列写，红了 —— **改的是用例，不是产品代码**：
+先 grep 调用方确认序列可达，再决定断言什么。
+
+---
+
+### 64. 判「Qt 对象还活着」只靠 weakref 不够；故意销毁的控件别注册进 `qtbot`
+
+**现象**：拍摄日期预读用裸 `threading.Thread`，20 次快速导航堆出 **17 个同时在飞**的线程
+（探针替身每批睡 2.0s；`tests/test_shot_prefetch.py` 的替身只睡 0.05s，对照组峰值是 **6** —— 口径不同，不是矛盾）；
+`sip.delete(pane)` 之后 21 个任务**全部跑完**（为死窗格白干；真机上每个在飞任务对应一个 exiftool 子进程）。
+把任务改成受管池 + 代际守卫后，写「销毁窗格」的用例又在收尾炸
+`RuntimeError: wrapped C/C++ object of type Pane has been deleted`。
+
+**根因**：两件事。①`sip.delete()` 只销毁 C++ 对象，**Python 包装还活着**，
+所以 `weakref.ref(pane)() is not None` 判不出死没死。②`qtbot.addWidget()` 会在用例收尾
+再碰一次那个控件（关它、处理它的事件），对故意销毁的对象就是踩空。
+
+**修法**：
+- 判活一律 `pane is None or sip.isdeleted(pane)`（`core/media_metadata.py:ShotCancel.__call__`）。
+- 任务进**有界专用池** `shot_pool()`（上限 2，一个任务拉起一个 exiftool 子进程，并发必须封顶），
+  代际 `gen` 每发起一次 +1，旧代际的回投直接丢；信号对象 `ShotDateSignals(self)` **以窗格为父**，
+  窗格销毁时已排队的投递被 Qt 一并剔除（问题 13 那一类退出报错）。
+- 批间探取消令牌，命中就 break，**且不要往缓存里写 None**（否则被取消的路径永久变成「没有拍摄日期」）。
+- 故意销毁的用例**不要** `qtbot.addWidget`（照 `tests/test_terminal_lifecycle.py` 的写法）。
+
+**规矩**：新增专用池必须同时进 `core/lifecycle.py:_pools_to_drain()`（见第 65 条）。
+取消的局限要写明：拦不住已阻塞在 syscall 里的那一批（≤500 文件 / ≤30s 超时，第 58 条）。
+用例 `tests/test_shot_prefetch.py` 8 条，对照组（还原裸线程）实测峰值 **6**、
+销毁后 **3 批全跑完**、两次导航 **2 次刷新**；改后分别是 **≤2**、**<3 批**、**1 次**。
+
+---
+
+### 65. 「退出排空」的用例会假绿：观测量必须取**在飞**任务，新增池必须同时进名单
+
+**现象**：`_pools_to_drain()` 只返回全局池 + `dir_pool()`，漏了 `size_pool()`（目录占用计算）
+与每个 `ThumbnailView` 自带的 4 线程池（只在 `closeEvent` 排空，而应用退出时并非每个控件都收得到
+`closeEvent`）。后果与问题 13 同一类：未派发的跨线程投递留到解释器收尾阶段被 Qt 释放 →
+Windows fast-fail（0xC0000409），用户侧就是「关掉程序时报错」。
+
+**根因**：名单是手写的，新增池时没人提醒去补。而**补了名单也不代表用例真验到了** ——
+第一版「排空后结果送达」的用例在对照组里**照样绿**：任务早已算完，
+`processEvents` 转几圈就把结果送达了，排不排空都看不出来。
+
+**修法**：
+- 名单补全：全局池 + `dir_pool()` + `size_pool()` + `shot_pool()` + `live_thumbnail_pools()`
+  （模块级 `weakref.WeakSet` 登记存活视图，取池时 `RuntimeError` 就跳过）。
+- 用例改成观察**在飞**计算：把 `calc_dir_size` 换成睡 0.25s 的替身，
+  先 `waitUntil(activeThreadCount() > 0)` 再排空，然后断言结果真落进 `_DIR_SIZES`、
+  `_SIZE_PENDING` 里那个键已清、`waitForDone(0)` 为真。
+- 反向守卫：`test_drain_covers_every_background_pool` 逐个点名四个池来源，
+   docstring 写着「**新增专用池时必须同时加进这里与 `_pools_to_drain()`**」。
+
+**规矩**：`drain_background_pool` **先 `clear()` 再 `waitForDone()`** —— 还没起跑的排队任务会被丢掉，
+所以「排空」只保证在飞的跑完，不保证排队的执行。验「有没有漏排空」时，
+**观测量改前改后必须有区分力**：先造一个在飞任务，再比排与不排。
+真机退出路径（有无 0xC0000409）仍待一轮，见 `docs/linux-gap.md` L16。
+
 ---
 
 ## 八、回归防护机制
@@ -1385,6 +1588,12 @@ python scripts/deploy.py 0.9.618
       监视与删除文案与实际删除是否拿的同一个答案？有没有新写 `os.name != 'nt'` 这种
       “非 Windows 就 `return False`”的门控（见第 43 条）？平台专属的用例是否在假宿主上
       跑了一遍？改文案时行为那一半同步改了吗（第 50 条）？
+- [ ] 后台线程里的“可取消”：取消标志只挡得住循环，挡不住已经陷进 `read()`/`open()`
+      的系统调用。要读的每一类文件先问“这条卡住了我怎么停它”，答不上来就在调用**之前**
+      用 stat 筛掉（伪文件、0 字节），别指望 `_stop`（见第 58 条）
+- [ ] 为“显示概要”而做的统计（状态栏计数、总数、占用）：读的是模型已缓存的 `Entry`
+      还是磁盘？同一个目录被后台枚举完之后再 `os.scandir` 一遍就是白送的停摆（见第 59 条）
+- [ ] 改确认框默认按钮：所有取证/自动化脚本里 `key Return` 的含义跟着变（第 50 条追记）
 - [ ] 新增“安全网”性质的代码（崩溃日志、日志系统、诊断转储、上报）：它自己有没有
       致命失败路径？写不了文件时是否能退到下一个落点而不外抛（它在 `main()` 里可能比
       窗口创建还早，抛一下就是“双击没反应”，见第 45 条）？它的用例是否只断了

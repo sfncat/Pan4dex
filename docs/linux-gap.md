@@ -182,7 +182,7 @@
 
 | 能力 | Windows | Linux | 判定 | 证据 |
 |---|---|---|---|---|
-| 高级搜索（名/内容/大小/日期） | `os.walk` | 同一套；**搜根目录会把 `/proc`、`/sys`、`/dev` 扫进去**（无跨设备开关、无排除表） | 🟡 已实测，且实测比推断更疼：**只按名字筛时无害**（`/dev` 623 项 0.01s、`/proc` 212,416 项 5.25s、`/sys` 49,011 项 1.15s，全部自然结束）；但**勾选内容搜索后 worker 会阻塞在伪文件的 `read` 里、`stop()` 叫不回来**（分别卡在 `/dev/ptmx`、`/proc/<pid>/task/<pid>/fd/9`、`/sys/kernel/security/apparmor/revision`，stop 后 3s 仍 `isRunning()`）——搜 `/` 时「可取消」这个承诺不成立。属候选缺陷（v1.9.019 素材，待拍） | `widgets/advanced_search.py:87`；p49 探针（模块级 `open` 换带日志的壳 + 逐根单进程跑）|
+| 高级搜索（名/内容/大小/日期） | `os.walk` | 同一套；**搜根目录会把 `/proc`、`/sys`、`/dev` 扫进去**（无跨设备开关、无排除表） | 🟡 「不可取消」那一半已修（2026-11-10），排除表仍未做：**只按名字筛时无害**（`/dev` 623 项 0.01s、`/proc` 212,416 项 5.25s、`/sys` 49,011 项 1.15s，全部自然结束）；p49 实测的「勾选内容搜索后 worker 阻塞在伪文件 `read` 里、`stop()` 叫不回」（`/dev/ptmx`、`/proc/<pid>/task/<pid>/fd/9`、`/sys/kernel/security/apparmor/revision`，stop 后 3s 仍 `isRunning()`）已修：`open` 之前用已取到的 `st_mode/st_size` 筛掉非常规文件与 0 字节，取消标志重新管得住（规与用例见 gotchas 第 58 条）。⚠️ 未修：伪文件仍会被**遍历**（不进 `open`），搜 `/` 依旧是分钟级全盘扫；跨设备开关与排除表（`/proc`、`/sys`、`/dev`、`/run`）另案 | `widgets/advanced_search.py` `SearchWorker.run()`；`widgets/advanced_search.py:87`；p49 探针（模块级 `open` 换带日志的壳 + 逐根单进程跑）；真机复测待跑（Windows 侧只能靠 FIFO 用例离线钉住）|
 | 搜索结果批量操作 | 🟢 v1.9.011 | 共用 `FileOpRunner` | 🟢 | `widgets/advanced_search.py` |
 | 压缩/解压（7z 后端） | 系统 7-Zip → 内置 `resources/tools/7z/7z.exe` | 系统 `7z/7za/7zz/7zr` → 内置 `7zz`（**未入库**）→ 都没有则功能不可用 | 🟡 | `core/archive_ops.py:48-113` |
 | 校验和 / 批量改名 / 文件比较 / 目录同步 / 分割合并 / 时间戳 | 纯 Python | 平台无关 | 🟢 | `widgets/*.py`（这些文件里平台分支数 = 0） |
@@ -348,20 +348,66 @@ offscreen 下能起，日志里 `延迟创建 pane2-4: 189.2ms` 正常完成。
 | # | 验什么 | 判定标准 | 状态（最新一轮） |
 |---|---|---|---|
 | L1 | 能不能构建出来 | 不再需要手工造 `resources/tools/*`，干净检出能直接出包；产物 `--version`/`--info` 正常、能常驻 | ✅ **v1.9.015 已过**：3.10 与 3.11 两个镜像都验过，offscreen 下能常驻 |
-| L2 | 挂 SMB（gvfs 或 CIFS）后浏览 | 打开 1 万个条目的共享目录：不闪、能取消、切走窗格不继续扫；慢位置判据在 POSIX 上是否真生效 | ✅ **v1.9.020 在用户真 NAS 上逐条实测（p57/p58/p59 系列/p60 系列）+ v1.9.021（7c4789b）补齐取消能力**。靶子：`backupSpaceInJKJ/pan4dex/big10k`（CIFS/SMB3.1.1，10,000 条目 = 9,800 文件 + 200 目录，100M，p58b 造）。原判据里「不在用户 NAS 上造 1 万个文件」是**用户本轮明确授权**后才造的，验完删（清理脚本 `tmp/p58z_cleanup_nas_target.py`，四道闸：挂载点仍在 + 产品判据判为慢位置 + 目录名匹配 + 条目数 ≥ 9000，任一不过就 exit 2 不动一个文件）<br>**「按本地目录处理」已不成立**：p57 在真 CIFS 上 26/26 —— 挂载根/带尾斜杠/挂载内空子目录/第二台服务器全判为慢位置，本地 ext4、家目录、`/proc`、`/sys`、`/`、空串、相对路径全判本地；网络目录不挂 watcher；删除文案是「永久删除…网络位置没有回收站」；两台服务器 `st_dev` 63/74/2051 正确判跨卷 → copy/move 决策对<br>**不闪（源码版）**：p59f 全栈前景心跳 —— SMB 1 万条目端到端 13.6s，其中**纯扫描 10.08s 全在 worker 线程**，主线程最大停摆 **1256ms**；**本地 ext4 同条数对照（`/home/kali/big10k`，扫描只 0.23s）最大停摆也是 1256ms** → 这一下是「1 万行落地」的通用代价，与 SMB 无关（裸模型口径：p59 [A] 心跳最大间隔 21.2ms、RSS 42.6MB、一次导航只枚举 1 次）<br>**不闪（产物版）**：p60c/p60d/p60e 在 `:10` 真 X 上跑 `pan4dex-1.9.020-linux`，真键盘 `Ctrl+L` 打路径 → 1 万行画出、状态栏「**200 个目录, 9800 个文件**」、`Ctrl+End` 跳到最后一行 `f00000.txt`；重扫期间在另一窗格按方向键，三张连拍各不相同 = 主线程照常接输入<br>**列头排序在 1 万条目 SMB 上确实作用到条目**（1.8 那条 🟢 至此才算真验过）：p59e 读**全部** 1 万可见行逐条断言单调 —— 大小降序（目录块按名称、文件按字节不增）/ 修改日期升序 / 名称升序 三条全绿，排序期 **0 次文件系统查询**（gotchas 29 条守住了），lessThan 各 8.6–11.5 万次；产物版真鼠标点「名称」表头两次 → 画面从 `d00000` 起翻成 `d00199` 起（裁图核对）<br>✅ **「能取消」**（v1.9.021 修，7c4789b）：`enumerate_dir()` 加取消令牌，`_LoadTask` 自身即令牌（`abandoned` + gen 校验），扫描每 256 项探一次、命中抛 `_EnumerationAborted`，不回投半截列表 —— 见 gotchas 第 54 条<br>✅ **「切走窗格不继续扫」**（v1.9.021 修）：`set_directory` 切换后 `_drop_stale_scans` 复用 `mounts.is_remote_location` 放弃在飞扫描。真 NAS A/B（p59e/p59f）：被放弃的枚举切走后 **0.24s** 停扫、未采纳、心跳最大 10.3ms；修前是切走后 **23.2s** 返回 10,000 条且**被采纳**（`adopted=True`），采纳在主线程阻塞 **1388ms**、同批处理造成一次 **3163ms** UI 停摆<br>⚠️ 未深查的附带观察：产物里单按 `End` 不跳列表末尾（`Ctrl+End` 会），源码无 `Key_End` 处理，不在 L2 判据内，也还没进 unsolved-issues |
-| L3 | 回收站 | 本地删除进 Trash；gvfs/CIFS 上**行为**是否与文案一致 | ✅ **v1.9.018 第五轮（p46）三条链全绿（GUI 真点 Yes）**：本地 `Del` → 文件在 `~/.local/share/Trash/files/`；CIFS `Del` → 文件消失且共享根**不再**长 `.Trash-1000/`（就是本版修的那条），并弹「删除完成 / 1 个项目位于网络位置，已永久删除（无法恢复）」；`Shift+Del` → 文件消失且回收站里没有它。断言用对话框标题（确认删除 / 确认永久删除 / 删除完成），不再靠截图字节数（gotchas 第 51 条）。p41 那两段「没落地」已正名：默认按钮 No + `key Return` = 取消<br>⚠️ 待拍：要不要把确认框默认按钮翻成 Yes（资源管理器里回车就是 Yes）|
+| L2 | 挂 SMB（gvfs 或 CIFS）后浏览 | 打开 1 万个条目的共享目录：不闪、能取消、切走窗格不继续扫；慢位置判据在 POSIX 上是否真生效 | ✅ **v1.9.020 在用户真 NAS 上逐条实测（p57/p58/p59 系列/p60 系列）+ v1.9.021（7c4789b）补齐取消能力**。靶子：`backupSpaceInJKJ/pan4dex/big10k`（CIFS/SMB3.1.1，10,000 条目 = 9,800 文件 + 200 目录，100M，p58b 造）。原判据里「不在用户 NAS 上造 1 万个文件」是**用户本轮明确授权**后才造的，验完删（清理脚本 `tmp/p58z_cleanup_nas_target.py`，四道闸：挂载点仍在 + 产品判据判为慢位置 + 目录名匹配 + 条目数 ≥ 9000，任一不过就 exit 2 不动一个文件）<br>**「按本地目录处理」已不成立**：p57 在真 CIFS 上 26/26 —— 挂载根/带尾斜杠/挂载内空子目录/第二台服务器全判为慢位置，本地 ext4、家目录、`/proc`、`/sys`、`/`、空串、相对路径全判本地；网络目录不挂 watcher；删除文案是「永久删除…网络位置没有回收站」；两台服务器 `st_dev` 63/74/2051 正确判跨卷 → copy/move 决策对<br>**不闪（源码版）**：p59f 全栈前景心跳 —— SMB 1 万条目端到端 13.6s，其中**纯扫描 10.08s 全在 worker 线程**，主线程最大停摆 **1256ms**；**本地 ext4 同条数对照（`/home/kali/big10k`，扫描只 0.23s）最大停摆也是 1256ms** → 这一下是「1 万行落地」的通用代价，与 SMB 无关（裸模型口径：p59 [A] 心跳最大间隔 21.2ms、RSS 42.6MB、一次导航只枚举 1 次）<br>**不闪（产物版）**：p60c/p60d/p60e 在 `:10` 真 X 上跑 `pan4dex-1.9.020-linux`，真键盘 `Ctrl+L` 打路径 → 1 万行画出、状态栏「**200 个目录, 9800 个文件**」、`Ctrl+End` 跳到最后一行 `f00000.txt`；重扫期间在另一窗格按方向键，三张连拍各不相同 = 主线程照常接输入<br>**列头排序在 1 万条目 SMB 上确实作用到条目**（1.8 那条 🟢 至此才算真验过）：p59e 读**全部** 1 万可见行逐条断言单调 —— 大小降序（目录块按名称、文件按字节不增）/ 修改日期升序 / 名称升序 三条全绿，排序期 **0 次文件系统查询**（gotchas 29 条守住了），lessThan 各 8.6–11.5 万次；产物版真鼠标点「名称」表头两次 → 画面从 `d00000` 起翻成 `d00199` 起（裁图核对）<br>✅ **「能取消」**（v1.9.021 修，7c4789b）：`enumerate_dir()` 加取消令牌，`_LoadTask` 自身即令牌（`abandoned` + gen 校验），扫描每 256 项探一次、命中抛 `_EnumerationAborted`，不回投半截列表 —— 见 gotchas 第 54 条<br>✅ **「切走窗格不继续扫」**（v1.9.021 修）：`set_directory` 切换后 `_drop_stale_scans` 复用 `mounts.is_remote_location` 放弃在飞扫描。真 NAS A/B（p59e/p59f）：被放弃的枚举切走后 **0.24s** 停扫、未采纳、心跳最大 10.3ms；修前是切走后 **23.2s** 返回 10,000 条且**被采纳**（`adopted=True`），采纳在主线程阻塞 **1388ms**、同批处理造成一次 **3163ms** UI 停摆<br>⚠️ 附带观察（**2026-11-11 复核，仍未闭环**）：产物里单按 `End` 不跳列表末尾（`Ctrl+End` 会）。本轮在 Windows offscreen **源码版**上量了三种视图的键位矩阵：End **都**跳末行（`row 5→199` 且选中末行），Ctrl+End 光标与滚动到末行但**选中留在原行**；登记 T7 时写的归因「QTreeView 默认 `MoveToEndOfRow`」**已撤回** —— 本机 PyQt6 的 `QAbstractItemView.CursorAction` 里没有这个成员。产物那次观察有**已记录的焦点混淆**（`tmp/p60e_scroll_to_end.sh` 脚本头自己写着「焦点在表头导致 End 没跳尾」），但焦点混淆只是可能解释、**未证实**：产物版（冻结 ELF + 真 X）与 offscreen 源码版的差异仍需一轮真机复测 —— 先点列表里的一行确认焦点在列表，再按 End。已挂 T7，方案与实测矩阵见 `docs/improvement-plan-t6-t9.md` §3 |
+| L3 | 回收站 | 本地删除进 Trash；gvfs/CIFS 上**行为**是否与文案一致 | ✅ **v1.9.018 第五轮（p46）三条链全绿（GUI 真点 Yes）**：本地 `Del` → 文件在 `~/.local/share/Trash/files/`；CIFS `Del` → 文件消失且共享根**不再**长 `.Trash-1000/`（就是本版修的那条），并弹「删除完成 / 1 个项目位于网络位置，已永久删除（无法恢复）」；`Shift+Del` → 文件消失且回收站里没有它。断言用对话框标题（确认删除 / 确认永久删除 / 删除完成），不再靠截图字节数（gotchas 第 51 条）。p41 那两段「没落地」已正名：默认按钮 No + `key Return` = 取消<br>✅ **待拍已定（2026-11-10）**：删除确认框默认按钮翻成 `Yes`（`Pane._delete_paths` 与搜索结果列表两处同一档，资源管理器里回车就是删除），取消要靠明确点 No/Esc。**下一轮真机脚本注意**：`xdotool key Return` 现在是真删，不再是取消；要验「点否」得显式发 No（gotchas 第 50 条追记）|
 | L4 | 拖放 | 从 Nautilus/Dolphin 拖入：同分区应移动、跨分区应复制；源端不允许 move 时不得删源 | ❓ **未做**：跨程序拖拽需要真鼠标轨迹（`xdotool` 能做但极不稳），放到有人在现场的那一轮 |
 | L5 | 打开方式 | 右键 → 打开方式：候选列表是否来自 `.desktop`、mime 匹配是否正确、`%f/%U` 是否被剥掉 | ✅ **v1.9.018 第三轮命中（p41 shot 96）**：对 `photo_2.png` 展开子菜单，候选是 **Image Viewer / ristretto Image Viewer / xdg-open / 选择其它应用并设为默认…**，状态栏显示解析出的 `/usr/bin/eog` —— 确实来自 `.desktop` 枚举且 mime 匹配对了，`Exec` 里的 `%f` 已被剥掉（否则会被当成文件名）。<br>✅ **v1.9.019 第七轮（p50）闭环**：子菜单里回车选中一项后，**ristretto 真把文件打开了** —— `cmdline: /usr/bin/ristretto /home/kali/pics/vector.svg`（绝对路径干净、无 `%f` 残留）、3s 后仍存活、窗口标题 `vector.svg - Image Viewer [4/4]`、截图里图真渲染出来了，日志 0 次 `symbol lookup error`（打包产物调外部 GUI 的环境变量没把子进程弄死）。🟡 本轮两条「断言失败」都不是产品问题，而是取证假设错了：窗格排序是**名称降序**（第一行不是 `photo_0.png`），而 Qt 的 `Right` 展开子菜单时**已经自动高亮第一项**，再 `Down` 一下就到第 2 项 |
 | L6 | 内嵌终端 | `$SHELL`、vim/htop 全屏程序、resize、关窗口后 shell 是否真退 | ✅ **v1.9.019 第七轮（p50/p51/p52b/p53/p54）闭环**：F4 开 dock、起的是 zsh、`$TERM`=xterm-256color、`stty size` 与 dock 尺寸一致；**缩放主窗口 2558x1387 → 1400x780 后 `stty size` 11 316 → 10 171**（PTY winsize 真的跟着改）；关 dock 后 zsh 25→25（会话保活，与 `closeEvent` 设计一致）；htop / less 界面正常；**在真 vim 里按 F7 不弹「新建文件夹」框、窗格目录零变化**（v1.9.017 守卫在跨进程的全屏程序里也拦得住）。本轮修掉的：**vim 完全不显示**（pyte 私有序列 → `Stream.feed` 抛异常 → 整段输出被丢，见 gotchas 第 52 条），源码版 p53 与 **v1.9.019 产物版 p54** 各复验一次（两轮都是 Traceback 0 次 + 亲眼核对裁图里 vim 首屏已画出）。⚠️ 残留一条未修：pyte 不实现备用屏（`\x1b[?1049h/l`），vim 退出后 `~` 与状态行会残留在 shell 屏幕上（真终端里会被还原），不影响输入链，已记进 unsolved-issues |
 | L7 | 图标与缩略图 | 确认「所有文件同图标」的实际观感；SVG/PNG/HEIC 缩略图是否出得来（qsvg 插件、pillow-heif） | 🟡 **图标那半仍未修**：非目录文件确实共用同一个通用图标（观感与 Windows 一致地差，属第三批的 `QFileIconProvider` 范围，见 §7）。✅ **HEIC/PNG 缩略图那半已闭环**（11a0eec / p56）：Qt 原生不认 `.heic`（`QImageReader.canRead=False`），走 Pillow + `pillow-heif` 回退成功，v1.9.019 产物在真机上截图亲眼看到图像渲染，并有用例 `test_heic_thumbnail_in_xlarge_mode` 断言「不是白纸文件图标 + 采样 ≥3 种颜色」 |
 | L8 | 桌面集成 | `--install-menu` 后应用菜单出现图标；GNOME 任务栏分组/窗口图标是否正确（WM_CLASS 那条） | ✅ **v1.9.016 修匹配键 + 本轮真机闭环**：`--install-menu` 生成的 `StartupWMClass=Pan4dex` 与运行窗口的 `WM_CLASS = "pan4dex-1.9.016-linux", "Pan4dex"` **第二项完全一致**，`Exec` 指着正跑的产物、文件无 CR。仍待的只剩 GNOME 上“图标真的分组了”的目视确认（230 是 Xfce，且未调 `setDesktopFileName`）|
-| L9 | 全盘搜索 | 搜 `/` 或 `/home`：`/proc`、`/sys` 是否被扫、耗时、能否中途取消 | ✅ **v1.9.018 第五/六轮闭环（p46 §4 + p48）**：搜索对话框真跑起来（`/home/kali/pics` + `*` → 「搜索完成，共找到 3 个文件」），上限提示「共 40,944 个，仅显示前 5000 项」、空目录「请输入搜索目录」、目录不存在校验均命中；**中途停止用 A/B 坐实**：同一查询（`/home/kali` + `*.txt`，全盘 130 万文件、纯遍历 57.8s）3s 就点停止 → **503** 项，不点 → **40,944** 项（`find` 数得 40,933，吻合 —— 不点那跑确实跑完了）。⚠️ 两条量出而未改：停止与跑完的状态栏文案**一模一样**（用户看不出这是部分结果）；搜 `/` 的 `/proc`/`/sys`/`/dev` 后果见 §2.5（内容搜索下不可中断）|
+| L9 | 全盘搜索 | 搜 `/` 或 `/home`：`/proc`、`/sys` 是否被扫、耗时、能否中途取消 | ✅ **v1.9.018 第五/六轮闭环（p46 §4 + p48）**：搜索对话框真跑起来（`/home/kali/pics` + `*` → 「搜索完成，共找到 3 个文件」），上限提示「共 40,944 个，仅显示前 5000 项」、空目录「请输入搜索目录」、目录不存在校验均命中；**中途停止用 A/B 坐实**：同一查询（`/home/kali` + `*.txt`，全盘 130 万文件、纯遍历 57.8s）3s 就点停止 → **503** 项，不点 → **40,944** 项（`find` 数得 40,933，吻合 —— 不点那跑确实跑完了）。⚠️ 两条量出而未改（**2026-11-10 均已改，待真机复测**）：①停止与跑完的状态栏文案一模一样 → 现在是两句话（「已停止，已找到 N 个文件（部分结果）」/「搜索完成，共找到 N 个文件」，用例 `tests/test_m6_tools.py::test_stopped_search_says_partial_results`）；②搜 `/` 时内容搜索不可中断 → 见本节 §2.5，`open` 前先用 stat 筛掉伪文件，「可取消」重新成立 |
 | L10 | 权限 | 右键「加运行权限」后从界面能否看出生效了（现在看不出，因为没有权限列） | ✅ **v1.9.018 第三轮首次命中（p41）**：`Menu` + 4 下方向键 + Return 后，`photo_2.png` 从 `-rw-rw-r--` 变 `-rwxrwxr-x`，日志「加运行权限: /home/kali/pics/photo_2.png」。**「界面上看不出来」这条结论不变**（没有权限列，第三批补）|
 | L11 | 中文输入 | ibus / fcitx5 桌面会话里真打一次中文，看能不能上屏 | ✅ v1.9.015 查清一半：PyQt6 wheel **自带的就是 `libibusplatforminputcontextplugin.so` + compose**，且它们确实进了 onefile 包（运行时解包目录里可见）→ ibus 桌面预期可用。fcitx5 的 Qt6 插件不在 wheel 里（只在系统的 `qt6/plugins/platforminputcontexts/`），而冻结后的查找路径只认包内 —— 这正是 `resources/tools/qt6-im-plugins` 该装的东西，而它仍不在仓库。剩下：ibus/fcitx5 两种桌面上真打一次字。<br>🟡 **v1.9.016 再加一条硬证据**：跑着的冻结产物 `/proc/<pid>/maps` 里**没有任何** fcitx/ibus/platforminputcontext 模块（系统里确实有 `libfcitx5platforminputcontextplugin.so`）→ 与上面的推断吻合。注意：ssh 起的进程环境里根本没有 `QT_IM_MODULE`（桌面会话才有），所以“真打一次字”必须在 `:10` 会话内做 |
 | L12 | Wayland vs X11 | 两种会话下都跑一遍：高 DPI、拖拽、`QT_QPA_PLATFORM` 自动选择 | ❓ **只剩 Wayland 半边**：230 上没有 Wayland 会话（`XDG_SESSION_TYPE=x11`），本轮只覆盖了 X11 + xrdp；高 DPI 在 96dpi 下也没得验 |
 | L13 | 大目录内存/CPU | 10 万条目目录（Linux 上 ext4/xfs 很常见）下列表与排序 | ✅ **v1.9.016 已过**：自造 `/home/kali/big100k`（10 万项，枚举本身 9.7s）后子进程 RSS ≈ 105MB、%CPU 6.0，列表能出、界面能继续操作（Down×30 不卡）。另 1 万项目录 0.6s 建完，导航无感 |
 | L14 | 无桌面环境（纯 TTY/SSH） | 明确「不支持」还是能起（offscreen） | ✅ **v1.9.014 已答**：`QT_QPA_PLATFORM=offscreen` 下全量 583 passed、`main.py` 能常驻；但那是测试路径，面向用户的“SSH 环下转发 X”不打算支持（记为设计边界） |
 | L15 | 单实例 / 多开 | Linux 上从终端起两次会怎样（两端都没做锁，记录事实即可） | ✅ **v1.9.016 已过**：起两次 = 2 个主窗口 / 4 个进程（onefile 引导 + 子进程各一对），无锁、互不干扰，与 Windows 一致 |
+| L16 | T6–T11 落地批的真机复测 | 代码与 offscreen 用例已闭环（2026-11-13，全量 883 passed / 5 skipped），**剩真机那一半**：大目录停摆是否真低于 0.4 秒、键位手测、系统文件管理器能不能真「选中」、切回超大图标是否恢复网格、退出有没有 fast-fail | 🔴 **未做**：逐项自查命令与判据见下面 **§5.3**。这批里 **T8 的 Linux `--select` 与 Windows argv 形式本轮故意没在真机拉起窗口**（会在用户桌面上弹窗），参数按各桌面公开用法拼，**属待实测不是既定事实**；**T6 第三步（把排序搬后台）等这批数字再决定，不凭外推动工**（本机最差 359ms 已达标，Linux 按倍率外推约 660ms 仍超判据） |
+
+---
+
+### 5.3 L16 逐项自查命令（T6–T11 落地批：已核对 vs 待实测）
+
+代码与 offscreen 用例 2026-11-13 已闭环（方案与落地回执见 `docs/improvement-plan-t6-t9.md` §9）。
+**下面两张表分开记**：上表是本轮真跑出来的，下表是需要真机/人手的那一半，每项附可照抄的命令。
+
+**已核对（Windows / Python 3.13 / offscreen，2026-11-13）**
+
+| 项 | 命令（仓库根目录） | 结果 |
+|---|---|---|
+| 全量 | `QT_QPA_PLATFORM=offscreen .venv/Scripts/python.exe -m pytest tests/ -q` | **883 passed / 5 skipped（134.15s）**，无需 `--ignore` |
+| T6 行落地 A/B | `.venv/Scripts/python.exe tmp/t6k_after_fix_probe.py` | 三轮交错：旧写法心跳最大 314/496/540ms，新写法 189/292/359ms，**每轮都赢**；最差 359ms < 400ms 判据。忙碌提示 6/6 次运行落地前都是「正在读取…」，枚举期间 `status_label` 真收到 1 次 paint |
+| T6 用例 | `... -m pytest tests/test_sort_landing.py -q` | 4 passed |
+| T7 键位 | `... -m pytest tests/test_view_keys.py -q` | 29 passed；对照组（`PYTHONPATH` 带 `tmp/`，`-p t7_ab_plugin`）红 **9** 条 |
+| T8 定位 | `... -m pytest tests/test_reveal.py -q` | 36 passed；对照组 `-p t8_ab_plugin` 红 **8** 条（28 passed） |
+| T9 预读 | `... -m pytest tests/test_shot_prefetch.py -q` | 8 passed；对照组 `-p t9_ab_plugin`：峰值 **6** 线程、`sip.delete` 后 **3 批全跑完**、2 次导航 **2 次刷新**（改后 ≤2 / <3 批 / 1 次） |
+| T10 flow | `... -m pytest tests/test_tile_view.py -q` | 15 passed；对照组 `-p t10_ab_plugin` 红 **4** 条用例（11 passed） |
+| T11 排空 | `... -m pytest tests/test_shutdown_drain.py -q` | 8 passed；对照组 `-p t11_ab_plugin` **4 failed / 3 passed / 1 skipped**（名单守卫两条 + 在飞目录占用送达 + 排空后池空闲） |
+
+> 对照组的跑法（`tmp/` 已 gitignore，插件只在 `pytest_collection_finish` 里把产品代码还原成旧样子）：
+> `PYTHONPATH="C:/workspace/Pan4dex;C:/workspace/Pan4dex/tmp" QT_QPA_PLATFORM=offscreen .venv/Scripts/python.exe -m pytest tests/test_reveal.py -q -p t8_ab_plugin`
+> **规矩**：新增用例必须先在对照组里红一次，否则观测量没有区分力（T11 第一版就是假绿，gotchas #65）。
+
+**待实测（需真机或人手；本轮故意没在用户桌面上拉起文件管理器窗口）**
+
+| # | 归属 | 要验的事 | 自查命令 | 判据 |
+|---|---|---|---|---|
+| 1 | T6 | Linux 本地 ext4 万条目停摆 | 在 230 上跑 `tmp/t6k_after_fix_probe.py`（靶子 `/home/kali/big10k`，L2 造过） | 单次最大停摆 **< 400ms** 且落地期间状态栏有「正在读取…」；超了才启动第三步（排序搬后台） |
+| 2 | T6 | SMB 同条数 A/B | 同上，靶子换成 NAS 的 `big10k`（**造/删需用户授权**，清理脚本 `tmp/p58z_cleanup_nas_target.py` 四道闸） | 与本地同量级（L2 已证停摆与慢位置无关）；L2 那三条判据不得退化 |
+| 3 | T7 | 四种视图键位手测 | 真机依次进 详情 / 简单列表 / 超大图标 / 平铺，点第 6 行 → `Ctrl+End` → 看末行是否**高亮选中**（不只是光标）→ `Ctrl+Home` 同理 | 光标、滚动、选中三者一起走；`Ctrl+Shift+End` 保持 Qt 默认（选区不扩展） |
+| 4 | T7 | 产物版单按 `End` 那条旧观察 | 冻结 ELF + 真 X：**先点列表里一行确认焦点在列表**，再按 `End` | 跳末行则 L2 那条 ⚠️ 归因于焦点混淆，可销；不跳则另立条目（源码版 offscreen 是跳的） |
+| 5 | T8 | Windows argv 形式能否选中带空格路径 | `explorer /select, "C:\...\My Documents\a b.txt"`（逗号后有空格，这是助手现在拼的形式） | 资源管理器打开且该文件**高亮** |
+| 6 | T8 | Windows UNC 路径能否选中 | `explorer /select, "\\nas\share\dir\f.txt"`（靶子需用户授权后造） | 同上 |
+| 7 | T8 | Linux KDE 选中 | `dolphin --select /path/to/f.txt` | 文件**高亮**，不只是打开目录 |
+| 8 | T8 | Linux GNOME 选中 | `nautilus --select /path/to/f.txt` | 同上 |
+| 9 | T8 | 回落路径与文案 | 在没有 dolphin/nautilus 的会话里右键「在文件管理器中显示」 | 打开所在目录，且状态栏明说「未能选中」 |
+| 10 | T10 | 切回超大图标看一眼 | 真机：简单列表 → 超大图标；平铺 → 超大图标 | 图标恢复**网格**、纵向滚动条在、横向滚动条消失 |
+| 11 | T11 | 退出路径有无 fast-fail | 真机开四窗格 + 超大图标 + 算几个目录占用，然后关程序；Windows 看事件查看器 / Linux 看退出码与 stderr | 无 **0xC0000409**、无 `QThread: Destroyed while thread is still running` |
+
+> 第 5–9 项的参数**全部标为待实测**：`dolphin --select` / `nautilus --select` 按各桌面公开用法拼，
+> 本轮没在真桌面验过。D-Bus `org.freedesktop.FileManager1.ShowItems` 是更稳的备选（GNOME 官方接口），
+> 同样未实测，验完再决定是否替换命令行方案（方案 §4.4）。
+> **Explorer 即使成功也常返回退出码 1**，不要拿 returncode 判成败（助手根本不等待子进程）。
 
 ---
 

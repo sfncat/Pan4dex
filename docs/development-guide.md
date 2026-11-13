@@ -86,7 +86,7 @@ QT_QPA_PLATFORM=offscreen pytest tests/test_dir_model.py -q
 QT_QPA_PLATFORM=offscreen pytest tests/ -q
 ```
 
-> **第 2 步现在跑得完**（2026-11-10 基线：793 passed / 4 skipped，见 `docs/testing.md` §5）。
+> **第 2 步现在跑得完**（2026-11-13 基线：883 passed / 5 skipped，见 `docs/testing.md` §5）。
 > 历史：v1.9.020–027 期间 `test_new_features.py` 与 `test_m5_tools.py` 里共 9 处「用两个文件
 > 路径构造 `FileCompareDialog`」会弹模态框把套件挂死，v1.9.028 修复、T4/T5 已销账
 > （`docs/todo.md`、gotchas 第 56 条）。规矩没变：**跑不完就是跑不过**，全量必须出汇总行。
@@ -362,7 +362,7 @@ debugpy.wait_for_client()  # 等待 VS Code 连接
 | `AGENTS.md` | 只改导航与铁律条目，**不往里复制正文** |
 | `docs/architecture.md` | 模块职责、数据流、关键设计决策变更时 |
 | `docs/gotchas.md` | 每踩过一个会复发的坑，当场记一条（编号连续，别插空号） |
-| `CHANGELOG.md` | 每次发布新增一节 |
+| `CHANGELOG.md` | 每次发布新增一节；攒着尚未出包的那批先写成一个「计划版本号 + 未发布」的顶部小节（此时不动 `VERSION`/`pyproject`/tag，出包时再把日期补上） |
 | `docs/feature-checklist.md` | 功能实现状态变更时（改了状态要连正文一起改） |
 | `docs/todo.md` | 待办的唯一正文：登记新条目、销账时状态改 ✅ 但**保留整行**（它是验收记录） |
 | `docs/linux-gap.md` | Linux 侧缺口关闭或真机验收有结论时 |
