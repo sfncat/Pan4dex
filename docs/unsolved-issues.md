@@ -512,7 +512,7 @@ PowerShell 7（pwsh）使用 **ConPTY 伪控制台**，GUI 子系统（`--window
 
 **相关文件**：
 - `main.py` — `_cli_output()` 简化为 print；当年新增的 `hide_console_if_standalone()` **现已改名
-  换实现**为 `free_console_in_gui_mode()`（`main.py:473`，思路从「隐藏窗口」变成「GUI 模式下
+  换实现**为 `free_console_in_gui_mode()`（定义在同一个 `main.py`，思路从「隐藏窗口」变成「GUI 模式下
   释放控制台」）；`main()` 中 GUI 初始化前调用它
 - `scripts/build_windows.py` — `--windowed` → `--console`
 - `pan4dex.spec` — `console=False` → `console=True`

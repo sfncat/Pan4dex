@@ -129,13 +129,13 @@
 | 能力 | Windows 现状 | Linux 现状 | 判定 | 证据 |
 |---|---|---|---|---|
 | 启动、四窗格、主题、快捷键 | 正常 | 同一套代码 | 🟡 offscreen 真机已跑通（v1.9.014：全量 572 passed、`main.py` 能起），**桌面会话待 L12** | 全仓平台分支不影响这些路径；§5.1 |
-| 崩溃日志 / faulthandler | 有（+ MessageBoxW 弹窗） | 有（写 `~/.config/pan4dex/logs`） | 🟢 | `main.py:24-50`、`main.py:100-190` |
-| 释放控制台 | `FreeConsole()` | 直接 return（本来就无台） | 🟢 | `main.py:369-382` |
+| 崩溃日志 / faulthandler | 有（+ MessageBoxW 弹窗） | 有（写 `~/.config/pan4dex/logs`） | 🟢 | `main.py:get_log_dir`/`setup_logging`、`main.py:install_crash_handler`/`install_signal_handlers` |
+| 释放控制台 | `FreeConsole()` | 直接 return（本来就无台） | 🟢 | `main.py:free_console_in_gui_mode` |
 | 应用菜单注册 | 不适用 | `--install-menu` + `scripts/install-linux.sh` 两条路 | 🟢 **v1.9.016 真机验通**（p38 第 7 段）：`--install-menu` 生成的 `.desktop` 里 `Exec` 指向正在跑的产物、`Icon=pan4dex`、`StartupWMClass=Pan4dex`，与窗口 `WM_CLASS = "pan4dex-1.9.016-linux", "Pan4dex"` 的**第二项完全一致**，文件无 CR；两条路的字段由用例钉住一致 | `main.py:_desktop_entry_text`；`tests/test_desktop_entry.py` 6 项 |
 | 任务栏分组 / 图标归属 | `AppUserModelID` | ~~`StartupWMClass=pan4dex` 与 WM_CLASS 对不上~~ → **v1.9.016 修**：Qt 在 X11 写 `(argv[0] basename, applicationName())`，匹配键只能取 `APP_NAME`（`Pan4dex`，区分大小写，不能取每版都变的产物名）；仍**未调 `setDesktopFileName`**（GNOME 上按启动器归类还差这一步） | 🟡 匹配键已对齐（真机 `xprop` 比对过），“图标真的分组了”仍待肉眼确认 | `main.py:_desktop_entry_text`、`packaging/pan4dex.desktop`；见 gotchas 第 48 条 |
-| 原生图标兜底 | `WM_SETICON` | 同一个函数在 Linux 抛异常被 `except` 吞掉 → 每次启动 2 条 `Native icon apply failed` warning | ⚠️ 小坑（该加平台守卫） | `main.py:64-97`、`main.py:533-600` |
-| 中文输入 | — | 启动时探测 fcitx5/ibus 设 `QT_IM_MODULE`；但 **Qt6 wheel 不带输入法插件**，需外部提供 `platforminputcontexts` 插件 | 🟡 依赖打包 | `main.py:511-520`、`scripts/build-linux-docker.sh:59-62` |
-| 默认字体 | `Microsoft YaHei UI`（仅 win32 设置） | 走系统默认 + QSS 的 `sans-serif` 兜底 | 🟢 | `main.py:566-572`、`config/theme_manager.py:93` |
+| 原生图标兜底 | `WM_SETICON` | ~~同一个函数在 Linux 抛异常被 `except` 吞掉 → 每次启动 2 条 `Native icon apply failed` warning~~ → **v1.9.015 修**：调用点本就在 `if sys.platform == "win32":` 块内，函数里 `sys.platform != "win32"` 早退是第二道防御（Linux 上 `from ctypes import wintypes` 直接 ImportError） | 🟢 | `main.py:apply_windows_native_icon`、`main.py:main` 内两个调用点 |
+| 中文输入 | — | 启动时探测 fcitx5/ibus 设 `QT_IM_MODULE`；但 **Qt6 wheel 不带输入法插件**，需外部提供 `platforminputcontexts` 插件 | 🟡 依赖打包 | `main.py:main` 内的 Linux 输入法探测段、`scripts/build-linux-docker.sh` 的 `ADD_SPECS`（`qt6-im-plugins` 那条） |
+| 默认字体 | `Microsoft YaHei UI`（仅 win32 设置） | 走系统默认 + QSS 的 `sans-serif` 兜底 | 🟢 | `main.py:main` 内默认字体段（仅 win32）、`config/theme_manager.py:93` |
 | 应用启动器默认项 | 记事本/计算器/资源管理器 | **空列表**，用户自配 | 🟡 有意为之 | `config/app_config.py:37-45` |
 
 ### 2.2 浏览与显示
@@ -184,7 +184,7 @@
 |---|---|---|---|---|
 | 高级搜索（名/内容/大小/日期） | `os.walk` | 同一套；**搜根目录会把 `/proc`、`/sys`、`/dev` 扫进去**（无跨设备开关、无排除表） | 🟡 「不可取消」那一半已修（2026-11-10），排除表仍未做：**只按名字筛时无害**（`/dev` 623 项 0.01s、`/proc` 212,416 项 5.25s、`/sys` 49,011 项 1.15s，全部自然结束）；p49 实测的「勾选内容搜索后 worker 阻塞在伪文件 `read` 里、`stop()` 叫不回」（`/dev/ptmx`、`/proc/<pid>/task/<pid>/fd/9`、`/sys/kernel/security/apparmor/revision`，stop 后 3s 仍 `isRunning()`）已修：`open` 之前用已取到的 `st_mode/st_size` 筛掉非常规文件与 0 字节，取消标志重新管得住（规与用例见 gotchas 第 58 条）。⚠️ 未修：伪文件仍会被**遍历**（不进 `open`），搜 `/` 依旧是分钟级全盘扫；跨设备开关与排除表（`/proc`、`/sys`、`/dev`、`/run`）另案 | `widgets/advanced_search.py` `SearchWorker.run()`；`widgets/advanced_search.py:87`；p49 探针（模块级 `open` 换带日志的壳 + 逐根单进程跑）；真机复测待跑（Windows 侧只能靠 FIFO 用例离线钉住）|
 | 搜索结果批量操作 | 🟢 v1.9.011 | 共用 `FileOpRunner` | 🟢 | `widgets/advanced_search.py` |
-| 压缩/解压（7z 后端） | 系统 7-Zip → 内置 `resources/tools/7z/7z.exe`（需同目录 `7z.dll`）或 `7za.exe` | 系统 `7z/7za/7zz/7zr` → 内置 `7zz`（**未入库**）→ 都没有则功能不可用 | 🟡 **Windows 内置已补齐**（T13，2026-11-13：构建机部署本机 7-Zip 26.04 的 `7z.exe`+`7z.dll`+`License.txt`，产物实测带上且包内那份能跑；049 及之前一直没带，装了系统 7-Zip 的机器看不出来）；Linux 内置 `7zz` 已在包内。**干净机器上真做一次压缩/解压仍待一轮** | `core/archive_ops.py:48-113`；`tests/test_archive_ops.py`（6 条，屏蔽系统 PATH 与 Program Files 后验包内兜底，含「什么都不带 → None」的对照组） |
+| 压缩/解压（7z 后端） | 系统 7-Zip → 内置 `resources/tools/7z/7z.exe`（需同目录 `7z.dll`）或 `7za.exe` | 系统 `7z/7za/7zz/7zr` → 内置 `7zz`（**未入库**）→ 都没有则功能不可用 | 🟡 **Windows 内置已补齐**（T13，2026-11-13：构建机部署本机 7-Zip 26.04 的 `7z.exe`+`7z.dll`+`License.txt`，产物实测带上且包内那份能跑；049 及之前一直没带，装了系统 7-Zip 的机器看不出来）。Linux 侧：内置 `7zz` 在包内（条目实测 1），**从 1.9.051 起包内不再夹带 Windows 版那三个文件**（T14 销账，构建脚本改成只暂存 `7zz`；050 及之前整目录打包，多带 1,117,048 B 死重量，功能无害）。**仍未实测**：`7zz` 解压到 `_MEIPASS` 后的执行位（构建时已 `install -m 0755`，PyInstaller 是否带进包内未验）；**干净机器上真做一次压缩/解压仍待一轮**（并进 L16） | `core/archive_ops.py:48-113`；`tests/test_archive_ops.py`（6 条，屏蔽系统 PATH 与 Program Files 后验包内兜底，含「什么都不带 → None」的对照组）；`tests/test_build_linux_docker.py`（8 条，Linux 打包清单守卫） |
 | 校验和 / 批量改名 / 文件比较 / 目录同步 / 分割合并 / 时间戳 | 纯 Python | 平台无关 | 🟢 | `widgets/*.py`（这些文件里平台分支数 = 0） |
 | 内嵌终端 | `pywinpty`（winpty 层，历史上脆弱） | `pty` + `fcntl` + `termios` 真 PTY；zsh 补齐噪声用临时 `ZDOTDIR` 关掉 | 🟢 **Linux 路径更正** | `widgets/terminal_panel.py:143-245,341-362` |
 | 终端内自动切英文输入法 | IMM/TSF 双路径 | 无（IBus/fcitx 不管） | 🟡 可接受降级 | `widgets/terminal_panel.py:37-127,684-707` |
@@ -206,7 +206,7 @@
 - 44 个扩展名的 Linux 候选应用表（gedit/gnome-text-editor/mousepad/leafpad/xed/kate…），
   不依赖桌面集成（`config/file_associations.py:33-80`）
 - `--install-menu` 会先补 `hicolor/index.theme`——没有它 `gtk-update-icon-cache` 报
-  "No theme index file"、桌面环境找不到图标（`main.py:283-306`）
+  "No theme index file"、桌面环境找不到图标（`main.py:_install_menu_linux` 的第 0 步）
 - Linux 的 zsh 补齐预测文本用临时 `ZDOTDIR` 包一层关掉（`widgets/terminal_panel.py:348-362`）
 
 ---
@@ -425,8 +425,8 @@ offscreen 下能起，日志里 `延迟创建 pane2-4: 189.2ms` 正常完成。
    改成转发它（不再是第二套实现）；`AGENTS.md`/README/`docs/development-guide.md` 已同步，
    spec 降为“手动/降级路线”并修掉了不存在的 `--icon=resources/icons/pan4dex.ico`。
 4. ✅ `apply_windows_native_icon()` 加了 `sys.platform != "win32"` 早退。~~每次启动白抛两次~~
-   —— **本条结论已推翻**：两个调用点（`main.py:584-601`）早已在 `if sys.platform == "win32":`
-   块内，Linux 上根本不会被调到。现在这个守卫是防御性的（防未来新增未罩住的调用点），
+   —— **本条结论已推翻**：两个调用点（`main.py:main` 内 `if sys.platform == "win32":` 块，即
+   `_reapply_window_icon` 与它的首次调用）本就在同一守卫内，Linux 上根本不会被调到。现在这个守卫是防御性的（防未来新增未罩住的调用点），
    不是修 bug。
 
 **第一批修完后真机额外抓出的（不属原计划）**：崩溃日志不可写导致启动即死（3.7）、
