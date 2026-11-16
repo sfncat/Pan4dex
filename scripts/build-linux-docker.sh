@@ -162,11 +162,29 @@ $DOCKER rm -f ${CONTAINER_NAME} 2>/dev/null || true
 # 在构建日志里，否则没人知道这个产物和老产物的能力面不一样。
 # resources/themes 是早年遗留项（主题实际来自 qdarkstyle 包，代码不读该目录），已删。
 # 格式：源目录|包内目标|人话名字（缺了会少什么能力）
+#
+# T14：内置 7z 不直接指 resources/tools/7z —— 那是构建机为 Windows 包放 7z.exe/7z.dll/
+# License.txt 的目录，整目录带进 Linux 包会白多 1,115,840 字节（1.9.050 实测），而 Linux
+# 侧只用 7zz（core/archive_ops.py:_resource_7z() 非 Windows 分支只找这一个名字）。
+# 镜像出一个只含 7zz 的暂存目录、仍按目录打包：收集形式与改动前一致，顺带补上执行位
+# （仓库里的 7zz 是 644，本来就没带执行位）。暂存目录在 build/ 下（gitignore，且 Linux
+# 构建的 rsync 排除 build/，不会与 Windows 构建的临时移出互相污染）。
+LINUX_7Z_STAGE="build/7z-linux-only"
+rm -rf "$LINUX_7Z_STAGE"
+mkdir -p "$LINUX_7Z_STAGE"
+if [ -f resources/tools/7z/7zz ]; then
+    install -m 0755 resources/tools/7z/7zz "$LINUX_7Z_STAGE/7zz"
+else
+    # 空目录必须删掉：下面用 `[ -d "$src" ]` 判「存在才带」，留着空目录会既不打 7zz
+    # 也不报「本包不含」，日志说假话（Windows 构建与 Linux 构建并行时 7zz 正被临时移出，
+    # 就是这个分支）
+    rm -rf "$LINUX_7Z_STAGE"
+fi
 ADD_SPECS=(
     "resources/icons|resources/icons|应用图标（缺了只剩任务栏默认图标）"
     "resources/fonts|resources/fonts|内置 CJK 字体（目标机无中文字体时避免中文方块）"
     "resources/tools/exiftool-linux|resources/tools/exiftool-linux|内置 ExifTool（拍摄日期元数据）"
-    "resources/tools/7z|resources/tools/7z|内置 7zz（压缩/解压兜底）"
+    "build/7z-linux-only|resources/tools/7z|内置 7zz（压缩/解压兜底）"
     "resources/tools/qt6-im-plugins|PyQt6/Qt6/plugins/platforminputcontexts|Qt6 输入法插件（不带则无法输入中文）"
 )
 DATA_ARGS=()
