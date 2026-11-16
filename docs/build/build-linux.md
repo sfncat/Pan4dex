@@ -151,6 +151,38 @@ cp ~/pan4dex-build/releases/pan4dex-<版本>-linux /mnt/c/workspace/Pan4dex/rele
 - **输入**：Qt 输入插件（`libibus`/`libcompose`）随 PyQt6 wheel 已打进包；`main.py` 启动会自动探测系统 `fcitx5`/`ibus-daemon` 并设 `QT_IM_MODULE`。但**输入法引擎（ibus/fcitx + 拼音词库）是系统服务，无法打进单文件包**——目标机需运行相应输入法才能“打字中文”。
   - 想支持 fcitx5 桌面：把对应 Qt6 插件放进 `resources/tools/qt6-im-plugins/`，构建脚本会一并打入 `PyQt6/Qt6/plugins/platforminputcontexts`。
 
+## 内置工具（构建机本地部署，不入库）
+
+`resources/tools/` 整体被 `.gitignore` 排除，`build-linux-docker.sh` 的 `ADD_SPECS` 按「存在才带」
+收集；缺了不打断构建，只在日志打一行 `! 本包不含 …` —— **看不到这行才说明真带上了**。
+
+| 包内路径 | 构建机上要放什么 | 少了会少什么能力 |
+|---|---|---|
+| `resources/tools/exiftool-linux/` | Linux 版 ExifTool（整个 Perl 包目录，实测 247 个条目） | 「拍摄日期」列只能用目标系统自装的 exiftool |
+| `resources/tools/7z/7zz` | 7-Zip 的 Linux 版**单文件** | 没装系统 `7z/7za/7zz/7zr` 的机器上压缩/解压不可用（`core/archive_ops.py:find_7z()` 三级兜底全空） |
+| `PyQt6/Qt6/plugins/platforminputcontexts` | `resources/tools/qt6-im-plugins/` 里的 Qt6 输入法插件 | fcitx5 桌面下打不了中文 |
+| `resources/fonts/`、`resources/icons/` | 随仓库入库，不需要部署 | 中文方块 / 任务栏默认图标 |
+
+**内置 7z 走「只暂存 `7zz`」，不是整目录**（待办 T14，1.9.051 起）：构建机为了 Windows 包会在
+`resources/tools/7z/` 里同时放 `7z.exe`/`7z.dll`/`License.txt`，整目录 `--add-data` 会把这三个
+Linux 用不到的文件一起打进 Linux 包（1.9.050 实测 +1,115,840 B）。脚本现在先把 `7zz`
+`install -m 0755` 到 `build/7z-linux-only/`，再让清单指这个暂存目录 —— 按目录打包的形式不变，
+只是把对侧文件挡在外面；`build/` 既被 gitignore 也被 Linux 构建的 rsync 排除，所以与 Windows 构建
+「临时移出 Linux 二进制」那套动作互不污染。`7zz` 不在时暂存目录会被删掉，好让日志照实报
+「本包不含」而不是假装带上。守卫：`tests/test_build_linux_docker.py`（8 条，含两组改前对照组）。
+
+**验收怎么查**（不靠体积猜）：
+
+```bash
+python - <<'PY'          # 计数按包内字节出现次数：Windows 专用那三个应为 0
+keys = [b"7z.exe", b"7z.dll", b"License.txt", b"resources/tools/7z/7zz", b"exiftool-linux"]
+data = open("releases/pan4dex-<版本>-linux", "rb").read()
+print({k.decode(): data.count(k) for k in keys})
+PY
+```
+
+期望 `7z.exe`/`7z.dll`/`License.txt` 各 **0**、`resources/tools/7z/7zz` **1**、`exiftool-linux` **247**。
+
 ## 运行产物（验证效果）
 
 - **原生 WSLg 直跑**（开发最快）：Ubuntu 内 `DISPLAY=:0`，GUI 程序会直接在 Windows 弹窗；需该 Ubuntu 已装 `fonts-noto-cjk`（显示）和 `ibus ibus-libpinyin`（输入，`ibus-daemon` 跑起来）。GUI 要在**开着的终端里前台运行**。

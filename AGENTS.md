@@ -28,7 +28,7 @@
 ## 这是什么
 
 跨平台四窗格文件管理器（对标 Windows 的 Q-Dir）。Python 3.11+（开发机 3.13，依赖由 uv 管理）
-+ PyQt6，PyInstaller 冻结产物（Linux 单文件 ELF / Windows onedir + zip）。当前版本 `1.9.050`，
++ PyQt6，PyInstaller 冻结产物（Linux 单文件 ELF / Windows onedir + zip）。当前版本 `1.9.051`，
 开发分支就是 `master`（2026-09-24 起不再走 `dev/*`，动手前先 `git pull --ff-only`）。
 
 ## 去哪读
@@ -40,7 +40,7 @@
 | 上手跑起来、日常命令 | `QUICKSTART.md` |
 | 开发流程、加测试、代码规范、文档维护 | `docs/development-guide.md`；测试策略见 `docs/testing.md` |
 | 某功能做没做、还剩什么 | `docs/feature-checklist.md`（状态表）；**待办看 `docs/todo.md`**；Linux 半边另看 `docs/linux-gap.md` |
-| 为什么不能那么写（踩过一次的都在这） | `docs/gotchas.md`（#1–#65，第六/七节是模型与生命周期） |
+| 为什么不能那么写（踩过一次的都在这） | `docs/gotchas.md`（#1–#67，第六/七节是模型与生命周期） |
 | 发布改了什么 | `CHANGELOG.md` |
 | 版本更新机制（230 更新服务器 + 客户端自动更新） | `docs/update.md` |
 | 现在还挂着的问题 | `docs/unsolved-issues.md` |
@@ -102,7 +102,7 @@ bash scripts/build-linux-docker.sh              # Linux 唯一入口 → release
 python scripts/build_windows.py                 # Windows 本机 → releases/pan4dex-<版本>/ + 同名 .zip
 ```
 
-> 全量那条**现在跑得完**，无需 `--ignore`（2026-11-13 基线：**895 passed / 5 skipped**，
+> 全量那条**现在跑得完**，无需 `--ignore`（2026-11-16 基线：**903 passed / 5 skipped**，
 > 见 `docs/testing.md` §5）。历史：v1.9.020–027 曾因「用两个文件路径构造 `FileCompareDialog`」
 > 弹模态框挂住 `test_new_features.py` / `test_m5_tools.py` 两档，v1.9.028 修复、T4/T5 已销账
 > （gotchas #56）。规矩没变：**跑不完就是跑不过**，报「全量通过」必须真拿到汇总行。
