@@ -162,6 +162,7 @@
 | 面包屑地址栏 | 未做 | 未做 | 🔴 plan §7 欠账 | — |
 | 路径补全 | 当前目录一层 | 同（`QDir` + `/`） | 🟢 | `widgets/path_bar.py:214-245` |
 | 在系统文件管理器中显示 | `explorer /select,` **选中该文件** | `xdg-open 父目录`：只打开不选中，语义不对等（KDE 有 `dolphin --select`，GNOME 有 `nautilus --select`） | 🟡 | `core/pane.py:1854-1865`、`widgets/advanced_search.py:761-767` |
+| 地址栏访问局域网共享（`\\服务器\共享`） | 🟢 1.9.052 起实装（`WNetAddConnection2W` + 凭据管理器，首次问口令） | 🟡 **只认写法、不连**：`core/net_share.py:is_supported_platform()` 返回 False，状态栏给一句「先用系统命令挂载再进目录」的指引，不会当成无效路径 | 🟡 待 **T15**（代挂载：`mount -t cifs`/`GVfs` 哪条路都要目标机实测；口令存钥匙环还缺一个依赖拍板） | `core/net_share.py` + `docs/design-unc-share-access.md` §9/§11；用例 `tests/test_net_share.py` 的非 Windows 分支 |
 | 在终端中打开 | `wt`/`pwsh`/`cmd` | `xdg-mime query default x-scheme-handler/terminal` + 12 个候选终端扫描 | 🟢 反而更全 | `core/pane.py:2488-2535` |
 
 ### 2.4 文件操作
@@ -403,6 +404,7 @@ offscreen 下能起，日志里 `延迟创建 pane2-4: 189.2ms` 正常完成。
 | 9 | T8 | 回落路径与文案 | 在没有 dolphin/nautilus 的会话里右键「在文件管理器中显示」 | 打开所在目录，且状态栏明说「未能选中」 |
 | 10 | T10 | 切回超大图标看一眼 | 真机：简单列表 → 超大图标；平铺 → 超大图标 | 图标恢复**网格**、纵向滚动条在、横向滚动条消失 |
 | 11 | T11 | 退出路径有无 fast-fail | 真机开四窗格 + 超大图标 + 算几个目录占用，然后关程序；Windows 看事件查看器 / Linux 看退出码与 stderr | 无 **0xC0000409**、无 `QThread: Destroyed while thread is still running` |
+| 12 | T14 | 包内 `7zz` 到底有没有执行位（1.9.051 构建时补的 `install -m 0755` 有没有被 PyInstaller 带进包内） | 先证前置：`command -v 7z 7za 7zz 7zr` 输出为空（这台机器没有系统 7z）。再跑 1.9.051 的 ELF，右键一个文件 → 压缩，然后解压回去。取证（程序运行期间才有 `_MEI` 目录）：`find /tmp -maxdepth 1 -name '_MEI*' -exec ls -l {}/resources/tools/7z/7zz \;` | 压缩与解压都成功 = 执行位带进来了（这是判据）；`ls -l` 里那一位 `-rwxr-xr-x` 只是取证。若失败而 `command -v` 确实为空，说明包内 `7zz` 不可执行，要回到构建脚本换「按文件 `--add-data`」那条被否决的路子重测 |
 
 > 第 5–9 项的参数**全部标为待实测**：`dolphin --select` / `nautilus --select` 按各桌面公开用法拼，
 > 本轮没在真桌面验过。D-Bus `org.freedesktop.FileManager1.ShowItems` 是更稳的备选（GNOME 官方接口），

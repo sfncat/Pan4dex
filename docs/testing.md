@@ -145,11 +145,14 @@ Qt 对象，控件用例用 `qtbot`）。
 QT_QPA_PLATFORM=offscreen pytest tests/ -q
 ```
 
-> **当前基线（2026-11-16 实测）**：上面这条**能跑完**，不需要任何 `--ignore`：
-> Windows / Python 3.13（`.venv`）/ offscreen → **903 passed, 5 skipped in 136.43s**
-> （1.9.051 发布前置、版本号改完后那轮。上一基线是 2026-11-13 的 895 passed / 5 skipped
+> **当前基线（2026-11-17 实测）**：上面这条**能跑完**，不需要任何 `--ignore`：
+> Windows / Python 3.13（`.venv`）/ offscreen → **988 passed, 5 skipped in 142.07s**
+> （1.9.052 发布前置那轮。上一基线是 2026-11-16 的 903 passed / 5 skipped（136.43s，1.9.051
+> 发布前置）；本轮 +85 条是地址栏访问局域网共享的 `tests/test_net_share.py`（纯函数 / 错误码
+> 分档表 / 编排 / 离屏接线 / 真对话框控件五节，含 ctypes 结构体偏移守卫），三轮改前对照组各有区分力。
+> 再往前：2026-11-13 的 895 passed / 5 skipped
 > （1.9.050 发布前置那轮 136.98s；同日 T12/T13 落地那轮 125.36s，新增 12 条：构建脚本守卫
-> `test_build_windows.py` 6、包内 7-Zip 兜底 `test_archive_ops.py` 6）；本轮 +8 条是 T14 的
+> `test_build_windows.py` 6、包内 7-Zip 兜底 `test_archive_ops.py` 6）；051 那轮 +8 条是 T14 的
 > Linux 构建脚本守卫 `tests/test_build_linux_docker.py`，每条都跑过改前对照组。
 > 再往前是 2026-11-10 的 800 passed / 5 skipped → T6–T11 那轮 +83）。
 > 命令用 venv 的解释器：`QT_QPA_PLATFORM=offscreen .venv/Scripts/python.exe -m pytest tests/ -q`

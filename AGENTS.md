@@ -28,7 +28,7 @@
 ## 这是什么
 
 跨平台四窗格文件管理器（对标 Windows 的 Q-Dir）。Python 3.11+（开发机 3.13，依赖由 uv 管理）
-+ PyQt6，PyInstaller 冻结产物（Linux 单文件 ELF / Windows onedir + zip）。当前版本 `1.9.051`，
++ PyQt6，PyInstaller 冻结产物（Linux 单文件 ELF / Windows onedir + zip）。当前版本 `1.9.052`，
 开发分支就是 `master`（2026-09-24 起不再走 `dev/*`，动手前先 `git pull --ff-only`）。
 
 ## 去哪读
@@ -40,7 +40,7 @@
 | 上手跑起来、日常命令 | `QUICKSTART.md` |
 | 开发流程、加测试、代码规范、文档维护 | `docs/development-guide.md`；测试策略见 `docs/testing.md` |
 | 某功能做没做、还剩什么 | `docs/feature-checklist.md`（状态表）；**待办看 `docs/todo.md`**；Linux 半边另看 `docs/linux-gap.md` |
-| 为什么不能那么写（踩过一次的都在这） | `docs/gotchas.md`（#1–#67，第六/七节是模型与生命周期） |
+| 为什么不能那么写（踩过一次的都在这） | `docs/gotchas.md`（#1–#68，第六/七节是模型与生命周期） |
 | 发布改了什么 | `CHANGELOG.md` |
 | 版本更新机制（230 更新服务器 + 客户端自动更新） | `docs/update.md` |
 | 现在还挂着的问题 | `docs/unsolved-issues.md` |
@@ -56,6 +56,9 @@ main.py                         入口：CLI 参数（--version/--info/--install
    文件操作   core/file_operations.py  纯执行层，不知道线程也不认识 Qt
               core/file_op_runner.py   后台线程 + 进度对话框 + 冲突询问 + 跨线程回投
    跨端判据   core/mounts.py     is_remote_location()
+   共享访问   core/net_share.py  parse_unc() · plan_open() · retry_with_credential()（纯执行层：
+                                不弹窗、不打印口令；能不能问口令只由 may_ask_credentials() 一处判）
+                                └─ widgets/net_credentials_dialog.py  用户名/密码框（只出结果属性）
    系统定位   core/reveal.py     reveal_in_file_manager()（窗格与高级搜索共用这一份）
    视图键位   widgets/view_keys.py  handle_edge_jump()（详情视图与缩略图/平铺共用）
    生命周期   core/lifecycle.py  call_later() · exec_and_drain() · safe_event_filter
@@ -92,6 +95,11 @@ main.py                         入口：CLI 参数（--version/--info/--install
 10. 新增后台线程池必须同时登记进 `core/lifecycle.py:_pools_to_drain()`（**含每个控件自带的池**），
     否则退出时未派发的跨线程投递留到解释器收尾阶段被 Qt 释放 → Windows fast-fail（0xC0000409）。
     判「Qt 对象还活着」要 `sip.isdeleted`，weakref 判不出 `sip.delete`。（#64、#65）
+11. 用 ctypes 碰 Windows API：结构体偏移与 sizeof **以探针 dump 为准**，不按头文件「常见转写」手抄
+    （`CREDENTIALW` x64 是 80 字节，`CredentialBlobLength` 之后的 4 字节空洞要有显式占位字段，抄成
+    72 会让每次 `CredWriteW` 都返回 87）；返回值可能是哨兵的必须设 `restype`（`GetFileAttributesW`
+    不设就按 `c_int` 取，`0xFFFFFFFF` 变 -1，「打不开」被读成「是个目录」）；DLL 句柄用
+    `use_last_error=True` + `ctypes.get_last_error()`。每个字段偏移写进断言，别只测 happy path。（#68）
 
 ## 命令
 
@@ -102,7 +110,7 @@ bash scripts/build-linux-docker.sh              # Linux 唯一入口 → release
 python scripts/build_windows.py                 # Windows 本机 → releases/pan4dex-<版本>/ + 同名 .zip
 ```
 
-> 全量那条**现在跑得完**，无需 `--ignore`（2026-11-16 基线：**903 passed / 5 skipped**，
+> 全量那条**现在跑得完**，无需 `--ignore`（2026-11-17 基线：**988 passed / 5 skipped**，
 > 见 `docs/testing.md` §5）。历史：v1.9.020–027 曾因「用两个文件路径构造 `FileCompareDialog`」
 > 弹模态框挂住 `test_new_features.py` / `test_m5_tools.py` 两档，v1.9.028 修复、T4/T5 已销账
 > （gotchas #56）。规矩没变：**跑不完就是跑不过**，报「全量通过」必须真拿到汇总行。
