@@ -1559,6 +1559,48 @@ PyInstaller 清 `dist` 撞上正在运行的 `dist\pan4dex\pan4dex.exe` 占住 `
 守卫：`tests/test_build_linux_docker.py`（8 条；对照组：清单改回整目录写法红 2 条、删掉"空目录删除"
 的 else 分支红 4 条）。部署与自查命令见 `docs/build/build-linux.md`「内置工具」一节。
 
+### 68. ctypes 结构体偏移要 dump 不要转写；`GetFileAttributesW` 不设 restype 会把失败读成功
+
+**现象**：地址栏访问 `\\NAS\photo` 这条链路上，三处「看起来完全正常」的写法各自埋着一个静默失效：
+
+1. 按 `wincred.h` 的常见转写把 `CREDENTIALW` 抄成 `DWORD Type`，x64 下 sizeof 从 80 变 72，
+   `CredWriteW` 对**每一次**写入返回 87（`ERROR_INVALID_PARAMETER`）。错误码合法、返回值合法、
+   异常没有，只是凭据永远存不下来。
+2. `k32.GetFileAttributesW` 不显式设 `restype`，默认按 `c_int` 取返回值，于是失败哨兵
+   `0xFFFFFFFF` 到 Python 手里是 **-1**，`attr == INVALID_FILE_ATTRIBUTES`（`0xFFFFFFFF`）永不成立
+   —— 每个「打不开」的路径都被判成「是个能进的目录」，可达性判定全线说谎，且不会抛错。
+3. `WNetAddConnection2W` 的 `dwFlags` 照抄示例里的 `CONNECT_UPDATE_PROFILE`：连接本身会成功，
+   但这条共享被写进**登录脚本**——用户下次登录会自动重连，等于应用悄悄改了人家的登录环境，
+   而且用户在 `net use` 里看得见、在「凭据」里找不到是谁加的。实测 `flags=0` 就是一次性会话：
+   连上时 `net use` 可见，cancel 之后干净消失。
+
+**根因**：ctypes 的 `argtypes`/`restype` 只是**转换声明**，不是校验。声明与真实 ABI 不一致时，
+ctypes 不会报错，只会按你声明的宽度去解释那块内存——Windows API 又大量用「返回值就是错误码/
+哨兵」的约定，于是转换错误直接落进业务判断里。头文件的「常见转写」还有一层坑：同一份结构体在
+不同 SDK 版本、不同指针宽度下字段序与对齐都可能被手写注释带偏。
+
+**规矩**：
+
+1. **别相信手抄的字段表，相信 `ctypes.sizeof` + `offsetof` 实测。** 结构体里每个字段的偏移用
+   探针 dump 一次（`getattr(cls, name).offset`），和代码里的声明一起写进用例断言，改错就红。
+   `CREDENTIALW` 在 x64 是 **80 字节**，`CredentialBlobLength` 之后有 4 字节空洞，必须显式写一个
+   `_pad0` 占位字段——它不是摆设，删掉它整条凭据链路就废。守卫在
+   `tests/test_net_share.py::test_credential_struct_offsets_guard`（同时断言 sizeof 80、五个字段偏移、
+   `NETRESOURCEW` 48）。
+2. **WinAPI 返回值只要可能是哨兵，就必须显式 `restype`。** `GetFileAttributesW`/`FindFirstFileW`
+   这类返回 `DWORD`/`HANDLE` 的，一律 `restype = wintypes.DWORD`（或对应类型），别指望默认的
+   `c_int`。写判据时优先用「命中哨兵即失败」而不是「非零即成功」。
+3. **Windows 网络/凭据 API 的错误码要按本机实测建档**（0/5/50/52/53/58/64/67/85/86/161/487/1168/
+   1208/1219/1222/1223/1231/1315/1326/1327/1328/1331/1334/1335/2250），别按文档里"应该返回什么"分支。
+   两个反直觉的：**1168**（`ERROR_NOT_FOUND`）在删除凭据时是**成功**语义（幂等），当失败处理会让
+   「忘记凭据」永远报错；空口令能写进去，读回来 blob 长度为 0，若只按「长度非 0 才是合法记录」判
+   就把 guest 共享的合法凭据当损坏丢弃了（`credential_blob_shape_ok()` + `read()` 的 size==0 分支）。
+4. 这类 API 一律 `ctypes.WinDLL("advapi32", use_last_error=True)` + `ctypes.get_last_error()`，
+   默认构造下 `GetLastError` 会被 ctypes 自己的调用踩脏，拿到的是无关错误码。
+
+**验收**：跨进程回读——A 进程写、**新起**的 B 进程读（同进程读会掩盖「凭据没真的落盘」），
+删完再全量枚举一次确认没留残留项（`tmp/net_share_cred_roundtrip.py` + `_cred_child.py`）。
+
 ---
 
 ## 八、回归防护机制

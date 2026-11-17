@@ -12,7 +12,7 @@ from PyQt6.QtWidgets import (
     QApplication, QSplitter, QDialog, QTableWidget, QHeaderView, QPushButton,
     QStyledItemDelegate
 )
-from PyQt6.QtCore import Qt, QDir, QMimeData, pyqtSignal, pyqtSlot, QThread, QPoint, QEvent, QSortFilterProxyModel, QModelIndex, QPersistentModelIndex, QItemSelectionModel, QUrl, QByteArray, QMetaObject, Q_ARG, QTimer
+from PyQt6.QtCore import Qt, QDir, QMimeData, pyqtSignal, pyqtSlot, QThread, QPoint, QEvent, QSortFilterProxyModel, QModelIndex, QPersistentModelIndex, QItemSelectionModel, QUrl, QByteArray, QMetaObject, Q_ARG, QTimer, QEventLoop
 import os
 import sys
 
@@ -27,6 +27,8 @@ from core.file_operations import (
 from core.file_op_runner import FileOpRunner
 from core import archive_ops
 from core.reveal import reveal_in_file_manager, win_unc_fix as reveal_win_unc_fix
+from core import net_share
+from widgets.net_credentials_dialog import NetCredentialsDialog
 from core.lifecycle import call_later, safe_event_filter
 from config.theme_manager import ThemeManager
 
@@ -1205,8 +1207,76 @@ class Pane(QWidget):
             # Linux 真机 GUI 验收里这个坑拦住了三轮自动化验收（按键送不到列表）。
             self.tree_view.setFocus()
         else:
+            if self._try_unc_path(path):
+                return
             # 路径无效，恢复原路径（焦点留在路径栏，方便接着改）
             self.path_bar.set_path(self.current_path)
+
+    def _set_share_status(self, text: str):
+        """状态栏说一句共享相关的话（走窗格自己的 status_label，不动计数逻辑）"""
+        self._status_summary = text
+        self._update_selection_status()
+
+    def _try_unc_path(self, path: str) -> bool:
+        r"""地址栏敲的是 `\\主机\共享` 时接管这次失败：连一次，按档决定要不要问凭据。
+
+        返回 True = 已经给用户交代过了（导航成功 / 状态栏文案 / 弹过凭据框），
+        False = 这不是 UNC，调用方保持今天的行为。
+
+        成功路径一个字没动 —— `os.path.isdir` 那一刀在本方法之前，所以来宾共享和
+        「系统里已经连着」的情形走的还是老路子，这里只处理 `isdir` 已经说了「不」的。
+        失败一律**保留用户输入**（不 `set_path` 回原路径）：共享名打错时，抹掉输入
+        等于让人把整串重打一遍。
+        """
+        if net_share.parse_unc(path) is None:
+            # 不是 UNC —— 状态栏一个字都不该闪，别让 `C:\nope` 这种手误看见「正在连接」
+            return False
+        self._set_share_status(r"正在连接 %s…" % path)
+        # 同步等一次是拍板过的（docs/design-unc-share-access.md §9 第 4 条）：首次联系
+        # 一台机器实测可能到 2.7 秒。不泵一次事件，「正在连接」这几个字根本画不到屏上。
+        # 排除用户输入事件，免得这 2.7 秒里同一个回调被再触发一次。
+        QApplication.processEvents(QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents)
+        attempt = net_share.plan_open(path)
+        if not attempt.is_unc:
+            # 设备前缀形式（`\\?\UNC\…`）：不是用户手打的形状，交回原来的处理
+            self.update_status_bar()
+            return False
+        if attempt.ok:
+            self.navigate_to(attempt.target_path)
+            self.tree_view.setFocus()
+            return True
+        if attempt.may_ask:
+            if self._ask_share_credentials(attempt):
+                return True
+        self._set_share_status(net_share.failure_text(attempt.category, attempt.unc,
+                                                      attempt.win_err))
+        return True
+
+    def _ask_share_credentials(self, attempt) -> bool:
+        """弹凭据框并据此再连一次。
+
+        返回 True = 这一步已经把话说完（导航成功，或失败原因已写进状态栏）；
+        返回 False = 用户按了取消，由调用方说明「这里需要用户名和密码」。
+        """
+        unc = attempt.unc
+        dlg = NetCredentialsDialog(self, attempt)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return False
+        if dlg.remember:
+            net_share.store_credential(unc.server, unc.share, dlg.username, dlg.password)
+        else:
+            # 没勾「记住」= 这次是一次性的。已存的旧条目要删掉，否则下次 plan_open
+            # 会拿旧口令静默试一次，用户看着像「我刚打的口令没生效」。
+            net_share.forget_credential(unc.server, unc.share)
+        ok, category, code = net_share.retry_with_credential(
+            unc, dlg.username, dlg.password, attempt.category)
+        if not ok:
+            # 换过凭据之后失败原因可能已经变了（1219 → 86），要说的是新那句
+            self._set_share_status(net_share.failure_text(category, unc, code))
+            return True
+        self.navigate_to(net_share.full_path(unc))
+        self.tree_view.setFocus()
+        return True
     
     def _on_item_activated(self, index):
         """Enter/双击同样打开；Ctrl+Enter 保留 Qt 内建行为不处理"""
