@@ -28,6 +28,7 @@ from core.file_op_runner import FileOpRunner
 from core import archive_ops
 from core.reveal import reveal_in_file_manager, win_unc_fix as reveal_win_unc_fix
 from core import net_share
+from core import rdp_files
 from widgets.net_credentials_dialog import NetCredentialsDialog
 from core.lifecycle import call_later, safe_event_filter
 from config.theme_manager import ThemeManager
@@ -2288,9 +2289,13 @@ class Pane(QWidget):
         Preferred DropEffect 格式里写 DROPEFFECT_MOVE(2)，不读它就会把
         剪切误判成复制、源文件留在原地（用户以为已移走，属数据问题）。
         Linux 对应 x-special/gnome-copied-files（首行 move/copy）。
+
+        三条路径分支都空时再试跨 RDP 的「虚拟文件」（只有描述符 + 字节流，
+        没有本机路径），见 `_rdp_virtual_files`。
         """
         from PyQt6.QtWidgets import QApplication
         mime = QApplication.clipboard().mimeData()
+        self._clipboard_note = ""
         if mime is None:
             return [], False
         paths = []
@@ -2326,7 +2331,65 @@ class Pane(QWidget):
                                 paths.append(p)
                     except Exception:
                         pass
+        if not paths and sys.platform == "win32":
+            rdp_paths, note = self._rdp_virtual_files(mime)
+            self._clipboard_note = note
+            if rdp_paths:
+                # 远端的剪切/复制分不出来：实测 Preferred DropEffect 缺席、
+                # DropEffect 经 Qt 取到的字节长度为 0。猜「移动」会去删远端源
+                # 文件（属数据问题），所以一律按复制处理。
+                return rdp_paths, False
         return paths, self._clipboard_prefers_move(mime)
+
+    def _rdp_virtual_files(self, mime):
+        """跨 RDP 剪贴板：把「描述符 + 字节流」落成本地临时文件，返回 (paths, note)。
+
+        远程桌面里复制文件时，剪贴板上没有 CF_HDROP / FileNameW / 文本 / uri-list，
+        只有 FileGroupDescriptorW（名字/大小/属性）+ FileContents（字节流）。
+        上面三条分支都只认本机路径，于是 `_paste_to` 拿到空列表就静默 return，
+        用户按粘贴「完全没反应」（2026-11-19 嵌套 RDP 会话实测）。
+
+        取字节这一步交给 Qt：裸 Win32 `GetClipboardData(FileContents)` 返回 NULL
+        （OLE 流格式，不是全局内存块），而 `mime.data(...)` 能拿到整份字节。
+        落点用一次性临时目录，粘贴收尾时删掉（`_clear_rdp_landing`）。
+        """
+        import tempfile
+        import uuid
+        try:
+            desc = bytes(mime.data(
+                'application/x-qt-windows-mime;value="FileGroupDescriptorW"'))
+            if not desc:
+                return [], ""
+            # 先只看描述符过一遍闸门（目录/危险名/超大），再决定要不要取字节流：
+            # 取字节是同步的，超限文件先读满会把界面冻住
+            _files, refusal = rdp_files.plan(desc)
+            if refusal:
+                logger.info("跨 RDP 剪贴板拒绝落盘：%s", refusal)
+                return [], refusal
+            contents = bytes(mime.data(
+                'application/x-qt-windows-mime;value="FileContents"'))
+            landing = os.path.join(tempfile.gettempdir(),
+                                   "pan4dex-rdp-" + uuid.uuid4().hex)
+            paths, note = rdp_files.materialize(desc, contents, landing)
+            if paths:
+                self._rdp_landing = landing
+                logger.info("跨 RDP 剪贴板落盘 %d 个文件 → %s%s",
+                            len(paths), landing, ("；" + note) if note else "")
+            else:
+                logger.info("跨 RDP 剪贴板拒绝落盘：%s", note)
+            return paths, note
+        except Exception:
+            logger.exception("跨 RDP 剪贴板处理失败")
+            return [], ""
+
+    def _clear_rdp_landing(self):
+        """删掉本次跨 RDP 粘贴的临时落点（成功 / 失败 / 取消都会走到这里）"""
+        landing = getattr(self, '_rdp_landing', None)
+        self._rdp_landing = None
+        if not landing:
+            return
+        import shutil
+        shutil.rmtree(landing, ignore_errors=True)
 
     @staticmethod
     def _clipboard_prefers_move(mime) -> bool:
@@ -2418,6 +2481,10 @@ class Pane(QWidget):
             SHARED_CLIPBOARD.clear()
             SHARED_CLIPBOARD_ACTION = None
         if not paths:
+            # 不许静默：跨 RDP 粘贴取不到内容时，用户只看到「按了没反应」
+            note = getattr(self, '_clipboard_note', '') or "剪贴板里没有可粘贴的文件"
+            logger.info("粘贴无内容：%s", note)
+            self._set_op_status(note)
             return
         src_paths = list(paths) if is_move else []
         snapshot = list(paths)
@@ -2436,6 +2503,7 @@ class Pane(QWidget):
 
     def _paste_done_dispatch(self, action, result, target_dir, src_paths, pasted_srcs):
         """按粘贴源分发完成回调：'system' 走系统剪贴板收尾，其余走应用内收尾"""
+        self._clear_rdp_landing()
         if action == 'system':
             moved = src_paths if result.success else None
             self._on_system_paste_done(result, target_dir, len(pasted_srcs), moved)
@@ -2467,7 +2535,9 @@ class Pane(QWidget):
         所在窗格，避免源窗格残留已移走的条目。
         """
         if result.success:
-            self.status_label.setText(f"已从系统剪贴板粘贴 {count} 个项目")
+            note = getattr(self, '_clipboard_note', '')
+            self.status_label.setText(
+                f"已从系统剪贴板粘贴 {count} 个项目" + (f"（{note}）" if note else ""))
             if moved_srcs:
                 try:
                     from PyQt6.QtWidgets import QApplication
