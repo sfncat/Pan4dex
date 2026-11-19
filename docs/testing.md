@@ -41,7 +41,8 @@
 
 ### 2.3 真机验收（单测覆盖不到的那一层）
 
-Linux 真机（230 Kali + X + 真 NAS）上跑产物，结论写进 `docs/linux-gap.md` §5.2 与
+Linux 真机（230 = `kali@192.168.5.230`，系统是 **Ubuntu 24.04.5 LTS** + Xfce，`kali` 只是用户名；
+2026-11-17 实测更正，见 `docs/linux-gap.md` §5.4）上跑产物，结论写进 `docs/linux-gap.md` §5.2 与
 `docs/gotchas.md`，取证脚本历史上放在 `tmp/`（p46…p60 系列）——**`tmp/` 已在 `.gitignore` 里，脚本本身不入库**，
 文档只留脚本编号与实测数字，别人复现按那几条结论自己写探针。跨进程剪贴板时序、真鼠标轨迹、
 Wayland 这三类**只能**在这一层定论 —— 单测转绿不等于真机通过。
@@ -145,10 +146,14 @@ Qt 对象，控件用例用 `qtbot`）。
 QT_QPA_PLATFORM=offscreen pytest tests/ -q
 ```
 
-> **当前基线（2026-11-17 实测）**：上面这条**能跑完**，不需要任何 `--ignore`：
-> Windows / Python 3.13（`.venv`）/ offscreen → **988 passed, 5 skipped in 142.07s**
-> （1.9.052 发布前置那轮。上一基线是 2026-11-16 的 903 passed / 5 skipped（136.43s，1.9.051
-> 发布前置）；本轮 +85 条是地址栏访问局域网共享的 `tests/test_net_share.py`（纯函数 / 错误码
+> **当前基线（2026-11-19 实测）**：上面这条**能跑完**，不需要任何 `--ignore`：
+> Windows / Python 3.13（`.venv`）/ offscreen → **1042 passed, 5 skipped in 104.90s**
+> （1.9.053 发布前置那轮。上一基线是 2026-11-17 的 988 passed / 5 skipped（142.07s，1.9.052
+> 发布前置）；本轮 +54 条是跨 RDP 剪贴板虚拟文件粘贴的 `tests/test_rdp_clipboard.py`（结构体
+> 偏移守卫 / 描述符解析 / 文件名消毒 / 落盘与拒绝 / 窗格接线五节），对照组把
+> `Pane._rdp_virtual_files` 换成改前的空手返回 → 4 条接线用例全红（`tmp/rdp_fix_control.py`）。
+> 再往前：2026-11-16 的 903 passed / 5 skipped（136.43s，1.9.051
+> 发布前置）；052 那轮 +85 条是地址栏访问局域网共享的 `tests/test_net_share.py`（纯函数 / 错误码
 > 分档表 / 编排 / 离屏接线 / 真对话框控件五节，含 ctypes 结构体偏移守卫），三轮改前对照组各有区分力。
 > 再往前：2026-11-13 的 895 passed / 5 skipped
 > （1.9.050 发布前置那轮 136.98s；同日 T12/T13 落地那轮 125.36s，新增 12 条：构建脚本守卫

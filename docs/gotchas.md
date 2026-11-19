@@ -1603,6 +1603,64 @@ ctypes 不会报错，只会按你声明的宽度去解释那块内存——Wind
 
 ---
 
+### 69. 跨 RDP 剪贴板里没有路径，只有「描述符 + 字节流」；按路径判「有没有文件」会静默空手
+
+**现象**：在远程桌面里复制一个文件，回到本机 Pan4dex 按 Ctrl+V —— **完全没反应**。
+不报错、不弹框、状态栏不动，`%APPDATA%\pan4dex\logs\pan4dex.log` 里连一个字都没有
+（grep `paste|clipboard|剪贴|粘贴` 命中 0）。
+
+**根因**：mstsc 的文件剪贴板走的是 OLE 虚拟文件流，剪贴板上**没有** `CF_HDROP`、
+没有 `FileNameW`、没有文本、没有 `uri-list`，只有 `FileGroupDescriptorW`（名字/大小/属性）
+与 `FileContents`（按项索引的字节流）。`_system_clipboard_paths()` 那三条分支全都只认
+**本机路径**（还要过 `os.path.exists`），于是全落空；`_paste_to()` 拿到空列表就
+`if not paths: return` —— 静默退出，且整条粘贴路径不写日志，所以「没反应」连线索都留不下。
+
+**实测**（2026-11-19，嵌套 RDP，本机 pan4dex.exe 跑在 RDP-Tcp#0 / session 2）：
+
+- 描述符块 596 字节 = 4 字节项数 + 1×**592**；`cFileName` 在 **+72**；
+  flags `0x4064`（PROGRESSUI|FILESIZE|WRITESTIME|ATTRIBUTES）、attrs `0x20`（ARCHIVE）、
+  样本 `SystemUI.html` / 1706 字节。
+- 裸 Win32 `GetClipboardData(FileContents)` 返回 **NULL**（`GetLastError` 0）——
+  它是 `TYMED_ISTREAM`，不是全局内存块；而 Qt 的
+  `mime.data('application/x-qt-windows-mime;value="FileContents"')` 拿到 **1706 字节**，
+  与描述符吻合。**「剪贴板是空的」这个印象是裸 API 给的假象。**
+- 三次读取耗时 0.014–0.032s ⇒ 「远端剪贴板把界面冻住」的假设被排除，不是慢，是根本没读。
+- `Preferred DropEffect` **缺席**；`DropEffect` 在格式列表里但经 Qt 取到的字节长度为 **0**
+  ⇒ 远端的剪切/复制**分不出来**。
+
+**规矩**：
+
+1. **「剪贴板里有没有文件」不能只按路径判。** 跨机器复制、虚拟文件源给的是描述符 + 字节流，
+   必须单独一条分支：解析描述符 → 取字节 → 落到一次性临时目录 → 把落点路径交给现有粘贴流程
+   （复制/冲突询问/进度/刷新全部复用）。落在 `core/rdp_files.py`（纯执行层，不认识 Qt）
+   + `Pane._rdp_virtual_files()`。
+2. **取字节交给 Qt，别自己上 OLE。** 对 `TYMED_ISTREAM` 格式裸调 `GetClipboardData` 返回 NULL，
+   看起来像「剪贴板空了」，会把诊断带偏。
+3. **读不到 DropEffect 就一律按复制。** 猜「移动」会去删远端源文件，属数据问题。
+   本机资源管理器的剪切仍照旧读 `Preferred DropEffect`，别把这条豁免扩大到所有来源。
+4. **尺寸闸门必须在取字节之前。** 字节流是同步取的，先读满再判上限的话，一个 2GB 的文件
+   会把界面冻住、上限也形同虚设。`rdp_files.plan()` 只看描述符就能拒（目录/危险名/超大），
+   调用方拿到 refusal 就**不要**再去取 `FileContents`。
+5. **远端给的名字要消毒，字节数要对账。** 只取 basename（`..\..\evil.txt` 不能写到落点外面）、
+   拒 ADS 冒号/控制字符/Windows 保留设备名（`NUL`、`COM1-9`、`LPT1-9`，写进去内容静默丢弃）；
+   取到的字节数与描述符不符就**整份拒绝**，绝不写半个文件。
+6. **「无内容」不许静默 return。** 至少写状态栏 + `logger.info`。拒绝理由要原样送到用户眼前
+   （「文件夹暂不支持」「文件太大」），否则又变成「按了没反应」。
+7. **结构体名字字段用 `c_uint16` 不用 `c_wchar`。** 后者在 Linux 上是 4 字节，会让 sizeof 从
+   592 变样，而这份布局两端都要能测。偏移守卫写在
+   `tests/test_rdp_clipboard.py::test_descriptor_layout_matches_measured_dump`（同 #68 第 1 条）。
+8. **临时落点要在收尾删掉**，成功/失败/取消都经 `_paste_done_dispatch` → `_clear_rdp_landing()`。
+
+**验收**：对照组把 `Pane._rdp_virtual_files` 换成改前的空手返回 `([], "")` →
+4 条接线用例全红（`tmp/rdp_fix_control.py`）；恢复 → 54 条全绿。
+真机端到端复核要等剪贴板里真有 RDP 文件时做（`tmp/rdp_paste_verify.py`，只读剪贴板、落点用完即删）；
+本轮复跑时剪贴板已空（0 个格式），**这一项未做**。
+
+**还没修**（登记在 `docs/todo.md`）：反向（本机复制 → RDP 里粘贴）未测；多文件一次只取到第 0 项
+（按索引取要走 OLE）；文件夹不支持；大文件字节流仍在主线程同步读。
+
+---
+
 ## 八、回归防护机制
 
 ### 部署脚本

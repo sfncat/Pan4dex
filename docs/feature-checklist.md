@@ -144,7 +144,7 @@
 | 12.10 | Delete 安全删除 | P0 | 🟢 | 删除选中项到回收站；网络位置文案与行为**都是**「永久删除」（该分类在 Linux 上同样生效，见 3.5）| 编辑菜单 QAction | main_window.py `on_delete()` → pane `_delete_paths` |
 | 12.11 | Shift+Delete 永久删除 | P1 | 🟢 | 直接删除选中项，二次确认明写不可恢复 | 在视图 keyPressEvent 拦，不与 QAction(Delete) 双弹确认框 | pane.py `FileListTreeView.keyPressEvent` |
 | 12.12 | F2 重命名 | P0 | 🟢 | 进入当前行行内编辑 | 编辑菜单 QAction | main_window.py `on_rename()` → pane `rename_selected()` |
-| 12.13 | Ctrl+C / Ctrl+X / Ctrl+V | P0 | 🟢 | 复制/剪切/粘贴，与系统剪贴板互通（含 MoveEffect 识别） | 编辑菜单 QAction | main_window.py / pane.py |
+| 12.13 | Ctrl+C / Ctrl+X / Ctrl+V | P0 | 🟢 | 复制/剪切/粘贴，与系统剪贴板互通（含 MoveEffect 识别）；**跨 RDP 单文件粘贴自 1.9.053**（远端剪贴板只有描述符+字节流、没有路径，落临时目录再走同一套粘贴流程；远端剪切一律按复制） | 编辑菜单 QAction | main_window.py / pane.py / rdp_files.py |
 | 12.14 | Ctrl+A 全选 | P1 | 🟢 | 选中当前窗格全部条目 | 编辑菜单 QAction | main_window.py `on_select_all()` |
 | 12.15 | Ctrl+F 筛选当前目录 | P2 | 🟢 | 唤出筛选栏，只筛当前目录不递归；Esc 收起并清除 | 视图与菜单双入口 | main_window.py `on_filter_current_dir()` / pane.py |
 | 12.16 | Ctrl+H 显示隐藏文件 | P2 | 🟢 | 全局同步切换所有窗格的隐藏文件显示 | 视图菜单可勾选项 | main_window.py `toggle_hidden_files()` |
@@ -162,7 +162,7 @@
 | 13.1 | 打开 | P0 | 🟢 | 双击或右键打开文件 | 按配置应用打开 | pane.py open_selected() |
 | 13.2 | 复制 | P0 | 🟢 | 右键复制，然后到目标窗格粘贴 | 剪贴板机制 | pane.py copy_selected() |
 | 13.3 | 剪切 | P0 | 🟢 | 右键剪切 | 剪贴板机制 | pane.py cut_selected() |
-| 13.4 | 粘贴 | P0 | 🟢 | 右键粘贴到当前目录 | 剪贴板机制 | pane.py paste() |
+| 13.4 | 粘贴 | P0 | 🟢 | 右键粘贴到当前目录；取不到内容时状态栏给原因（不再静默没反应）。跨 RDP：单文件可用，多文件只取第 1 个并明说、文件夹给拒绝文案（T17）；反向（本机→RDP）未测（T18） | 剪贴板机制 | pane.py paste() / rdp_files.py |
 | 13.5 | 删除 | P0 | 🟢 | 右键删除（本地进回收站，网络位置永久删除）| send2trash / `os.remove` | pane.py delete_selected() |
 | 13.6 | 重命名 | P0 | 🟢 | 右键重命名 | 内联编辑 | pane.py rename_selected() |
 | 13.7 | 新建文件夹 | P1 | 🟢 | 右键新建文件夹 | os.makedirs | pane.py create_folder() |

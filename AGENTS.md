@@ -28,7 +28,7 @@
 ## 这是什么
 
 跨平台四窗格文件管理器（对标 Windows 的 Q-Dir）。Python 3.11+（开发机 3.13，依赖由 uv 管理）
-+ PyQt6，PyInstaller 冻结产物（Linux 单文件 ELF / Windows onedir + zip）。当前版本 `1.9.052`，
++ PyQt6，PyInstaller 冻结产物（Linux 单文件 ELF / Windows onedir + zip）。当前版本 `1.9.053`，
 开发分支就是 `master`（2026-09-24 起不再走 `dev/*`，动手前先 `git pull --ff-only`）。
 
 ## 去哪读
@@ -59,6 +59,9 @@ main.py                         入口：CLI 参数（--version/--info/--install
    共享访问   core/net_share.py  parse_unc() · plan_open() · retry_with_credential()（纯执行层：
                                 不弹窗、不打印口令；能不能问口令只由 may_ask_credentials() 一处判）
                                 └─ widgets/net_credentials_dialog.py  用户名/密码框（只出结果属性）
+   跨 RDP 粘贴 core/rdp_files.py  parse_descriptors() · safe_name() · plan() · materialize()
+                                （纯执行层：描述符+字节流 → 临时目录；尺寸闸门在取字节之前）
+                                └─ core/pane.py:_rdp_virtual_files()  取字节交给 Qt，远端剪切一律按复制
    系统定位   core/reveal.py     reveal_in_file_manager()（窗格与高级搜索共用这一份）
    视图键位   widgets/view_keys.py  handle_edge_jump()（详情视图与缩略图/平铺共用）
    生命周期   core/lifecycle.py  call_later() · exec_and_drain() · safe_event_filter
@@ -110,7 +113,7 @@ bash scripts/build-linux-docker.sh              # Linux 唯一入口 → release
 python scripts/build_windows.py                 # Windows 本机 → releases/pan4dex-<版本>/ + 同名 .zip
 ```
 
-> 全量那条**现在跑得完**，无需 `--ignore`（2026-11-17 基线：**988 passed / 5 skipped**，
+> 全量那条**现在跑得完**，无需 `--ignore`（2026-11-19 基线：**1042 passed / 5 skipped**，
 > 见 `docs/testing.md` §5）。历史：v1.9.020–027 曾因「用两个文件路径构造 `FileCompareDialog`」
 > 弹模态框挂住 `test_new_features.py` / `test_m5_tools.py` 两档，v1.9.028 修复、T4/T5 已销账
 > （gotchas #56）。规矩没变：**跑不完就是跑不过**，报「全量通过」必须真拿到汇总行。

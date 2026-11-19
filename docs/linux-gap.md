@@ -162,7 +162,7 @@
 | 面包屑地址栏 | 未做 | 未做 | 🔴 plan §7 欠账 | — |
 | 路径补全 | 当前目录一层 | 同（`QDir` + `/`） | 🟢 | `widgets/path_bar.py:214-245` |
 | 在系统文件管理器中显示 | `explorer /select,` **选中该文件** | `xdg-open 父目录`：只打开不选中，语义不对等（KDE 有 `dolphin --select`，GNOME 有 `nautilus --select`） | 🟡 | `core/pane.py:1854-1865`、`widgets/advanced_search.py:761-767` |
-| 地址栏访问局域网共享（`\\服务器\共享`） | 🟢 1.9.052 起实装（`WNetAddConnection2W` + 凭据管理器，首次问口令） | 🟡 **只认写法、不连**：`core/net_share.py:is_supported_platform()` 返回 False，状态栏给一句「先用系统命令挂载再进目录」的指引，不会当成无效路径 | 🟡 待 **T15**（代挂载：`mount -t cifs`/`GVfs` 哪条路都要目标机实测；口令存钥匙环还缺一个依赖拍板） | `core/net_share.py` + `docs/design-unc-share-access.md` §9/§11；用例 `tests/test_net_share.py` 的非 Windows 分支 |
+| 地址栏访问局域网共享（`\\服务器\共享`） | 🟢 1.9.052 起实装（`WNetAddConnection2W` + 凭据管理器，首次问口令） | 🟡 **只认写法、不连**：`core/net_share.py:is_supported_platform()` 返回 False，状态栏给一句「先用系统命令挂载再进目录」的指引，不会当成无效路径 | 🟡 待 **T15**（后端前置已销：gvfs SMB 后端与钥匙环服务**实测都在**，`mount.cifs` 缺；剩下的是「口令谁存」——`gvfsd-smb` 自己链接 `libsecret`，可能根本不用我们存，见 §5.4） | `core/net_share.py` + `docs/design-unc-share-access.md` §9/§11；用例 `tests/test_net_share.py` 的非 Windows 分支 |
 | 在终端中打开 | `wt`/`pwsh`/`cmd` | `xdg-mime query default x-scheme-handler/terminal` + 12 个候选终端扫描 | 🟢 反而更全 | `core/pane.py:2488-2535` |
 
 ### 2.4 文件操作
@@ -410,6 +410,50 @@ offscreen 下能起，日志里 `延迟创建 pane2-4: 189.2ms` 正常完成。
 > 本轮没在真桌面验过。D-Bus `org.freedesktop.FileManager1.ShowItems` 是更稳的备选（GNOME 官方接口），
 > 同样未实测，验完再决定是否替换命令行方案（方案 §4.4）。
 > **Explorer 即使成功也常返回退出码 1**，不要拿 returncode 判成败（助手根本不等待子进程）。
+
+### 5.4 T15 前置：目标机的 SMB 后端与钥匙环能力（2026-11-17 只读实测）
+
+T15（Linux 代挂载）挂着两个前置：「目标机装了什么 SMB 后端」与「口令存钥匙环用哪种办法」。
+本轮 ssh 上 `linux230` **只读**核了一遍（没安装任何包、没挂载任何共享、没读写任何凭据内容），
+第一个前置就此销掉，第二个前置的答案也被实测改写了。
+
+**机器身份更正**：`linux230` = `kali@192.168.5.230`，`kali` 是**用户名**，系统是
+**Ubuntu 24.04.5 LTS**（`. /etc/os-release` 实测），不是 Kali。本文 §5.1 早已写对，
+`docs/testing.md` §2.3 那句「230 Kali」是错的，已就地更正。桌面会话是 **Xfce**
+（`xfce4-session` 在跑），用户级总线 `DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus`。
+
+**已核对（本轮实测，命令都在下面）**
+
+| 能力 | 实测结果 | 对 T15 的意义 |
+|---|---|---|
+| gvfs SMB 后端 | `gvfs` / `gvfs-backends` / `gvfs-fuse` 等 6 个包都是 `1.54.4-0ubuntu1~24.04.5`；`/usr/libexec/gvfsd-smb` 在且可执行（`-rwxr-xr-x`，51,512 字节），另有 `gvfsd-smb-browse` / `gvfsd-network` / `gvfsd-wsdd`；`gvfsd` 与 `gvfsd-fuse` 正在跑（挂点 `/run/user/1000/gvfs`） | **`gio mount smb://…` 这条路的后端齐全**，不需要装任何东西 |
+| gvfs 与钥匙环的关系 | `ldd /usr/libexec/gvfsd-smb` 里有 **`libsecret-1.so.0`** | SMB 后端**自己**就会用 Secret Service，口令未必要我们存（见下面待实测第 1 条） |
+| 内核 CIFS 挂载 | `mount.cifs` **无**（`cifs-utils` 未装） | `mount -t cifs` 这条路既要装包又要 root，代价明显高于 gvfs |
+| SMB 客户端命令 | `/usr/bin/smbclient`，`Version 4.19.5-Ubuntu` | T16「列共享」的 Linux 半边有现成命令（`smbclient -L`），未实测 |
+| 钥匙环服务 | `gnome-keyring-daemon --foreground --components=pkcs11,secrets` 在跑（uid 1000）；用户总线上 **`org.freedesktop.secrets`** 与 `org.gnome.keyring` 都有主；`busctl --user tree` 能看到 `/org/freedesktop/secrets/collection` | 「有没有钥匙环服务」这个风险在这台机上**不存在** |
+| `secret-tool`（CLI 路） | **无**；`libsecret-tools` `Installed: (none)` / `Candidate: 0.21.4-1build3`；但 **`libsecret-1-0` 已装**（0.21.4-1build3） | 走 CLI 就得让每台目标机先装一个包；库在、命令不在 |
+| `SecretStorage`（依赖路） | 系统 python3 **无** `secretstorage` / `keyring` / `jeepney`（`dbus` 有 1.3.2）；`python3-secretstorage` candidate 3.3.3-3，`apt-cache depends` → `python3-jeepney` + `python3-cryptography` | 走依赖就得连 `cryptography` 一起进包 |
+| 本仓现有依赖 | `pyproject.toml` + `uv.lock` 里 `keyring` / `secretstorage` / `jeepney` / `dbus` / `cryptography` **全 0 命中** | 两条路都是从零新增，不存在「已经有了顺手用」 |
+| 依赖体积（PyPI 实测） | `SecretStorage 3.5.0` wheel 0.01 MB（纯 Python），`requires: cryptography>=2.0, jeepney>=0.6`；`jeepney 0.9.0` 0.05 MB（纯 Python）；`cryptography 50.0.2` 的 `cp39-abi3-manylinux_2_17_x86_64` wheel **4.53 MB**（带二进制） | 依赖路的真实代价在 `cryptography`，不在 SecretStorage 本身 |
+
+**待实测（每条附自查命令与判据；本轮没做，因为都要写东西或碰真共享）**
+
+| # | 待实测 | 自查命令 | 判据 |
+|---|---|---|---|
+| 1 | `gio mount smb://服务器/共享` 真挂一次：会不会弹认证框、口令是否由 gvfs 自己存进钥匙环 | 挂：`gio mount smb://<服务器>/<共享>`；看：`gio mount --list \| grep -i smb` 与 `ls /run/user/1000/gvfs/`；钥匙环侧**只数条目不打印内容**：`busctl --user tree org.freedesktop.secrets` | 挂点出现且能 `ls` = 代挂载这条路通；挂完钥匙环里多出对应条目 = **我们一行存口令的代码都不用写**，T15 的依赖拍板直接作废。需要一台可访问的共享，**不拿用户的 NAS 做实验** |
+| 2 | 冻结 ELF 里 SecretStorage 能不能连上用户总线 | 打包后在真桌面会话里跑「写一条 `pan4dex:` 前缀的测试凭据 → 另起进程读回 → 删 → 全库复点 0 残留」，与 Windows 那轮同法（`docs/design-unc-share-access.md` §2.1③） | 另起进程读得回 = jeepney 与 D-Bus 地址都被 PyInstaller 带对了；读不回就是打包漏了模块或总线地址没继承 |
+| 3 | 加 `cryptography` 后 Linux ELF 的体积增量 | 同法对照上一版：052 是 **108,161,856** 字节 | 增量以字节计，不靠「大概几 MB」猜 |
+| 4 | 没有钥匙环服务的会话上两条路各自怎么退化 | 在纯 tty（`DBUS_SESSION_BUS_ADDRESS`  unset）或没装 gnome-keyring 的机器上起程序，勾「记住」 | 「记住」置灰或明说「这次不记住」，**不崩、不静默丢口令**；这一档两条路都要有，属产品代码而非依赖选择 |
+
+> 取证命令（只读，可直接复跑）：
+> `ssh linux230 '. /etc/os-release; echo $PRETTY_NAME; command -v gio secret-tool mount.cifs smbclient;
+> ls -l /usr/libexec/gvfsd-smb; ldd /usr/libexec/gvfsd-smb | grep secret;
+> dpkg -l | grep -E "^ii +(gvfs|cifs-utils|libsecret)"; apt-cache policy libsecret-tools python3-secretstorage;
+> pgrep -a gnome-keyring; dbus-send --session --print-reply --dest=org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus.ListNames | grep -i secret'`
+>
+> 本轮**没动过**目标机上的任何东西：没装包、没挂载、没写凭据、没碰更新服务器
+> （230 同时是更新服务器所在机，`docs/update.md`）。两条路的完整对比与建议在
+> `docs/design-unc-share-access.md` §12。
 
 ---
 
