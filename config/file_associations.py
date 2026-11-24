@@ -113,6 +113,12 @@ class FileAssociations:
                     self.associations = json.load(f)
             except (json.JSONDecodeError, IOError):
                 self.associations = {}
+            # 一次性迁移：历史默认把 .md 写死 gedit，导致双击 md 永远不走系统
+            # 默认应用。只搬走「恰好还是那个旧默认值」的条目；用户自己选的
+            # typora/marktext/等原样保留。删掉条目后这次迁移不会再触发。
+            if self.associations.get(".md") == {"app": "gedit", "args": []}:
+                del self.associations[".md"]
+                self.save()
         else:
             # 默认关联
             self.associations = self._get_default_associations()
@@ -130,7 +136,9 @@ class FileAssociations:
         """获取默认文件关联"""
         defaults = {
             ".txt": {"app": "gedit", "args": []},
-            ".md": {"app": "gedit", "args": []},
+            # .md 不再写死 gedit：历史默认值让双击 md 永远进 gedit，绕过了
+            # _open_with_default() 的 xdg-open（用户改了系统默认应用也不生效）。
+            # 不写这一项 = 走系统默认应用；_LINUX_APP_CANDIDATES[".md"] 仍作兜底。
             ".py": {"app": "code", "args": []},
             ".json": {"app": "code", "args": []},
             ".html": {"app": "xdg-open", "args": []},

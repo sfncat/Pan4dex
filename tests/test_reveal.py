@@ -12,10 +12,12 @@
 真机行为（Explorer 哪种形式能选中、dolphin/nautilus 的 --select 是否高亮）本轮
 **未实测**，不在这里断言；见 docs/improvement-plan-t6-t9.md §4.5 的待实测清单。
 """
+import json
 import os
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -145,12 +147,43 @@ def test_linux_desktop_without_binary_falls_back(popen, as_platform, tmp_path):
     assert result.selected is False
 
 
-def test_linux_unknown_desktop_falls_back_and_says_not_selected(popen, as_platform, tmp_path):
-    as_platform("linux", desktop="XFCE", bins=("dolphin", "nautilus"))
+def test_linux_unknown_desktop_uses_nautilus_from_path_not_browser(popen, as_platform, tmp_path):
+    """回归守卫：XFCE/未识别桌面 + PATH 里有 nautilus，旧实现会走 xdg-open 开浏览器"""
+    as_platform("linux", desktop="XFCE", bins=("nautilus",))
     p = str(tmp_path / "a.txt")
     result = reveal.reveal_in_file_manager(p)
-    assert popen.argvs == [["xdg-open", os.path.normpath(str(tmp_path))]]
+    assert popen.argvs == [["nautilus", "--select", os.path.normpath(p)]]
+    assert result.selected is True
+
+
+def test_linux_thunar_opens_manager_not_browser(popen, as_platform, tmp_path):
+    """Thunar 没有 --select：传文件路径定位父目录，但也不能退回 xdg-open"""
+    as_platform("linux", desktop="XFCE", bins=("thunar",))
+    p = str(tmp_path / "a.txt")
+    result = reveal.reveal_in_file_manager(p)
+    assert popen.argvs == [["thunar", os.path.normpath(p)]]
+    assert popen.argvs[0][0] != "xdg-open"
     assert result.selected is False
+
+
+def test_linux_dbus_fallback_when_no_manager_in_path(popen, as_platform, tmp_path):
+    """Flatpak 版文件管理器不在 PATH：走 freedesktop ShowItems，能选中"""
+    as_platform("linux", desktop="", bins=("gdbus",))
+    p = str(tmp_path / "a b.txt")
+    result = reveal.reveal_in_file_manager(p)
+    argv = popen.argvs[0]
+    assert argv[:2] == ["gdbus", "call"]
+    assert "org.freedesktop.FileManager1.ShowItems" in argv
+    assert json.loads(argv[-2]) == [Path(os.path.normpath(p)).absolute().as_uri()]
+    assert result.selected is True
+
+
+def test_linux_dolphin_wins_on_kde_even_with_nautilus_in_path(popen, as_platform, tmp_path):
+    """桌面环境匹配优先于 PATH 顺序，别把 KDE 用户扔进 Nautilus"""
+    as_platform("linux", desktop="KDE", bins=("dolphin", "nautilus"))
+    p = str(tmp_path / "a.txt")
+    reveal.reveal_in_file_manager(p)
+    assert popen.argvs[0][0] == "dolphin"
 
 
 # --------------------------------------------------------------- 助手：上限与失败

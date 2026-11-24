@@ -34,8 +34,9 @@
    （`dir_model._icon()` 永远只有「文件夹/文件」两张图）、POSIX 权限与所有者
    （右键「加运行权限」执行后**界面上看不到任何变化**，代码注释里承诺的「权限列」从来没有）、
    挂载点/网络位置入口（plan §7 的「此电脑」欠账）。
-6. 语义不对等的一处：「在系统文件管理器中显示」Windows 是 `explorer /select,` **选中那一个文件**，
-   Linux 是 `xdg-open 父目录`——只打开、不选中。
+6. 「在系统文件管理器中显示」Windows 是 `explorer /select,` **选中那一个文件**；Linux 曾直接
+   回落 `xdg-open 父目录`——只打开不选中，且 `inode/directory` 关联到浏览器时会弹出浏览器。
+   现已按桌面环境下发到真实文件管理器（PATH 探测 + D-Bus 标准接口兜底），见 gotchas #71。
 7. **v1.9.016：真机 GUI 验收第一轮（§5.2）跑通了取证通道，并当场撞出两条产品缺陷**（快捷键
    落点只认 `_active_pane`、`StartupWMClass` 与 `WM_CLASS` 对不上）—— 两条的共同点是
    **只有在 X11 桌面上真的跑一次才能发现**，Windows 上的首屏焦点与 `AppUserModelID` 把它们
@@ -161,7 +162,7 @@
 | 「此电脑」/挂载点/网络邻居 | 未做 | 未做（Linux 侧需 mount 表 / `QStorageInfo`，不是盘符） | 🔴 plan §7 欠账 | 全仓无 `QStorageInfo` |
 | 面包屑地址栏 | 未做 | 未做 | 🔴 plan §7 欠账 | — |
 | 路径补全 | 当前目录一层 | 同（`QDir` + `/`） | 🟢 | `widgets/path_bar.py:214-245` |
-| 在系统文件管理器中显示 | `explorer /select,` **选中该文件** | `xdg-open 父目录`：只打开不选中，语义不对等（KDE 有 `dolphin --select`，GNOME 有 `nautilus --select`） | 🟡 | `core/pane.py:1854-1865`、`widgets/advanced_search.py:761-767` |
+| 在系统文件管理器中显示 | `explorer /select,` **选中该文件** | 桌面匹配（KDE→dolphin / GNOME→nautilus）→ PATH 探测真实文件管理器（含 nemo/caja/pcmanfm/thunar）→ D-Bus `ShowItems`；三层全空才 `xdg-open 父目录`（明说未选中）。**不再把目录直接丢给 MIME 默认程序（曾因此弹出浏览器）** | 🟡 真机 `ShowItems`/`--select` 高亮仍待验（L16） | `core/reveal.py:44-90`；用例 `tests/test_reveal.py` 39 条 |
 | 地址栏访问局域网共享（`\\服务器\共享`） | 🟢 1.9.052 起实装（`WNetAddConnection2W` + 凭据管理器，首次问口令） | 🟡 **只认写法、不连**：`core/net_share.py:is_supported_platform()` 返回 False，状态栏给一句「先用系统命令挂载再进目录」的指引，不会当成无效路径 | 🟡 待 **T15**（后端前置已销：gvfs SMB 后端与钥匙环服务**实测都在**，`mount.cifs` 缺；剩下的是「口令谁存」——`gvfsd-smb` 自己链接 `libsecret`，可能根本不用我们存，见 §5.4） | `core/net_share.py` + `docs/design-unc-share-access.md` §9/§11；用例 `tests/test_net_share.py` 的非 Windows 分支 |
 | 在终端中打开 | `wt`/`pwsh`/`cmd` | `xdg-mime query default x-scheme-handler/terminal` + 12 个候选终端扫描 | 🟢 反而更全 | `core/pane.py:2488-2535` |
 
@@ -185,7 +186,7 @@
 |---|---|---|---|---|
 | 高级搜索（名/内容/大小/日期） | `os.walk` | 同一套；**搜根目录会把 `/proc`、`/sys`、`/dev` 扫进去**（无跨设备开关、无排除表） | 🟡 「不可取消」那一半已修（2026-11-10），排除表仍未做：**只按名字筛时无害**（`/dev` 623 项 0.01s、`/proc` 212,416 项 5.25s、`/sys` 49,011 项 1.15s，全部自然结束）；p49 实测的「勾选内容搜索后 worker 阻塞在伪文件 `read` 里、`stop()` 叫不回」（`/dev/ptmx`、`/proc/<pid>/task/<pid>/fd/9`、`/sys/kernel/security/apparmor/revision`，stop 后 3s 仍 `isRunning()`）已修：`open` 之前用已取到的 `st_mode/st_size` 筛掉非常规文件与 0 字节，取消标志重新管得住（规与用例见 gotchas 第 58 条）。⚠️ 未修：伪文件仍会被**遍历**（不进 `open`），搜 `/` 依旧是分钟级全盘扫；跨设备开关与排除表（`/proc`、`/sys`、`/dev`、`/run`）另案 | `widgets/advanced_search.py` `SearchWorker.run()`；`widgets/advanced_search.py:87`；p49 探针（模块级 `open` 换带日志的壳 + 逐根单进程跑）；真机复测待跑（Windows 侧只能靠 FIFO 用例离线钉住）|
 | 搜索结果批量操作 | 🟢 v1.9.011 | 共用 `FileOpRunner` | 🟢 | `widgets/advanced_search.py` |
-| 压缩/解压（7z 后端） | 系统 7-Zip → 内置 `resources/tools/7z/7z.exe`（需同目录 `7z.dll`）或 `7za.exe` | 系统 `7z/7za/7zz/7zr` → 内置 `7zz`（**未入库**）→ 都没有则功能不可用 | 🟡 **Windows 内置已补齐**（T13，2026-11-13：构建机部署本机 7-Zip 26.04 的 `7z.exe`+`7z.dll`+`License.txt`，产物实测带上且包内那份能跑；049 及之前一直没带，装了系统 7-Zip 的机器看不出来）。Linux 侧：内置 `7zz` 在包内（条目实测 1），**从 1.9.051 起包内不再夹带 Windows 版那三个文件**（T14 销账，构建脚本改成只暂存 `7zz`；050 及之前整目录打包，多带 1,117,048 B 死重量，功能无害）。**仍未实测**：`7zz` 解压到 `_MEIPASS` 后的执行位（构建时已 `install -m 0755`，PyInstaller 是否带进包内未验）；**干净机器上真做一次压缩/解压仍待一轮**（并进 L16） | `core/archive_ops.py:48-113`；`tests/test_archive_ops.py`（6 条，屏蔽系统 PATH 与 Program Files 后验包内兜底，含「什么都不带 → None」的对照组）；`tests/test_build_linux_docker.py`（8 条，Linux 打包清单守卫） |
+| 压缩/解压（7z 后端） | 系统 7-Zip → 内置 `resources/tools/7z/7z.exe`（需同目录 `7z.dll`）或 `7za.exe` | 系统 `7z/7za/7zz/7zr` → 内置 `7zz`（**已入库**，官方 25.01 + LGPL 许可证，gotchas #72）→ 都没有才不可用 | 🟡 **Windows 内置已补齐**（T13，2026-11-13：构建机部署本机 7-Zip 26.04 的 `7z.exe`+`7z.dll`+`License.txt`，产物实测带上且包内那份能跑；049 及之前一直没带，装了系统 7-Zip 的机器看不出来）。Linux 侧：内置 `7zz` 在包内（条目实测 1），**从 1.9.051 起包内不再夹带 Windows 版那三个文件**（T14 销账，构建脚本改成只暂存 `7zz`；050 及之前整目录打包，多带 1,117,048 B 死重量，功能无害）。**仍未实测**：`7zz` 解压到 `_MEIPASS` 后的执行位（构建时已 `install -m 0755`，PyInstaller 是否带进包内未验）；**干净机器上真做一次压缩/解压仍待一轮**（并进 L16） | `core/archive_ops.py:48-113`；`tests/test_archive_ops.py`（6 条，屏蔽系统 PATH 与 Program Files 后验包内兜底，含「什么都不带 → None」的对照组）；`tests/test_build_linux_docker.py`（8 条，Linux 打包清单守卫） |
 | 校验和 / 批量改名 / 文件比较 / 目录同步 / 分割合并 / 时间戳 | 纯 Python | 平台无关 | 🟢 | `widgets/*.py`（这些文件里平台分支数 = 0） |
 | 内嵌终端 | `pywinpty`（winpty 层，历史上脆弱） | `pty` + `fcntl` + `termios` 真 PTY；zsh 补齐噪声用临时 `ZDOTDIR` 关掉 | 🟢 **Linux 路径更正** | `widgets/terminal_panel.py:143-245,341-362` |
 | 终端内自动切英文输入法 | IMM/TSF 双路径 | 无（IBus/fcitx 不管） | 🟡 可接受降级 | `widgets/terminal_panel.py:37-127,684-707` |
@@ -497,8 +498,9 @@ T15（Linux 代挂载）挂着两个前置：「目标机装了什么 SMB 后端
    freedesktop mime 图标），再叠两个自绘角标：符号链接、可执行位；顺手用
    `provider.icon(IconType.Computer/DiskDrive)` 解决 plan §7 的「此电脑/挂载点」树根。
 9. **属性对话框**（plan §7）里带上 POSIX 权限/所有者，兑现 `_chmod_add_exec` 注释里承诺的「权限列」。
-10. 「在系统文件管理器中显示」按桌面环境试 `dolphin --select` / `nautilus --select`，
-    失败才退 `xdg-open 父目录`（并在文案里说清只是打开目录）。
+10. ~~「在系统文件管理器中显示」按桌面环境试 `dolphin --select` / `nautilus --select`，
+    失败才退 `xdg-open 父目录`（并在文案里说清只是打开目录）。~~ **已落地**：改为桌面环境
+    匹配 → PATH 探测真实文件管理器 → D-Bus `ShowItems` → 最后才 xdg-open（gotchas #71）。
 
 ### 不做（本轮明确排除）
 

@@ -3,58 +3,16 @@ project: Pan4dex
 path: C:\workspace\Pan4dex
 status: active
 owner_ai: Trae
-updated: 2026-11-19
+updated: 2026-11-25
 ---
 
 ## 当前进展
 
-**正在出 1.9.053：跨 RDP 粘贴修复已落地，剩构建与上传**（用户「修改，出版本」）。
-解决的问题：在远程桌面里复制文件、回到本机 Pan4dex 按 Ctrl+V **完全没反应**。根因已实测钉死 ——
-mstsc 递过来的剪贴板上只有 `FileGroupDescriptorW`（名字/大小/属性）+ `FileContents`（字节流），
-**没有** CF_HDROP / FileNameW / 文本 / uri-list，而旧的三条分支全都只认本机路径，于是
-`_paste_to` 拿到空列表就静默 `return`，且整条粘贴路径一行日志都不写。
+**1.9.054 已发布（2026-11-25）：修复「点一下整个界面转圈」的文件图标卡死**（用户报「本机 pan4dex 卡死，点一下就转圈，应该是 SMB 相关」）。原生栈定位到根因不在 SMB 读取，而在取文件图标：`type_icon()` 旧实现把真实路径交给 `QFileIconProvider`，Windows shell 逐项调用注册的云盘图标覆盖处理器（本机 25+ 个：OneDrive/百度网盘/Google Drive 等），其中跨进程 COM RPC 卡住 → UI 线程在 `QAbstractFileIconEngine::scaledPixmap → QWaitCondition::wait` 同步等死。已改成 `SHGetFileInfoW` + 伪文件名 + `SHGFI_USEFILEATTRIBUTES`，只按扩展名查关联、不碰真实文件；非 Windows 沿用原路径。新增 `tests/test_type_icon.py` 7 条，对照组（换回旧实现）3 条红、恢复全绿。改动仅落 `core/dir_model.py` + 测试，未动配置/视图。**本版已翻牌为正式版本：`VERSION` / `pyproject.toml` / `AGENTS.md` 同步 1.9.054，CHANGELOG 顶部改为 `2026-11-25（master）`，tag `v1.9.054`。**
 
-实现形状：新增 `core/rdp_files.py`（**纯执行层**，不认识 Qt、不读剪贴板：解析描述符 → 消毒文件名 →
-落盘，`plan()` 把尺寸闸门提到取字节**之前**）+ `core/pane.py:_rdp_virtual_files()` 接线（只在三条
-路径分支都空时才走，落一次性临时目录，收尾 `_clear_rdp_landing()` 删掉）。取字节交给 Qt ——
-裸 `GetClipboardData(FileContents)` 返回 NULL（OLE 流格式），Qt 的 `mime.data(...)` 能拿到整份
-1706 字节，与描述符吻合；三次读取 0.014–0.032s，**「远端剪贴板把界面冻住」的假设被排除**。
-两条安全规矩：远端剪切/复制分不出来（`Preferred DropEffect` 缺席、`DropEffect` 经 Qt 取到长度 0）
-→ **一律按复制**，猜「移动」会删远端源文件；远端文件名只取 basename、拒 ADS 冒号/控制字符/保留设备名，
-字节数与描述符不符**整份拒绝**，绝不写半个文件。另把「无内容」的静默 return 改成写状态栏 + `logger.info`。
+**同批落地四条 Linux/跨平台问题**（用户列 4 项）：① Linux 右键「在文件管理器中显示」变浏览器——`core/reveal.py` 旧回落 `xdg-open 父目录` 把 `inode/directory` 交给了 MIME 默认程序，改成桌面匹配 → PATH 探测真实文件管理器 → D-Bus `ShowItems` → 最后才 xdg-open（gotchas #71）；② Linux 压缩/解压「功能没了」——菜单在但 `find_7z()` 三级兜底全空，官方 7zz 25.01 + LGPL 许可证已入库并精确放行 `.gitignore`、Linux 构建随附许可证（gotchas #72）；③ Linux 双击 `.md` 不走系统默认——默认表写死 gedit 且 `open_file()` 关联优先，删掉硬编码并对老配置里恰好是旧默认值的做一次性迁移（gotchas #73）；④ 文件视图/目录树右键新增「复制路径」「复制文件名」（原「复制文件地址」更名），搜索右键补「复制文件名」，多选逐行写剪贴板。四条均有新用例与对照组（reveal 红 3 / md 红 3 / 图标红 3）；构建脚本加许可证时引入内层 `if` 撞上既有守卫的解析假设，已改成单行 `&&` 并补守卫。
 
-发布前置全量 **1042 passed / 5 skipped（104.90s）**（旧基线 988，+54 条全是新增的
-`tests/test_rdp_clipboard.py`）；对照组把 `Pane._rdp_virtual_files` 换成改前的空手返回 →
-**4 条接线用例全红**（`tmp/rdp_fix_control.py`），区分力确认。文档已同步：gotchas **#69**、
-待办 **T17/T18/L18**、功能表 12.13/13.4、CHANGELOG `[1.9.053] 未发布`、测试基线改 1042。
-
-**卡在哪**：①**真机端到端这一格是空的** —— 修复落地后复跑 `tmp/rdp_paste_verify.py` 时剪贴板已经
-空了（`EnumClipboardFormats` 返回 0 个格式），所以只有 offscreen 用例 + 对照组，需要用户在 RDP 里
-重新复制一个文件再验（登记 **L18**，5 条判据已写好）。②**反向（本机复制 → RDP 里粘贴）一次都没测过**，
-用户报的是「两个方向都不行」，本轮只修好了 inbound 那一向，outbound 登记 **T18**（第一步是只读探针，
-且探针不得写剪贴板）。③Windows 构建的输出目录与正在跑的 `dist/pan4dex/pan4dex.exe` 重合，
-**用户已自己关掉它**（PID 12804，没有杀用户进程）。其余同样要人在机器前的：L17、L16、L4。
-等拍板的：T15（Linux 代挂载的口令谁存）、T16（列共享的界面形状）、T2 入口接线、T6 第三步。
-
-**1.9.053 两平台已出包并上传（2026-11-19）**：`VERSION` 与 `pyproject` 同步 053、CHANGELOG「未发布」
-翻牌成 `2026-11-19（master）`。产物：Windows onedir **272,266,277** 字节 → zip **116,639,394** 字节
-（比 052 +37,833）；Linux ELF **108,203,184** 字节（比 052 +41,328 = 新增的 `rdp_files` 模块）。
-两平台 `--version` 都报 **v1.9.053**（Windows build 22:04:22 / Linux build 22:00:23）。
-**包内计数同法对照 052**：Linux 侧 `7z.exe`/`7z.dll`/`License.txt` 仍 **0**、`7zz` 仍 **4**、
-`exiftool-linux` 仍 **247**、`net_share` 仍 **1**，`rdp_files` **0 → 1**；Windows 侧文件总数
-1274 → **1275**，`7z.exe`/`7z.dll`/`License.txt`/`exiftool.exe` 各 **2** 不变、`7zz`/`exiftool-linux`
-各 **0** 不变，包内 `7z.exe` 实跑报 **7-Zip 26.04 (x64)**，`Analysis-00.toc` 含 `core.rdp_files`
-与 `core.net_share`（2 命中）、warn 文件对 `rdp_files` **0** 命中。Windows 构建两条
-「Restored exiftool-linux / Restored 7zz」日志都在，`config/_build_info.py` 已删，工作树
-`resources/tools/` 两个 Linux 二进制已还原。上传 windows 10.4s / linux 10.0s（口令取自既有
-gitignored `server/update-server/.env`，未打印、未写入任何入库文件）；服务器 version/size/SHA-256
-与本地现算一致，**并把两平台产物真下载回来逐字节哈希核对一致**（回执 OK ≠ 送达），响应头
-`X-Checksum-Sha256` 也一致，临时副本当场删除；052/051 四个旧包 HEAD 均 **200** 且字节数原样
-（116,601,561 / 108,161,856 / 116,579,022 / 108,138,760）。
-**已提交并推送**：`243bb13`（修复 + 54 条用例）/ `e646ca7`（文档，含上一轮那两份对比与实测）/
-`b554236`（发布），tag `v1.9.053` 已推；`git ls-remote` 核过远程 master = `b554236` = 本地 HEAD、
-tag = `4b9015f` 两端一致，工作树干净。探针脚本（`tmp/rdp_fix_control.py`、`tmp/rdp_paste_verify.py`、
-`tmp/verify_upload_053.py` 等）按 `.gitignore:64` 不入库，逐个 `git check-ignore` 核过。
+**卡在哪 / 验证结果**：全量第一次跑崩在 `EXIT=139`——非产品代码问题：卡死的老进程（PID 32680，31 小时）仍握着 `%APPDATA%\pan4dex\logs\pan4dex.log` 句柄，测试里 `TimedRotatingFileHandler` 跨天轮转 `os.rename` 撞 `[WinError 32]`，每条 logger 都重试一次把 pytest-qt 拖到段错误。未擅自杀用户进程，改用隔离 `APPDATA` + 全新 `TMPDIR` 重跑（config/paths.py 与 main.py 都读 APPDATA）：中途那轮 **1046 passed / 6 skipped / 2 failed** 的 2 条（`test_bookmarks`、`test_m4_theme` 默认收藏）是隔离环境缺 `~/Desktop` 导致「桌面」条目被跳过；补建 Desktop 后那轮全量 1048 passed / 6 skipped。叠加本轮四项修复后**最终全量 1065 passed / 6 skipped（215.04s，EXIT=0，0 失败；版本翻牌后复跑同数）**。之前 1.9.053 基线 1042 passed / 5 skipped。
 
 ## 等你决策
 
@@ -91,6 +49,44 @@ tag = `4b9015f` 两端一致，工作树干净。探针脚本（`tmp/rdp_fix_con
 
 ## 最近完成
 
+- 2026-11-25 **Linux 四项修复 + 跨平台右键复制（1.9.054 的内容）**（用户列 4 条）：
+  **①** 右键「在文件管理器中显示」在 Linux 弹浏览器——`core/reveal.py:_linux_argv()` 只认
+  KDE/GNOME，未识别桌面就 `xdg-open 父目录`，而本机 `inode/directory` 关联到浏览器。改成三层：
+  桌面精确匹配（dolphin/nautilus）→ 不管环境变量按 PATH 探测真实文件管理器
+  （nautilus/dolphin/nemo/caja/pcmanfm/thunar，Thunar 明说未选中）→ Flatpak 版走 freedesktop
+  D-Bus `ShowItems`，三层全空才回落 xdg-open。`tests/test_reveal.py` 39 条，对照组 3 红。
+  **②** Linux 压缩/解压「功能没了」——菜单无任何平台屏蔽，是 `find_7z()` 三级兜底全空：
+  系统无 7z、`resources/tools/7z/7zz` 从未入库（被 `/resources/tools/` 排除）。从 7-zip 官网
+  取 25.01 的 7zz（2,878,000 B，sha256 `a1860fdf…2f`）与 Linux 版 LGPL 许可证入库，
+  `.gitignore` 精确只放行这两个文件；Linux 构建脚本把许可证一起暂存进包（单行 `&&` 写法，
+  避免内层 `fi` 破坏既有守卫对 else 分支的定位）。新增 `tests/test_archive_ops_linux.py`
+  3 条（含 ELF 魔数守卫）+ `test_build_linux_docker.py` 1 条；踩到 `find_7z()` 把「没找到」
+  缓存成空串的语义，测试要重置 `_7Z_PATH` 模拟新进程。
+  **③** Linux 双击 `.md` 不走系统默认——`config/file_associations.py` 默认表写死 gedit，
+  `open_file()` 关联优先直接 spawn 并 return，`_open_with_default()` 的 xdg-open 没机会跑。
+  删掉硬编码 + `load()` 一次性迁移「恰好还是旧默认值 gedit」的条目（用户自选的 typora 等保留）。
+  `tests/test_file_associations_default.py` 5 条，对照组 3 红。
+  **④** `core/pane.py` 文件视图与目录树右键、以及高级搜索右键增加「复制路径」「复制文件名」
+  （原「复制文件地址」更名），多选逐行写入系统剪贴板；新增 `tests/test_copy_path_name.py`
+  4 条 + 搜索侧 1 条，同步更新钉着旧菜单文案的既有用例。文档：gotchas **#71–#73**、
+  CHANGELOG `[1.9.054]` 补 Added/Fixed 共 4 条（出包时已翻牌）、`docs/linux-gap.md` 两处表格与两处正文。
+  版本/pyproject/tag 已随本版同步。全量 **1065 passed / 6 skipped（215.04s，EXIT=0）**。
+- 2026-11-24 **文件图标卡死修复（1.9.054 的内容）**（用户「本机 pan4dex 处于卡死状态，
+  点一下就转圈，应该是 SMB 相关」）。不动正在跑的进程，先 `procdump` 抓转圈那一刻的完整 dump，
+  自写 PE/栈解析器把两条线程的原生栈翻成符号：主线程
+  `QTreeView::drawRow → QStyledItemDelegate::paint → QIcon::paint → QAbstractFileIconEngine::scaledPixmap
+  → QWaitCondition::wait`（UI 同步等图标加载），图标线程
+  `SHGetFileInfoW → SHELL32_GetIconOverlayManager → Ndr64AsyncClientCall → CoWaitForMultipleHandles`
+  （跨进程 COM RPC 卡住）。**更正用户的猜测**：SMB 只是放大器，根因是取图标时把真实路径交给了
+  shell，触发本机注册的 25+ 个图标覆盖处理器（OneDrive 7 / 百度网盘 7 / Google Drive 4 / IDM /
+  Adobe CoreSync / Offline Files），任一 RPC 卡死就拖死 UI。实测对照：新路径伪文件名 +
+  `SHGFI_USEFILEATTRIBUTES` 稳态 1–3ms，旧 `QFileIconProvider.icon(真实 UNC 路径)` 对 NetworkDrive
+  返回 null 且 216ms。修法落 `core/dir_model.py`：Windows 走 `_WindowsShellIconApi`（伪文件名 +
+  USEFILEATTRIBUTES，大/小图标各一次塞 QIcon），非 Windows 沿用 QFileIconProvider；系统调用收进
+  `_SHELL_ICON_API` 惰性单例注入口（仿 `net_share._netapi()`），`SHFILEINFOW` 偏移按探针 dump
+  （sizeof 696）。新增 `tests/test_type_icon.py` **7 条**，其中真 Win32 用例抓到两个假 API 用例
+  盖不住的实现坑（常量漏 `_` 前缀、`QImage.fromHICON` 传 c_void_p 静默 null）；对照组换回旧实现
+  **3 条红**、恢复全绿。文档：gotchas **#70**、CHANGELOG `[1.9.054]`。版本/pyproject/tag 已随本版同步。
 - 2026-11-19 **跨 RDP 粘贴修复落地（1.9.053 的内容）**（用户「pan4dex 现在在复制粘贴上最大的问题，
   跨 rdp 复制，粘贴都不正常」→「修改，出版本」）。先只读探针把根因钉死：本机 `pan4dex.exe` 跑在
   **RDP-Tcp#0 / session 2**（一开始误判成 Linux xrdp 会话，`wmctrl -l` 与 `tasklist` 对照后当场更正），

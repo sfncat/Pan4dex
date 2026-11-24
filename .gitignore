@@ -54,7 +54,13 @@ releases/
 /test_media/
 
 # 运行时工具（exiftool 等，构建机器本地部署，不进版本库）
-/resources/tools/
+# 例外：Linux 压缩/解压兜底用的 7zz 及其 LGPL 许可证必须入库，否则目标机
+# 没装系统 7z 时功能直接不可用（docs/linux-gap.md L16）。
+/resources/tools/*
+!/resources/tools/7z/
+/resources/tools/7z/*
+!/resources/tools/7z/7zz
+!/resources/tools/7z/License-7zip-linux.txt
 
 # PyInstaller 单文件版构建产物
 build_onefile/

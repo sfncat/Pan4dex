@@ -146,10 +146,18 @@ Qt 对象，控件用例用 `qtbot`）。
 QT_QPA_PLATFORM=offscreen pytest tests/ -q
 ```
 
-> **当前基线（2026-11-19 实测）**：上面这条**能跑完**，不需要任何 `--ignore`：
-> Windows / Python 3.13（`.venv`）/ offscreen → **1042 passed, 5 skipped in 104.90s**
-> （1.9.053 发布前置那轮。上一基线是 2026-11-17 的 988 passed / 5 skipped（142.07s，1.9.052
-> 发布前置）；本轮 +54 条是跨 RDP 剪贴板虚拟文件粘贴的 `tests/test_rdp_clipboard.py`（结构体
+> **当前基线（2026-11-25 实测）**：上面这条**能跑完**，不需要任何 `--ignore`：
+> Windows / Python 3.13（`.venv`）/ offscreen → **1065 passed, 6 skipped in 215.04s**
+> （1.9.054 发布前置。+17 条 = reveal 3 + archive_ops_linux 3 + file_associations_default 5
+> + copy_path_name 4 + search_results 1 + build_linux_docker 1。上一基线是 2026-11-24 的
+> 1048 passed / 6 skipped（206.69s，图标卡死修复那轮）；再上一基线是 2026-11-19 的
+> 1042 passed / 5 skipped（104.90s，
+> 1.9.053 发布前置）。**跑这轮时注意日志轮转**：若有另一个 pan4dex 实例正握着
+> `%APPDATA%\pan4dex\logs\pan4dex.log`，跨天 `TimedRotatingFileHandler.doRollover()` 的
+> `os.rename` 会撞 WinError 32，每条 logger 重试一次最终把 pytest-qt 拖到段错误（EXIT=139）。
+> 解法是把 `APPDATA` 指到临时目录跑（config/paths.py 与 main.py 都读它），同时保证 `~/Desktop`
+> 存在，否则两条默认收藏用例会因「桌面」条目缺席而失败——都是环境副作用，不是产品回归。
+> 2026-11-19 那轮：+54 条是跨 RDP 剪贴板虚拟文件粘贴的 `tests/test_rdp_clipboard.py`（结构体
 > 偏移守卫 / 描述符解析 / 文件名消毒 / 落盘与拒绝 / 窗格接线五节），对照组把
 > `Pane._rdp_virtual_files` 换成改前的空手返回 → 4 条接线用例全红（`tmp/rdp_fix_control.py`）。
 > 再往前：2026-11-16 的 903 passed / 5 skipped（136.43s，1.9.051

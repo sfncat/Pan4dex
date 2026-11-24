@@ -1661,6 +1661,92 @@ ctypes 不会报错，只会按你声明的宽度去解释那块内存——Wind
 
 ---
 
+### 70. 「点一下整个界面转圈」：取文件图标把 SMB 路径交给 shell，撞上云盘的图标覆盖处理器
+
+**现场**：进程 CPU 静止、窗口消息却间歇性 0.2→60ms，`procdump` 抓转圈那一刻的原生栈，主线程停在
+`QTreeView::drawRow → QStyledItemDelegate::paint → QIcon::paint → QAbstractFileIconEngine::scaledPixmap
+→ QWaitCondition::wait`（UI 线程同步等图标加载完成），图标线程停在
+`SHGetFileInfoW → SHELL32_GetIconOverlayManager → Ndr64AsyncClientCall → CoWaitForMultipleHandles`
+（跨进程 COM 调用迟迟不返回）。两栈一拼，卡的是「画文件图标」而不是「读 SMB 文件」——
+用户自检说的「和 SMB 相关」只说对了一半：SMB 路径是放大器，不是根因。
+
+**根因**：`core/dir_model.py:type_icon()` 旧实现用 `QFileIconProvider().icon(QFileInfo(真实路径))`。
+Windows 上它落到 `SHGetFileInfoW`，shell 会把**真实路径**逐个递给系统注册的
+`ShellIconOverlayIdentifiers`——本机装了 25+ 个（OneDrive 7、百度网盘 7、Google Drive 4、
+IDM、Adobe CoreSync、Offline Files……）。任一处理器的 RPC 卡住（OneDrive.Sync.Service 当时累计
+CPU 1290s），整条图标加载链就阻塞，UI 线程跟着 `QWaitCondition::wait` 无限等 → 表现为点哪都转圈。
+网络盘路径让每个 overlay 都多做一次网络查询，所以「一碰 SMB 盘就卡」；纯本地目录只是慢，不明显。
+
+**修法**：Windows 上不再把真实路径交给 shell——改用 `SHGetFileInfoW` 传**伪文件名**
+（`_pan4dex_probe_<ext>`，指向不存在的文件）+ `SHGFI_USEFILEATTRIBUTES`，让 shell 只按扩展名
+查注册表关联，一步都不走真实文件系统，也就不会触发任何 overlay。大/小图标各取一次塞进 QIcon
+（16px 列表 + 32px 超大图标视图）。非 Windows 没有这套 shell overlay，沿用 `QFileIconProvider`。
+系统调用收进 `_WindowsShellIconApi` + 惰性单例 `_SHELL_ICON_API`（仿 `net_share._netapi()`），
+测试塞假 API 即可断言「交给 shell 的到底是什么」，不依赖真机装了哪些云盘。
+`SHFILEINFOW` 偏移仍按探针 dump（sizeof=696、hIcon +0、szDisplayName +16，见 #68）。
+
+**两个测试才抓到的实现坑**：① `for flags in (SHGFI_ICON | ...)` 漏写 `_` 前缀，假 API 测试全绿
+（它绕过真实实现），真机用例一跑就 `NameError`——所以 `tests/test_type_icon.py` 既有假 API 用例
+也有走真 Win32 的 `test_windows_api_uses_fake_name_and_use_file_attributes`。②
+`QImage.fromHICON(ctypes.c_void_p(h))` 静默返回 null QImage（sip.voidptr 要整数），
+改 `int(h)` 才对——真机用例的 `assert not icon.isNull()` 是唯一抓到它的守卫。
+**对照**：把 `type_icon` 换回旧实现 → 3 条红（真实路径外泄/缓存/Win32 伪名）；恢复 → 全绿。
+实测新路径稳态单次 1–3ms（首次含 DLL 加载 20–30ms），按扩展名缓存后列表绘制零 shell 调用。
+
+---
+
+### 71. Linux「在文件管理器中显示」变成开浏览器：xdg-open 把目录交给了 MIME 默认程序
+
+**现场**：右键「在文件管理器中显示」，弹出的是浏览器窗口而不是文件管理器。进程没有报错，
+`core/reveal.py` 也确实调了 `xdg-open`——问题出在这个命令的语义上。
+
+**根因**：`_linux_argv()` 旧版只认 `XDG_CURRENT_DESKTOP` 里的 KDE/GNOME，匹配不到时回落
+`['xdg-open', 父目录]`。xdg-open 查的是 `inode/directory` 的 MIME 默认应用，本机那一项目录
+关联到浏览器，于是「定位文件」变成了「浏览器打开目录」，而且 `selected=False` 连文件都没选中。
+桌面环境变量缺失（XFCE/LXDE/精简桌面/SSH 会话）都会踩到，跟有没有装文件管理器无关。
+
+**修法**：仍是全仓唯一的 `core/reveal.py`，Linux 分三层挑执行者：①桌面环境精确匹配
+（KDE→dolphin、GNOME→nautilus，原行为保留）；②不管环境变量写什么，按 PATH 探测
+`_LINUX_FILE_MANAGERS`（nautilus/dolphin/nemo/caja/pcmanfm/thunar）里真实存在的一个，
+有 `--select` 约定的就选中，Thunar 传文件路径定位父目录（明说未选中）；③都不在 PATH
+（如 Flatpak 版）走 freedesktop 标准 `org.freedesktop.FileManager1.ShowItems` D-Bus 接口。
+三层全空才回落 xdg-open。`tests/test_reveal.py` 39 条，把 XFCE+nautilus 与 Thunar 两条
+「旧实现必开浏览器」的路径钉死；对照组还原旧回落 → 3 条红。
+
+### 72. Linux「压缩/解压功能没了」：菜单还在，后端三级兜底全空
+
+**现场**：Linux 上右键有「压缩/解压」，点了没反应或报「未找到 7-Zip」，用户理解成功能被删了。
+
+**根因**：菜单项没有任何平台屏蔽，代码路径也没丢——`archive_ops.find_7z()` 的顺序是
+系统 PATH → Windows 安装目录 → 应用内 `resources/tools/7z/`，而 Linux 侧要找的 `7zz`
+从来没进版本库（`.gitignore` 的 `/resources/tools/` 把整目录排除了）。系统没装 7z/p7zip
+的机器上三级全空，`find_7z()` 返回 None，压缩/解压自然不可用。这是 1.9.049 起就存在的
+老问题，Windows 侧 T13 修过，Linux 侧一直靠「目标机装了系统 7z」掩盖着。
+
+**修法**：从 7-zip 官网取官方 Linux 包里的 `7zz`（25.01，2,878,000 B，
+sha256 `a1860fdf…a0916ba0b2f`）与 Linux 版 LGPL 许可证入库；`.gitignore` 改成精确放行
+这两个文件（其余 exiftool/Windows 版二进制仍不入库）；Linux 构建脚本在暂存 `7zz` 时把许可证
+一并拷进包里。`tests/test_archive_ops_linux.py` 除查找逻辑外还验 ELF 魔数与许可证存在，
+防止以后拉到 HTML 错误页或漏带许可证。**测试坑**：`find_7z()` 会把「没找到」缓存成空串，
+同一进程内造出 7zz 再查仍返回 None——用例必须重置 `_7Z_PATH` 模拟新进程重启。
+
+### 73. Linux 双击 .md 不走系统默认应用：关联表把它写死成了 gedit
+
+**现场**：在系统里把 Markdown 默认应用换成 Typora/MarkText，从 pan4dex 双击 .md 仍打开 gedit。
+
+**根因**：`config/file_associations.py:_get_default_associations()` 把 `.md` 硬编码成
+`{"app": "gedit"}`，`open_file()` 的规则是「用户关联优先」——命中后直接 `_spawn` 并 return，
+`_open_with_default()` 里的 xdg-open 入口永远没机会执行。这与双重点击本身无关，是配置默认值
+的问题；已有的 `associations.json` 在首次运行时就把这个值落盘了，只改默认表对老用户无效。
+
+**修法**：默认表不再写 `.md`（无关联即走系统默认，`_LINUX_APP_CANDIDATES[".md"]` 仅作
+xdg-open 失败时的兜底）；`load()` 增加一次性迁移，只搬走「恰好还是旧默认值 gedit」的条目，
+用户主动选的其它应用原样保留。`tests/test_file_associations_default.py` 5 条钉住新配置、
+旧配置迁移、用户选择保留、走系统默认、迁移只做一次；对照组 3 条红。**已知代价**：用户当初
+确实主动选了 gedit 也无法区分，会被重置一次，可在「打开方式」里重新指定。
+
+---
+
 ## 八、回归防护机制
 
 ### 部署脚本

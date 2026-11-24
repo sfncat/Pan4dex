@@ -222,6 +222,7 @@ def test_menu_lists_the_batch_actions_with_counts(dlg, files, monkeypatch):
         "打开所在文件夹",
         "在系统文件管理器中选中",
         "复制路径文本",
+        "复制文件名",
         f"复制到…（{len(files)} 项）",
         f"移动到…（{len(files)} 项）",
         f"删除（{len(files)} 项）",
@@ -342,6 +343,22 @@ def test_copy_paths_puts_one_path_per_line_in_display_order(dlg, files, monkeypa
     select(dlg, [files[2], files[1]])
     dlg.copy_paths_to_clipboard()
     assert text == ["\n".join([files[1], files[2]])]
+
+
+def test_copy_names_puts_basename_per_line_in_display_order(dlg, files, monkeypatch):
+    """复制文件名：只要 basename，多选逐行，顺序跟随显示顺序"""
+    text = []
+
+    class Clip:
+        def setText(self, t):
+            text.append(t)
+
+    monkeypatch.setattr(QApplication, "clipboard", staticmethod(lambda: Clip()))
+    add_rows(dlg, files)
+    select(dlg, [files[2], files[1]])
+    dlg.copy_names_to_clipboard()
+    assert text == ["\n".join(os.path.basename(p) for p in (files[1], files[2]))]
+    assert "个文件名" in dlg.status_label.text()
 
 
 # ------------------------------------------------------------------ 复制 / 移动

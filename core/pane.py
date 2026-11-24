@@ -1793,10 +1793,14 @@ class Pane(QWidget):
             
             menu.addSeparator()
             
-            # 复制选中项绝对路径（到系统剪贴板，多行）
-            copy_path_action = QAction("复制文件地址(&A)", self)
+            # 复制选中项绝对路径 / 文件名（到系统剪贴板，多选逐行）
+            copy_path_action = QAction("复制路径(&A)", self)
             copy_path_action.triggered.connect(lambda: self._copy_paths_to_clipboard(paths))
             menu.addAction(copy_path_action)
+
+            copy_name_action = QAction("复制文件名(&N)", self)
+            copy_name_action.triggered.connect(lambda: self._copy_names_to_clipboard(paths))
+            menu.addAction(copy_name_action)
             
             # 在系统文件管理器中定位（Windows explorer /select）
             reveal_text = "在资源管理器中显示(&E)" if sys.platform == 'win32' else "在文件管理器中显示(&E)"
@@ -1919,6 +1923,17 @@ class Pane(QWidget):
             copy_action = QAction("复制(&C)", self)
             copy_action.triggered.connect(lambda: self._copy_paths([path]))
             menu.addAction(copy_action)
+
+            # 与文件列表右键保持一致：文本形式复制路径/文件名
+            copy_path_action = QAction("复制路径(&A)", self)
+            copy_path_action.triggered.connect(
+                lambda: self._copy_paths_to_clipboard([path]))
+            menu.addAction(copy_path_action)
+
+            copy_name_action = QAction("复制文件名(&N)", self)
+            copy_name_action.triggered.connect(
+                lambda: self._copy_names_to_clipboard([path]))
+            menu.addAction(copy_name_action)
             
             cut_action = QAction("剪切(&X)", self)
             cut_action.triggered.connect(lambda: self._cut_paths([path]))
@@ -2200,10 +2215,22 @@ class Pane(QWidget):
             from PyQt6.QtWidgets import QApplication
             text = '\n'.join(os.path.normpath(p) for p in paths)
             QApplication.clipboard().setText(text)
-            self.status_label.setText(f"已复制 {len(paths)} 个文件地址")
+            self.status_label.setText(f"已复制 {len(paths)} 条路径")
         except Exception:
             pass
-    
+
+    def _copy_names_to_clipboard(self, paths):
+        """只复制文件名（basename），多选逐行——复制路径之外最常用的一种"""
+        if not paths:
+            return
+        try:
+            from PyQt6.QtWidgets import QApplication
+            text = '\n'.join(os.path.basename(os.path.normpath(p)) for p in paths)
+            QApplication.clipboard().setText(text)
+            self.status_label.setText(f"已复制 {len(paths)} 个文件名")
+        except Exception:
+            pass
+
     def _reveal_in_file_manager(self, path):
         """在系统文件管理器中选中并显示该项（执行细节在 core.reveal，全仓唯一一份）"""
         if not path:

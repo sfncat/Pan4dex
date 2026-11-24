@@ -66,6 +66,13 @@ def test_staging_copy_contains_only_7zz():
     assert f"{STAGE_7Z}/7zz " in installs[0], "暂存的必须是 7zz —— Linux 只找这个名字"
 
 
+def test_linux_license_is_staged_alongside_7zz():
+    """LGPL：分发 7zz 要随附许可证，Linux 版那份必须一起进暂存目录"""
+    text = _script()
+    assert "cp resources/tools/7z/License-7zip-linux.txt" in text
+    assert 'LINUX_7Z_STAGE/License-7zip-linux.txt' in text
+
+
 def test_no_windows_only_tool_is_staged_for_linux():
     """只看真正干活的那几行（注释里提 Windows 文件名是说明，不算复制）"""
     code = "\n".join(line for line in _script().splitlines()
@@ -73,7 +80,9 @@ def test_no_windows_only_tool_is_staged_for_linux():
     staging = re.findall(r'^\s*(?:install|cp)\s+.*resources/tools/7z.*$', code, re.M)
     assert staging, "找不到 7z 的暂存命令"
     for line in staging:
-        assert "7z.exe" not in line and "7z.dll" not in line and "License" not in line, line
+        # Windows 那三个专属文件不许混进 Linux 包；Linux 版许可证
+        # License-7zip-linux.txt 是要随 7zz 一起带的（LGPL），故只挡 Windows 那份文件名
+        assert "7z.exe" not in line and "7z.dll" not in line and "License.txt" not in line, line
 
 
 def test_staging_is_reset_before_each_build():

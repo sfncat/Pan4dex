@@ -20,8 +20,10 @@ Pan4dex 万格 — DirStoreModel：以目录节点为单位的异步文件模型
 （pane_tree_view / tree_sidebar）本就按需展开、非瓶颈，继续使用 QFileSystemModel。
 """
 import os
+import sys
 import time
 import logging
+import ctypes
 import contextlib
 import weakref as _weakref
 from datetime import datetime
@@ -33,6 +35,7 @@ from PyQt6.QtCore import (
     QFileSystemWatcher, QTimer, QRunnable, QThreadPool, QObject,
     pyqtSignal, pyqtSlot, QFileInfo,
 )
+from PyQt6.QtGui import QIcon, QImage, QPixmap
 from PyQt6.QtWidgets import QApplication, QStyle, QFileIconProvider
 
 logger = logging.getLogger("pan4dex.dir_model")
@@ -1398,12 +1401,99 @@ class DirStoreModel(QAbstractItemModel):
 
 # ---- 文件类型图标（列表视图与超大图标视图共用）----
 
+# SHFILEINFOW 字段偏移经探针 dump 实测（Windows x64：sizeof=696，hIcon +0，
+# iIcon +8，dwAttributes +12，szDisplayName +16，szTypeName +536）——不按头文件转写。
+# 见 docs/gotchas.md #68 / #70。非 Windows 不实例化，字段定义本身跨平台无害。
+class _SHFILEINFOW(ctypes.Structure):
+    _fields_ = [
+        ("hIcon", ctypes.c_void_p),      # HICON, x64 = 8 bytes
+        ("iIcon", ctypes.c_int),
+        ("dwAttributes", ctypes.c_uint32),
+        ("szDisplayName", ctypes.c_wchar * 260),
+        ("szTypeName", ctypes.c_wchar * 80),
+    ]
+
+
+_SHGFI_ICON = 0x000000100
+_SHGFI_SMALLICON = 0x000000001
+_SHGFI_LARGEICON = 0x000000000
+_SHGFI_USEFILEATTRIBUTES = 0x000000010
+_FILE_ATTRIBUTE_NORMAL = 0x00000080
+
+# 唯一的 shell32 出口，模仿 net_share._netapi() 的惰性单例注入口；测试塞假 API 即可驱动。
+_SHELL_ICON_API = [None]
+
+
+class _WindowsShellIconApi:
+    """按扩展名问 Windows 关联图标，只传伪文件名 + SHGFI_USEFILEATTRIBUTES。
+
+    这样 shell 只查注册表里的扩展名关联，不 stat 真实文件、不触发图标覆盖处理器
+    （OneDrive/百度网盘/Google Drive 等注册的 ShellIconOverlayIdentifiers）——
+    正是这些 overlay 的跨进程 COM 调用会把 UI 线程一起拖进「点一下就转圈」。
+    大/小图标各取一次塞进 QIcon，兼顾列表 16px 与超大图标 48px 视图。
+    """
+
+    def __init__(self):
+        self.shell32 = ctypes.WinDLL("shell32", use_last_error=True)
+        self.user32 = ctypes.WinDLL("user32", use_last_error=True)
+        fn = self.shell32.SHGetFileInfoW
+        fn.argtypes = [ctypes.c_wchar_p, ctypes.c_uint32, ctypes.POINTER(_SHFILEINFOW),
+                       ctypes.c_uint32, ctypes.c_uint32]
+        fn.restype = ctypes.c_void_p  # HIMAGELIST；只判 0/非 0，不读成 int
+        destroy = self.user32.DestroyIcon
+        destroy.argtypes = [ctypes.c_void_p]
+        destroy.restype = ctypes.c_int
+        self._get = fn
+        self._destroy = destroy
+
+    def icon_for_ext(self, ext: str):
+        # 伪文件名：确保带扩展名但不指向任何真实文件；USEFILEATTRIBUTES 让 shell
+        # 完全按 FILE_ATTRIBUTE_NORMAL + 扩展名查关联，一步都不走真实文件系统。
+        fake = "_pan4dex_probe_" + (ext or "")
+        icon = QIcon()
+        for flags in (_SHGFI_ICON | _SHGFI_SMALLICON | _SHGFI_USEFILEATTRIBUTES,
+                      _SHGFI_ICON | _SHGFI_LARGEICON | _SHGFI_USEFILEATTRIBUTES):
+            info = _SHFILEINFOW()
+            ret = self._get(fake, _FILE_ATTRIBUTE_NORMAL, ctypes.byref(info),
+                            ctypes.sizeof(info), flags)
+            if not ret or not info.hIcon:
+                continue
+            try:
+                # fromHICON 要的是整数句柄（sip.voidptr），传 c_void_p 会静默得到 null
+                # QImage；拷完像素即可销毁内核句柄，避免 GDI 泄漏。
+                img = QImage.fromHICON(int(info.hIcon))
+                if not img.isNull():
+                    icon.addPixmap(QPixmap.fromImage(img))
+            finally:
+                self._destroy(ctypes.c_void_p(info.hIcon))
+        return icon if not icon.isNull() else None
+
+
+class _FallbackIconApi:
+    """非 Windows：沿用 QFileIconProvider，本就没有 Windows shell overlay 那套东西。"""
+
+    def __init__(self):
+        self._provider = QFileIconProvider()
+
+    def icon_for_ext(self, ext: str):
+        return self._provider.icon(QFileInfo("_pan4dex_probe_" + (ext or "")))
+
+
+def _shell_icon_api():
+    if _SHELL_ICON_API[0] is None:
+        _SHELL_ICON_API[0] = (_WindowsShellIconApi() if sys.platform == "win32"
+                              else _FallbackIconApi())
+    return _SHELL_ICON_API[0]
+
+
 def type_icon(path: str, is_dir: bool):
     """按条目取显示图标：目录用文件夹图标，文件按扩展名取系统关联图标。
 
-    系统图标经 QFileIconProvider 查询（SHGetFileInfo），按扩展名缓存——
-    同一扩展名只在首次显示时查一次 shell，之后 O(1)。查询失败（无关联/
-    shell 异常）回退到 Qt 通用文件图标。
+    Windows 上经 SHGetFileInfoW 传**伪文件名** + SHGFI_USEFILEATTRIBUTES，只查注册表
+    关联、不碰真实文件，因此不会触发云盘/OneDrive 等注册的图标覆盖处理器
+    （它们的跨进程 COM 调用会让 UI 线程无限等待 → 「点一下整个界面转圈」）。
+    按扩展名缓存，同一扩展名首次查一次 shell、之后 O(1)；失败回退 Qt 通用文件图标。
+    见 docs/gotchas.md #70。
     """
     cache = DirStoreModel._ICON_CACHE
     if is_dir:
@@ -1415,10 +1505,13 @@ def type_icon(path: str, is_dir: bool):
     key = ("ext", ext)
     if key in cache:
         return cache[key]
-    if DirStoreModel._ICON_PROVIDER is None:
-        DirStoreModel._ICON_PROVIDER = QFileIconProvider()
-    icon = DirStoreModel._ICON_PROVIDER.icon(QFileInfo(path))
-    if icon.isNull():
+    icon = None
+    try:
+        icon = _shell_icon_api().icon_for_ext(ext)
+    except Exception as e:
+        # 取图标失败绝不能挡住文件列表；回退通用图标即可（安全网自己不许致命）。
+        logger.warning("取扩展名图标失败 ext=%r: %s", ext, e)
+    if icon is None or icon.isNull():
         sp = QStyle.StandardPixmap.SP_FileIcon
         if sp not in cache:
             cache[sp] = QApplication.style().standardIcon(sp)

@@ -796,6 +796,15 @@ class AdvancedSearchDialog(QDialog):
         QApplication.clipboard().setText("\n".join(paths))
         self.status_label.setText(f"已复制 {len(paths)} 条路径文本")
 
+    def copy_names_to_clipboard(self):
+        """只复制选中项的文件名（basename），多选逐行"""
+        paths = self.selected_paths()
+        if not paths:
+            return
+        QApplication.clipboard().setText(
+            "\n".join(os.path.basename(os.path.normpath(p)) for p in paths))
+        self.status_label.setText(f"已复制 {len(paths)} 个文件名")
+
     # ------------------------------------------------------------------ 搬运类
 
     def copy_selected_to(self):
@@ -933,6 +942,7 @@ class AdvancedSearchDialog(QDialog):
             menu.addAction("打开所在文件夹", self.open_containing_folders)
             menu.addAction("在系统文件管理器中选中", self.reveal_in_system_manager)
             menu.addAction("复制路径文本", self.copy_paths_to_clipboard)
+            menu.addAction("复制文件名", self.copy_names_to_clipboard)
             menu.addSeparator()
             busy = self.runner.busy
             actions = [(f"复制到…{suffix}", self.copy_selected_to),

@@ -9,16 +9,29 @@ gotchas #56），失败只返回结果 + 记日志。
 Windows 的 argv 形式能否选中带空格/UNC 路径、Linux 的 `dolphin --select` /
 `nautilus --select` 能否高亮。参数按各桌面环境的公开用法拼，验完再回来改这一处。
 """
+import json
 import logging
 import os
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 from typing import NamedTuple
 
 logger = logging.getLogger("pan4dex.reveal")
 
 REVEAL_LIMIT = 5      # 一次最多定位几个（一人开十个窗口是灾难）
+
+# PATH 里常见文件管理器；第二项是「选中该文件」的命令行参数。
+# Thunar 没有 --select，传文件路径它自己定位父目录（不保证高亮，故 selected=False）。
+_LINUX_FILE_MANAGERS = (
+    ("nautilus", ("--select",)),
+    ("dolphin", ("--select",)),
+    ("nemo", ("--select",)),
+    ("caja", ("--select",)),
+    ("pcmanfm", ("--select",)),
+    ("thunar", ()),
+)
 
 
 class RevealResult(NamedTuple):
@@ -42,17 +55,43 @@ def win_unc_fix(norm: str) -> str:
 
 
 def _linux_argv(norm: str):
-    """Linux：挑能「选中」的文件管理器，挑不到再回落成只打开所在目录。
+    """Linux：必须落到真实文件管理器，绝不把目录扔给 xdg-open 的 MIME 默认程序。
 
-    回落是现状行为，但必须让调用方知道没选中（`selected=False`），别让用户以为
-    文件已经高亮。D-Bus org.freedesktop.FileManager1.ShowItems 是更稳的备选，
-    本轮未实测，验完再决定是否替换命令行方案。
+    旧实现只认 KDE/GNOME，桌面环境没识别出来（XFCE/LXDE/精简桌面/SSH 会话）
+    就回落 `xdg-open 父目录`——本机实测这条会把 `inode/directory` 交给浏览器，
+    于是「在文件管理器中显示」变成开浏览器。现在按三层挑：
+
+    1. 桌面环境精确匹配（KDE→dolphin、GNOME→nautilus，保留原行为）；
+    2. 不管桌面环境写什么，按 PATH 探测 _LINUX_FILE_MANAGERS 里真实存在的一个；
+    3. 都不在 PATH（如 Flatpak 版）走 freedesktop 标准 D-Bus ShowItems。
+
+    只有三层全空才退回 xdg-open，且明说 `selected=False`（只打开、未选中）。
     """
     desktop = (os.environ.get('XDG_CURRENT_DESKTOP') or '').upper()
     if ('KDE' in desktop or os.environ.get('KDE_FULL_SESSION')) and shutil.which('dolphin'):
         return ['dolphin', '--select', norm], True
     if 'GNOME' in desktop and shutil.which('nautilus'):
         return ['nautilus', '--select', norm], True
+
+    # 桌面环境变量不可信/没设：按可执行文件本身挑，不再走 xdg-open
+    for name, select_args in _LINUX_FILE_MANAGERS:
+        if shutil.which(name):
+            return [name, *select_args, norm], bool(select_args)
+
+    # 文件管理器不在 PATH：让正在运行的 FM 通过标准接口自己高亮
+    if shutil.which('gdbus'):
+        try:
+            uri = Path(norm).absolute().as_uri()
+            return [
+                'gdbus', 'call', '--session',
+                '--dest', 'org.freedesktop.FileManager1',
+                '--object-path', '/org/freedesktop/FileManager1',
+                '--method', 'org.freedesktop.FileManager1.ShowItems',
+                json.dumps([uri]), '',
+            ], True
+        except (ValueError, OSError):
+            pass
+
     return ['xdg-open', os.path.dirname(norm)], False
 
 

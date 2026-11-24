@@ -174,6 +174,11 @@ rm -rf "$LINUX_7Z_STAGE"
 mkdir -p "$LINUX_7Z_STAGE"
 if [ -f resources/tools/7z/7zz ]; then
     install -m 0755 resources/tools/7z/7zz "$LINUX_7Z_STAGE/7zz"
+    # 7-Zip 是 LGPL：分发二进制要随附许可证（仓库里已有 Linux 版那一份）。
+    # 写成单行 && 而不是内层 if：下面的守卫按「7zz if 之后第一个 fi」判断 else 分支在不在。
+    [ -f resources/tools/7z/License-7zip-linux.txt ] && \
+        cp resources/tools/7z/License-7zip-linux.txt \
+           "$LINUX_7Z_STAGE/License-7zip-linux.txt"
 else
     # 空目录必须删掉：下面用 `[ -d "$src" ]` 判「存在才带」，留着空目录会既不打 7zz
     # 也不报「本包不含」，日志说假话（Windows 构建与 Linux 构建并行时 7zz 正被临时移出，
