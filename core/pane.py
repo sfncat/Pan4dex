@@ -2089,27 +2089,24 @@ class Pane(QWidget):
         self.compress_paths(self._paths_from_selection())
     
     def compress_paths(self, paths):
-        """压缩指定路径列表，弹窗确认压缩包名称"""
+        """压缩指定路径列表，默认使用文件名或目录名，只选择格式"""
         if not paths:
             return
         if len(paths) == 1:
-            p = paths[0].rstrip(os.sep)
-            default_dir = os.path.dirname(p)
-            default_name = os.path.basename(p) + '.7z'
+            source = os.path.abspath(paths[0])
+            default_dir = os.path.dirname(source)
+            default_name = os.path.basename(source) or 'archive'
         else:
             default_dir = self.current_path
-            default_name = 'archive.7z'
-        name, ok = QInputDialog.getText(
-            self, "压缩文件目录", "压缩包名称:",
-            QLineEdit.EchoMode.Normal, default_name)
-        if not ok or not name.strip():
+            default_name = 'archive'
+
+        from widgets.archive_tool import CompressArchiveDialog
+        dlg = CompressArchiveDialog(default_dir, default_name, self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
             return
-        name = name.strip()
-        if not os.path.splitext(name)[1]:
-            name += '.7z'
-        out = os.path.join(default_dir, name)
+        out = dlg.output_path
         if os.path.exists(out):
-            QMessageBox.warning(self, "压缩文件目录", f"目标已存在: {out}")
+            QMessageBox.warning(self, "压缩", f"目标已存在: {out}")
             return
         self._run_archive_task(
             "正在压缩", lambda: archive_ops.compress(out, paths))

@@ -15,6 +15,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tarfile
 import threading
 
 logger = logging.getLogger("pan4dex.archive_ops")
@@ -29,9 +30,25 @@ _ARCHIVE_EXTS = {
     '.wim', '.swm', '.cpio', '.rpm', '.deb', '.001',
 }
 
+_TAR_MODES = {
+    '.tar': 'w',
+    '.tar.gz': 'w:gz',
+    '.tar.bz2': 'w:bz2',
+    '.tar.xz': 'w:xz',
+}
+
 _7Z_PATH = None      # None=未探测，''=未找到，其他=路径
 _7Z_VERSION = None   # None=未探测，''=未知，其他=版本号
 _LOCK = threading.Lock()
+
+
+def _archive_suffix(path: str) -> str:
+    """返回创建时使用的归档后缀，保留 .tar.gz 等双后缀。"""
+    p = path.lower()
+    for ext in ('.tar.gz', '.tar.bz2', '.tar.xz'):
+        if p.endswith(ext):
+            return ext
+    return os.path.splitext(p)[1]
 
 
 def is_archive(path: str) -> bool:
@@ -186,16 +203,30 @@ def _run(cmd):
 def compress(output_path, items):
     """压缩指定路径列表到 output_path（格式由后缀决定）。
 
+    TAR 系列由 Python 标准库生成；7z/zip 等格式交给 7-Zip。
     Returns: (ok, message)；ok=True 时 message 为输出文件绝对路径。
     """
-    sevenz = find_7z()
-    if not sevenz:
-        return False, '未找到 7-Zip（系统或内置）'
     if not items:
         return False, '没有可压缩的项目'
     out_dir = os.path.dirname(output_path) or '.'
     if not os.path.isdir(out_dir):
         return False, f'输出目录不存在: {out_dir}'
+
+    suffix = _archive_suffix(output_path)
+    if suffix in _TAR_MODES:
+        try:
+            with tarfile.open(output_path, _TAR_MODES[suffix]) as archive:
+                for item in items:
+                    source = os.path.abspath(item)
+                    arcname = os.path.basename(source.rstrip(os.sep)) or 'archive'
+                    archive.add(source, arcname=arcname, recursive=True)
+        except Exception as e:
+            return False, str(e)
+        return True, os.path.abspath(output_path)
+
+    sevenz = find_7z()
+    if not sevenz:
+        return False, '未找到 7-Zip（系统或内置）'
     cmd = [sevenz, 'a', '-y', os.path.abspath(output_path)]
     cmd += [os.path.abspath(i) for i in items]
     rc, out, err = _run(cmd)

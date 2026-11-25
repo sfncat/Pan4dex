@@ -7,10 +7,10 @@ import tarfile
 import shutil
 import subprocess
 from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, 
+    QDialog, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QLineEdit, QListWidget, QListWidgetItem,
     QFileDialog, QMessageBox, QGroupBox, QComboBox,
-    QInputDialog, QProgressDialog
+    QInputDialog, QProgressDialog, QFormLayout, QDialogButtonBox
 )
 from PyQt6.QtCore import Qt
 
@@ -355,3 +355,79 @@ class ArchiveDialog(QDialog):
             if shutil.which(path):
                 return path
         return None
+
+
+class CompressArchiveDialog(QDialog):
+    FORMATS = (
+        ("7Z", ".7z"),
+        ("ZIP", ".zip"),
+        ("TAR.GZ", ".tar.gz"),
+        ("TAR.XZ", ".tar.xz"),
+        ("TAR.BZ2", ".tar.bz2"),
+        ("TAR", ".tar"),
+    )
+
+    def __init__(self, default_dir, default_name, parent=None):
+        super().__init__(parent)
+        self.default_dir = os.path.abspath(default_dir or os.getcwd())
+        self.setWindowTitle("压缩")
+        self.setMinimumWidth(460)
+
+        layout = QFormLayout(self)
+        layout.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+
+        self.name_edit = QLineEdit(default_name)
+        self.name_edit.setClearButtonEnabled(True)
+        self.format_combo = QComboBox()
+        for label, suffix in self.FORMATS:
+            self.format_combo.addItem(label, suffix)
+        self.location_edit = QLineEdit(self.default_dir)
+        self.location_edit.setReadOnly(True)
+        self.output_edit = QLineEdit()
+        self.output_edit.setReadOnly(True)
+
+        layout.addRow("名称:", self.name_edit)
+        layout.addRow("格式:", self.format_combo)
+        layout.addRow("保存到:", self.location_edit)
+        layout.addRow("压缩包:", self.output_edit)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok
+            | QDialogButtonBox.StandardButton.Cancel,
+            self,
+        )
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("压缩")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addRow(buttons)
+
+        self.name_edit.textChanged.connect(self._update_output)
+        self.format_combo.currentIndexChanged.connect(self._update_output)
+        self._update_output()
+        self.format_combo.setFocus()
+
+    @property
+    def archive_name(self):
+        return self.name_edit.text().strip()
+
+    @property
+    def archive_filename(self):
+        if not self.archive_name:
+            return ""
+        return f"{self.archive_name}{self.format_combo.currentData()}"
+
+    @property
+    def output_path(self):
+        filename = self.archive_filename
+        return os.path.join(self.default_dir, filename) if filename else ""
+
+    def _update_output(self):
+        self.output_edit.setText(self.output_path)
+
+    def accept(self):
+        if not self.archive_name:
+            QMessageBox.warning(self, "压缩", "请输入压缩包名称。")
+            self.name_edit.setFocus()
+            return
+        super().accept()
