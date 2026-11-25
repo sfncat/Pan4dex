@@ -146,11 +146,19 @@ Qt 对象，控件用例用 `qtbot`）。
 QT_QPA_PLATFORM=offscreen pytest tests/ -q
 ```
 
-> **当前基线（2026-11-25 出包复跑实测）**：上面这条**能跑完**，不需要任何 `--ignore`：
-> Windows / Python 3.13（`.venv`）/ offscreen → **1066 passed, 5 skipped in 159.46s**
-> （隔离 `APPDATA` + `TMPDIR`，1.9.054 双平台出包前置；发布前置那轮为
-> 1065 passed / 6 skipped（215.04s）。+17 条 = reveal 3 + archive_ops_linux 3 + file_associations_default 5
-> + copy_path_name 4 + search_results 1 + build_linux_docker 1。上一基线是 2026-11-24 的
+> **当前基线（2026-11-25 压缩对话框 + TAR 后端修正复跑实测）**：上面这条**能跑完**，不需要任何 `--ignore`：
+> Windows / Python 3.13（`.venv`）/ offscreen → **1082 passed, 5 skipped in 153.61s**
+> （只隔离 `APPDATA` + `TMPDIR`，真实用户目录的 Desktop/Downloads/Documents 均在）。
+> 本次累计 +12 条是新增的 `tests/test_archive_compress_dialog.py`（对话框默认命名/格式联动/取消
+> 不落盘，以及 zip、tar、tar.gz、tar.bz2、tar.xz 五种后缀「生成后立刻读回来」），其中
+> tar.gz / tar.xz 两条在改前的 7-Zip 通路上红（gotchas #76）。同日「更新服务器端口改 10062」
+> 那一轮复跑仍是 **1082 passed / 5 skipped（134.59s，EXIT=0）**——它只动 `DEFAULT_SERVER_URL`
+> 等地址字面量，服务端用例在 `server/update-server/tests/`（另 23 passed，不含在这个数字里）。
+> 上一基线是同日 XFCE/Thunar 定位修复那轮的 1070 passed / 5 skipped（152.31s）；
+> 1.9.054 双平台出包复跑为 **1066 passed / 5 skipped（159.46s）**；那轮累计 +4 条是
+> `tests/test_reveal.py` 的 3 条外部程序库环境守卫 + 1 条 XFCE/Thunar 优先用例，另修正了
+> Thunar 可选中断言（旧实现 Thunar 相关两条红）。发布前置那轮为
+> 1065 passed / 6 skipped（215.04s）。再上一基线是 2026-11-24 的
 > 1048 passed / 6 skipped（206.69s，图标卡死修复那轮）；再上一基线是 2026-11-19 的
 > 1042 passed / 5 skipped（104.90s，
 > 1.9.053 发布前置）。**跑这轮时注意日志轮转**：若有另一个 pan4dex 实例正握着

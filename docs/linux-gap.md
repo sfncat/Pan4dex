@@ -162,7 +162,7 @@
 | 「此电脑」/挂载点/网络邻居 | 未做 | 未做（Linux 侧需 mount 表 / `QStorageInfo`，不是盘符） | 🔴 plan §7 欠账 | 全仓无 `QStorageInfo` |
 | 面包屑地址栏 | 未做 | 未做 | 🔴 plan §7 欠账 | — |
 | 路径补全 | 当前目录一层 | 同（`QDir` + `/`） | 🟢 | `widgets/path_bar.py:214-245` |
-| 在系统文件管理器中显示 | `explorer /select,` **选中该文件** | 桌面匹配（KDE→dolphin / GNOME→nautilus）→ PATH 探测真实文件管理器（含 nemo/caja/pcmanfm/thunar）→ D-Bus `ShowItems`；三层全空才 `xdg-open 父目录`（明说未选中）。**不再把目录直接丢给 MIME 默认程序（曾因此弹出浏览器）** | 🟡 真机 `ShowItems`/`--select` 高亮仍待验（L16） | `core/reveal.py:44-90`；用例 `tests/test_reveal.py` 39 条 |
+| 在系统文件管理器中显示 | `explorer /select,` **选中该文件** | 桌面精确匹配（KDE→dolphin / GNOME→nautilus / XFCE→thunar）→ PATH 探测真实文件管理器（含 nemo/caja/pcmanfm）→ D-Bus `ShowItems`；三层全空才 `xdg-open 父目录`（明说未选中）。**不再把目录直接丢给 MIME 默认程序（曾因此弹出浏览器）**；231/054 另实测到 onefile 的 `LD_LIBRARY_PATH` 让 Nautilus 加载包内 GLib 而无法启动，已修外部程序环境 | 🟡 **231 修复包双开通过**：Thunar 4.18.8 启动、`target.txt` 行高亮；此前 Nautilus 46.4 也通过。D-Bus `ShowItems` 与其它管理器仍待验（L16） | `core/reveal.py` `_linux_argv()` / `reveal_in_file_manager()`；用例 `tests/test_reveal.py` 43 条；gotchas #74/#75 |
 | 地址栏访问局域网共享（`\\服务器\共享`） | 🟢 1.9.052 起实装（`WNetAddConnection2W` + 凭据管理器，首次问口令） | 🟡 **只认写法、不连**：`core/net_share.py:is_supported_platform()` 返回 False，状态栏给一句「先用系统命令挂载再进目录」的指引，不会当成无效路径 | 🟡 待 **T15**（后端前置已销：gvfs SMB 后端与钥匙环服务**实测都在**，`mount.cifs` 缺；剩下的是「口令谁存」——`gvfsd-smb` 自己链接 `libsecret`，可能根本不用我们存，见 §5.4） | `core/net_share.py` + `docs/design-unc-share-access.md` §9/§11；用例 `tests/test_net_share.py` 的非 Windows 分支 |
 | 在终端中打开 | `wt`/`pwsh`/`cmd` | `xdg-mime query default x-scheme-handler/terminal` + 12 个候选终端扫描 | 🟢 反而更全 | `core/pane.py:2488-2535` |
 

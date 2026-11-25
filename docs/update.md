@@ -17,7 +17,7 @@
 | 决策点 | 结论 |
 |---|---|
 | 服务器访问范围 | **仅局域网**（192.168.5.x），走 HTTP，不做域名/证书 |
-| 服务器端口 | **23011**（可在环境变量/客户端设置中改） |
+| 服务器端口 | **10062**（2026-11-25 起，原 **23011**；可在环境变量/客户端设置中改） |
 | 发布说明格式 | **纯文本**，不渲染 Markdown/HTML |
 | 客户端默认行为 | **启动后台检查 → 发现新版本提示 → 用户确认后下载安装** |
 | Windows 替换方式 | **自动替换并重启**（临时更新脚本，失败回滚旧目录） |
@@ -93,7 +93,7 @@
 
 ```
                     ┌──────────────────────────────┐
-                    │  230 · 192.168.5.230:23011    │
+                    │  230 · 192.168.5.230:10062    │
                     │  update-server (Flask+waitress)│
                     │                              │
   浏览器(管理员) ───▶│  /admin  上传/撤下/删除       │
@@ -105,7 +105,7 @@
 
 - 服务器无状态逻辑 + 本地文件/SQLite，单容器部署；
 - 客户端只读 API + 下载，不依赖服务器推送；
-- 管理页与客户端 API 同一进程，端口 23011（可配置）。
+- 管理页与客户端 API 同一进程，端口 10062（可配置）。
 
 ---
 
@@ -170,7 +170,7 @@ SQLite 表 `releases`：
   "sha256": "…64 位十六进制…",
   "published_at": "2026-10-30T08:00:00Z",
   "notes": "修复…",
-  "download_url": "http://192.168.5.230:23011/download/windows/pan4dex-1.9.028.zip"
+  "download_url": "http://192.168.5.230:10062/download/windows/pan4dex-1.9.028.zip"
 }
 ```
 
@@ -222,7 +222,9 @@ SQLite 表 `releases`：
 - 依赖：`uv sync`（`pyproject.toml` 里 Flask + waitress；测试用 `uv sync --extra dev`）。
 - 服务：`/etc/systemd/system/pan4dex-update.service`，`EnvironmentFile=.env`、`PAN4DEX_UPDATE_DATA_DIR=<目录>/data`、`ExecStart=.venv/bin/python app.py`、`Restart=always`；`systemctl enable --now pan4dex-update`。
 - 数据：`<目录>/data/`（SQLite、产物、`secret.key`、`logs/admin.log`），备份拷这个目录即可。
-- 防火墙只放行局域网：`ufw allow from 192.168.5.0/24 to any port 23011`（Kali 若用 nftables，按同义规则；本机 ufw 关闭时无需配置）。
+- 防火墙只放行局域网：`ufw allow from 192.168.5.0/24 to any port 10062`（Kali 若用 nftables，按同义规则；本机 ufw 关闭时无需配置）。
+- 过渡期并行监听旧端口：`.env` 里 `PAN4DEX_UPDATE_EXTRA_PORTS=23011` 让同一进程在 10062 之外继续听旧端口
+  （旧客户端的 QSettings 里存着旧地址，见 gotchas #77）；老版本升完后删掉这一行重启即停用。
 - 备选：仓库内 `Dockerfile` / `docker-compose.yml` 仍可用；230 曾因拉不到 Docker Hub 基础镜像改走 uv 方案。
 - 反向代理/域名不在本次范围；以后上 HTTPS 只需在客户端改 `update/server_url`。
 
@@ -371,7 +373,7 @@ widgets/update_dialog.py   # 发现新版本 / 下载进度 / 安装确认
 
 | 键 | 默认 | 含义 |
 |---|---|---|
-| `update/server_url` | `http://192.168.5.230:23011` | 更新服务器根地址 |
+| `update/server_url` | `http://192.168.5.230:10062` | 更新服务器根地址 |
 | `update/startup_check` | `true` | 启动时后台检查 |
 | `update/auto_download` | `false` | 发现新版本后自动下载 |
 | `update/auto_install` | `false` | 下载完成后自动安装并重启（仅当自动下载开启时可用） |
@@ -481,7 +483,7 @@ SHA-256（不初始化 Qt）。退出码：`0` 已是最新、`3` 有新版本�
 
 ## 8. 场景走查（日常操作）
 
-1. **发布**：构建 1.9.029 的 Windows zip 与 Linux ELF → 打开 `http://192.168.5.230:23011/admin` → 登录 → 分别上传（版本/说明自动带出）→ 列表出现两条「最新」；公开页可下载验证。
+1. **发布**：构建 1.9.029 的 Windows zip 与 Linux ELF → 打开 `http://192.168.5.230:10062/admin` → 登录 → 分别上传（版本/说明自动带出）→ 列表出现两条「最新」；公开页可下载验证。
 2. **客户端启动检查**：1.9.028 启动 → 3 秒后提示 1.9.029 → 点「立即更新」→ 下载校验 → Windows 退出并由脚本替换后重启；Linux 原地替换后重启 → 关于对话框显示 1.9.029。
 3. **手动检查**：无更新时提示「已是最新版本」；服务器关机时提示连接失败与服务器地址。
 4. **跳过版本**：点「跳过此版本」→ 下次启动不再提示 1.9.029；1.9.030 出现时恢复提示。
@@ -543,10 +545,13 @@ SHA-256（不初始化 Qt）。退出码：`0` 已是最新、`3` 有新版本�
 
 ## 11. 待确认 / 风险
 
-1. 端口已定为 **23011**；实现前仍在 230 上 `ss -ltnp` 核对是否被占用，冲突时只改环境变量与客户端默认值。
+1. 端口现定为 **10062**（2026-11-25 起，原为 **23011**；改前在 230 上 `ss -ltnp` 实测 10062 无人监听）。
+   冲突时只改环境变量 `PAN4DEX_UPDATE_PORT` 与客户端默认值；过渡期旧端口 23011 由
+   `PAN4DEX_UPDATE_EXTRA_PORTS` 并行监听（旧客户端 QSettings 里存的是旧地址，gotchas #77），
+   230 已按此落地，收尾步骤见 `server/update-server/README.md`。
 2. 230 磁盘余量：每个平台约 100 MB/版本，需确认可用空间（建议保留 ≥ 10 GB）。
 3. Windows 目标机是否有 PowerShell 5.1（Win10/11 自带；不支持 Win7）。
-4. 客户端默认服务器地址确定为 `http://192.168.5.230:23011`（230 的 IP 变更时在设置页修改）。
+4. 客户端默认服务器地址确定为 `http://192.168.5.230:10062`（230 的 IP 变更时在设置页修改）。
 5. 发布说明确定为纯文本，不渲染 Markdown/HTML。
 
 ---

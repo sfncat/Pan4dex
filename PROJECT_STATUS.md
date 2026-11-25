@@ -8,6 +8,53 @@ updated: 2026-11-25
 
 ## 当前进展
 
+**1.9.055 出包中**（用户「出055版本，正好我验证一下新服务器域名」）：三批功能改动已按
+`d7824c9`（reveal）、`f5dfacb`（压缩对话框 + TAR 后端）、`a918206`（更新服务器 10062 双监听）
+提交，版本号已翻到 055。发布前置全量 **1082 passed / 5 skipped** 已在改前拿到汇总行。
+本版客户端内置更新源是 `http://192.168.5.230:10062`，230 服务端已提前上线该端口
+（旧 23011 并行监听着），所以装完 055 就能直接验新地址。产物：Windows 构建 → Linux（WSL2
+Docker）构建 → 上传 230 → 用 10062 核对 latest/download 的 version/size/SHA-256 → tag
+`v1.9.055` → 推送；数字与哈希出来后记到下面的「最近完成」。
+
+**更新服务器端口 23011 → 10062 已改完并在 230 落地双端口过渡**：改前实测 230 只有 23011 在听
+（`.env` 无端口项，走 `app.py` 进程内默认），10062 空闲。服务端 `_serve()` 改成
+`serve(app, listen=_listen_spec())`（本机与 230 都是 waitress 3.0.2，实测支持空格分隔多
+`host:port`），旧端口由 `.env` 的 `PAN4DEX_UPDATE_EXTRA_PORTS=23011` 并行保留；客户端默认地址、
+设置页提示、`scripts/update_server.json`/`upload_release.py`、`Dockerfile`/`docker-compose.yml`/
+`.env.example`、`docs/update.md` 与服务器 README 全部同步。部署前核到 230 的 `app.py`/`storage.py`
+md5 与仓库 HEAD 逐字节一致才覆盖（该机部署目录不是 git 仓库），`.env`/`app.py` 均留
+`*.bak-20261125-175150`。重启后实测：同一 pid 两条 LISTEN、两端口 `/healthz` 200、`/admin` 302、
+`latest` 两端口的 `download_url` 都是 10062、zip 116,647,078 B 与 ELF 108,207,536 B 的
+`X-Checksum-Sha256` 与 054 发布回执一致；用旧地址跑 `check_for_update()` 也能拿到新端口产物。
+ufw inactive 无需放行。测试：服务端 23 passed（+3 条 `_listen_spec` 守卫）、客户端更新链路
+47 passed、全量复跑 **1082 passed / 5 skipped（134.59s，EXIT=0）** 无回归。**为什么留旧端口**：
+设置页点过一次「确定」就把当时地址写死进 QSettings，内置默认值之后不再被读（gotchas #77）。
+代码侧已提交 `a918206`。
+
+**右键压缩已改成「格式选择 + 默认命名」对话框，并修掉 TAR 复合后缀的真实缺陷**（用户「压缩时
+能否选格式」「压缩包名应是文件名或目录名，默认不用输入」）：`Pane.compress_paths()` 不再用
+`QInputDialog` 手输名字，改走 `CompressArchiveDialog`（7Z/ZIP/TAR.GZ/TAR.XZ/TAR.BZ2/TAR，名称
+默认取选中项 basename、多选为 `archive`，实时回显输出路径）。改后实测发现 7-Zip 把
+`a out.tar.gz` / `out.tar.xz` 按最后后缀产出**裸 gzip/xz 而非 tar.gz/tar.xz**（`7z l` 报
+`Type = gzip` / `Type = xz`），TAR 系列已全部改走标准库 `tarfile`；五种后缀「生成后立刻读回来」
++ 目录结构断言共 12 条新用例，tar.gz/tar.xz 两条在改前红。全量 **1082 passed / 5 skipped
+（153.61s，EXIT=0）**，基线已同步 AGENTS.md 与 `docs/testing.md`。代码侧已提交 `f5dfacb`，
+与下面 231 定位修复（`d7824c9`）一起进本版 CHANGELOG `[1.9.055]`。
+Thunar 那套（plugin 注入三个动作 + `.tap` 脚本交给 File Roller）只移植了交互形状，
+`extract-here` 带 `--force` 的冲突处理**没有照抄**。
+
+**231 Linux「在文件管理器中显示」无法启动已定位、修复，并按默认管理器复测通过**：054 在
+Xfce/xrdp 会话中按 PATH 启动 Nautilus，却继承 onefile 的 `LD_LIBRARY_PATH=/tmp/_MEI...`，
+导致它加载包内缺 `g_once_init_enter_pointer` 的 GLib；同会话带该路径 `nautilus --version`
+退 127，去掉后退 0。`core/reveal.py` 现只从外部子进程环境剔除当前 `_MEIPASS` 库路径，用户
+自定义路径保留；XFCE 明确优先 Thunar，且按 Thunar 实际语义把传文件路径标为可选中。
+定位模块 **43 条**、全量 **1070 passed / 5 skipped（152.31s）**。WSL2 Docker 临时验证包
+**108,207,616 字节**，SHA-256 `670b0bbb6dd42b677454e02b383b315f1fbc0e444c5aa07f82f6f3c95a60fb7a`，
+上传 231 双开复测通过：实际打开 `pan4dex-thunar-probe.Az7k1h - Thunar`，`target.txt` 行高亮，
+状态栏显示 `"target.txt" | 20 bytes | Plain text document`。测试实例与测试 Thunar 窗口已退出，
+探针已清理；用户正在运行的 `pan4dex-reveal-fix-linux` 及 PID 4013330/4013342 未覆盖、未关闭，
+新验证包与启动日志保留。**尚未发布，正式版本号仍为 1.9.054。**
+
 **1.9.054 已发布并上传（2026-11-25）：修复「点一下整个界面转圈」的文件图标卡死**（用户报「本机 pan4dex 卡死，点一下就转圈，应该是 SMB 相关」）。原生栈定位到根因不在 SMB 读取，而在取文件图标：`type_icon()` 旧实现把真实路径交给 `QFileIconProvider`，Windows shell 逐项调用注册的云盘图标覆盖处理器（本机 25+ 个：OneDrive/百度网盘/Google Drive 等），其中跨进程 COM RPC 卡住 → UI 线程在 `QAbstractFileIconEngine::scaledPixmap → QWaitCondition::wait` 同步等死。已改成 `SHGetFileInfoW` + 伪文件名 + `SHGFI_USEFILEATTRIBUTES`，只按扩展名查关联、不碰真实文件；非 Windows 沿用原路径。新增 `tests/test_type_icon.py` 7 条，对照组（换回旧实现）3 条红、恢复全绿。改动仅落 `core/dir_model.py` + 测试，未动配置/视图。**本版已翻牌为正式版本：`VERSION` / `pyproject.toml` / `AGENTS.md` 同步 1.9.054，CHANGELOG 顶部改为 `2026-11-25（master）`，tag `v1.9.054`。**
 
 **同批落地四条 Linux/跨平台问题**（用户列 4 项）：① Linux 右键「在文件管理器中显示」变浏览器——`core/reveal.py` 旧回落 `xdg-open 父目录` 把 `inode/directory` 交给了 MIME 默认程序，改成桌面匹配 → PATH 探测真实文件管理器 → D-Bus `ShowItems` → 最后才 xdg-open（gotchas #71）；② Linux 压缩/解压「功能没了」——菜单在但 `find_7z()` 三级兜底全空，官方 7zz 25.01 + LGPL 许可证已入库并精确放行 `.gitignore`、Linux 构建随附许可证（gotchas #72）；③ Linux 双击 `.md` 不走系统默认——默认表写死 gedit 且 `open_file()` 关联优先，删掉硬编码并对老配置里恰好是旧默认值的做一次性迁移（gotchas #73）；④ 文件视图/目录树右键新增「复制路径」「复制文件名」（原「复制文件地址」更名），搜索右键补「复制文件名」，多选逐行写剪贴板。四条均有新用例与对照组（reveal 红 3 / md 红 3 / 图标红 3）；构建脚本加许可证时引入内层 `if` 撞上既有守卫的解析假设，已改成单行 `&&` 并补守卫。
@@ -16,6 +63,13 @@ updated: 2026-11-25
 
 ## 等你决策
 
+- **旧端口 23011 什么时候关**。你已选「双端口并行 + 立刻部署」，230 现网已按此跑起来
+  （10062 与 23011 同一进程监听，`download_url` 一律是 10062）。决定什么：留多久。旧客户端存的
+  是旧地址，只要旧端口还听着，它们就能继续收到更新提示并升上新端口；一旦关掉，还没升级的机器
+  点「检查更新」会直接连不上，得自己改设置或重新下安装包。建议：**跟着下一次发布走** —— 055 出包
+  并确认几台主力机升上来后，删掉 230 上 `/home/kali/runspace/pan4dex/.env` 里的
+  `PAN4DEX_UPDATE_EXTRA_PORTS` 一行再 `systemctl restart pan4dex-update` 即可，一条命令就能回退。
+  本版（055）正在出包，等你在新装的 055 上验过 10062 之后，这一条就可以安排。
 - **地址栏访问局域网共享：Windows 半边已落地，剩下两条各挡住一项待办**（原来四条决策的答复记在
   `docs/design-unc-share-access.md` §9，实现回执在 §11，**两条待定项的逐项对比在 §12**）：
   1. **Linux 那半边的口令谁来存**。决定什么：原先以为是「加一个 Python 依赖还是调系统命令」二选一，
@@ -32,7 +86,7 @@ updated: 2026-11-25
      照现有搜索对话框的形状做（1–2 天）。建议：**先用对话框这一版**，等 `\\主机\共享` 主路径真机验过
      再考虑搬进窗格。两条路的改动面/风险/可测性对比在设计稿 §12.2；无论选哪条，都要先补一轮
      列共享 API 的只读探针（已实测的 27 个错误码里没有它）。
-- **真机复测什么时候安排**：有些事必须有人在机器前才验得了 —— 大目录在 Linux 上到底卡多久（决定要不要把排序整个搬到后台）、四种视图的 Ctrl+End 手测、Linux 与 Windows 上「在文件管理器中显示」能不能真把文件高亮选中、切回超大图标看一眼是不是网格、关程序时还报不报错、Linux 上「拍摄日期」列现在能不能真读出日期，以及本轮新加的**「包内 `7zz` 到底有没有执行位」**（构建时已补 `install -m 0755`，但 PyInstaller 是否把执行位带进包内还没实测；判据 = 一台不装系统 7z/p7zip 的 Linux 机器上压缩/解压能用）。选项：安排一轮 30–60 分钟 / 先跳过。不定会挡住这七项销账。建议安排，其中「关程序报错」和「压缩/解压能不能用」是用户真能感知的。逐项自查命令已写进 `docs/linux-gap.md` §5.3，包内计数的查法写进 `docs/build/build-linux.md`「内置工具」一节。
+- **真机复测什么时候安排**：有些事必须有人在机器前才验得了 —— 大目录在 Linux 上到底卡多久（决定要不要把排序整个搬到后台）、四种视图的 Ctrl+End 手测、Windows 与其它 Linux 文件管理器上「在文件管理器中显示」能不能真把文件高亮选中（231 的 Thunar 4.18.8 与 Nautilus 46.4 已通过）、切回超大图标看一眼是不是网格、关程序时还报不报错、Linux 上「拍摄日期」列现在能不能真读出日期，以及本轮新加的**「包内 `7zz` 到底有没有执行位」**（构建时已补 `install -m 0755`，但 PyInstaller 是否把执行位带进包内还没实测；判据 = 一台不装系统 7z/p7zip 的 Linux 机器上压缩/解压能用）。选项：安排一轮 30–60 分钟 / 先跳过。不定会挡住这些项销账。建议安排，其中「关程序报错」和「压缩/解压能不能用」是用户真能感知的。逐项自查命令已写进 `docs/linux-gap.md` §5.3，包内计数的查法写进 `docs/build/build-linux.md`「内置工具」一节。
 - **「用户操作」菜单要不要接上入口**：对话框与配置层都修好了，产品里仍点不到（待办 T2，从 020 起就是这样）。接上才算一条完整功能；已按「摸不到入口」的规矩把它挪出发布说明。不定会挡住这条功能转 🟢。建议接。
 - **大目录那一步大改要不要先排期**：本机实测最差一次卡 0.359 秒，已低于你定的 0.4 秒；Linux 按倍率外推约 0.66 秒仍超。选项：(a) 等真机数字再定；(b) 现在就动手（3–5 天）。不定会挡住 T6 收尾。建议 (a)，不凭外推动工。
 - **跨窗格真鼠标拖拽的现场验收**：仍卡在需要有人在现场操作（旧条，未变）。建议与上面的真机复测并成同一轮。
@@ -48,6 +102,67 @@ updated: 2026-11-25
 | 5 | 审指向 `core/pane.py` / `widgets/*` / `config/*` 的行号指针（051 那轮只清了 `main.py` 与构建脚本 12 处，同一类问题在别的文件上还没扫） | 待开始 | 待补充 | 同类旧活，一并挂着；本轮 `core/pane.py` 插入了新方法，旧行号指针又漂了一批 |
 
 ## 最近完成
+
+- 2026-11-25 **更新服务器端口改到 10062，并在 230 落地双端口过渡**（用户「端口改为 10062，
+  服务端的代码也在项目里吧」→ 选「双端口并行 + 现在就改并重启验证」）。
+  **先答问题**：服务端就在本仓库 `server/update-server/`（Flask + waitress 3.0.2 + SQLite，
+  `app.py`/`storage.py`/`templates`/`tests`），230 的部署目录 `/home/kali/runspace/pan4dex`
+  **不是 git 仓库**，覆盖前逐文件比 md5 确认与 HEAD 一致。
+  **改端口本身**：`DEFAULT_PORT` 23011→10062；`_serve()` 由 `serve(host=,port=)` 改成
+  `serve(app, listen=_listen_spec())`，新增 `PAN4DEX_UPDATE_EXTRA_PORTS`（空格/逗号分隔、去重、
+  非数字跳过）—— 用本机 waitress 实测过 `listen='a:1 b:2'` 两个口都能应答（先试 list-of-tuple
+  被 `Adjustments.aslist` 拒了，`split()` 那一线）。230 侧 `.env` 补
+  `PAN4DEX_UPDATE_PORT=10062` + `PAN4DEX_UPDATE_EXTRA_PORTS=23011`、`PUBLIC_BASE_URL` 换 10062，
+  `systemctl restart` 后 `ss -ltnp` 同 pid 两条 LISTEN，两端口 `/healthz` 200、`/admin` 302、
+  两平台 `latest` 的 `download_url` 均为 10062，zip/ELF 的 `X-Checksum-Sha256` 与 054 回执一致；
+  `ufw` inactive 无需放行；备份 `app.py.bak-20261125-175150`/`.env.bak-20261125-175150`。
+  **顺带挖出一条陷阱**：`core/main_window.py:1549` 在点「确定」时无条件把当时地址写进
+  `update/server_url`，所以旧客户端不会跟着内置默认值走 —— 记为 gotchas **#77**，也是这次选
+  双端口过渡的理由。客户端侧同步改了 `DEFAULT_SERVER_URL`、设置页提示、`scripts/update_server.json`
+  + `upload_release.py`、`Dockerfile`/`docker-compose.yml`/`.env.example` 与两份文档；
+  测试：服务端 **23 passed**（+3 条 `_listen_spec`）、客户端更新链路 **47 passed**、
+  全量复跑 **1082 passed / 5 skipped（134.59s，EXIT=0）**。代码侧已提交 `a918206`。
+
+- 2026-11-25 **右键压缩：格式选择 + 默认命名对话框，并修正 TAR.GZ/TAR.XZ 产出物**。
+  用户先问「能不能选 zip / tar.xz / tar.gz」，再要求「压缩包名默认就是文件名或目录名，不用输入」。
+  `core/pane.py:compress_paths()` 由 `QInputDialog.getText()` 换成
+  `widgets/archive_tool.py:CompressArchiveDialog`（名称 / 格式 / 保存到 / 压缩包四行，初焦点在格式，
+  名称可改但默认流程零输入；多选落当前目录、名 `archive`；目标已存在先拦下不动后端）。
+  接后端时实测到缺陷：本机 7-Zip 26.04 对 `a out.tar.gz` / `a out.tar.xz` 只认最后一个后缀，
+  `7z l` 分别报 `Type = gzip` / `Type = xz`，是裸压缩流，`tarfile.open()` 报 truncated header。
+  `core/archive_ops.py` 加 `_archive_suffix()`（双后缀优先）+ `_TAR_MODES`，TAR 系列改走
+  `tarfile.open('w:gz|bz2|xz')`、`arcname` 取 basename 保子目录；7z/zip 仍交 7-Zip。
+  新增 `tests/test_archive_compress_dialog.py` 12 条：默认名取自文件/带尾分隔符的目录/多选、
+  格式联动输出路径、自定义名、取消不落盘、五种后缀生成后读回、目录结构成员集合。
+  **踩到一次测试写法**：monkeypatch 全局 `QDialog.exec` 会连旧 `QInputDialog` 通路一起拦掉导致
+  超时，改为只 patch `CompressArchiveDialog.exec`。全量 **1082 passed / 5 skipped（153.61s）**。
+  文档：gotchas **#76**、architecture `archive_ops` 一行、feature-checklist 18.3、CHANGELOG
+  `[1.9.055] 未发布` 补 Added/Changed/Fixed、testing.md 与 AGENTS.md 基线。**已随 1.9.055 出包翻牌，代码提交 `f5dfacb`。**
+
+- 2026-11-25 **XFCE 文件管理器选择纠正为 Thunar，并真机验证选中**。用户指出 231 当前默认
+  是 Thunar；核对代码发现 XFCE 未精确匹配，PATH 中 Nautilus 排在 Thunar 前，旧测试也把
+  Thunar 传文件路径错标为 `selected=False`。Thunar 4.18.8 手册明确“文件路径会在新窗口选中”，
+  补桌面精确匹配后，相关两条对照组先红后绿；定位测试 **43 passed**，全量
+  **1070 passed / 5 skipped（152.31s，EXIT=0）**。独立包
+  `/home/kali/tools/pan4dex-reveal-thunar-linux` 为 **108,207,616 字节**，SHA-256
+  `670b0bbb6dd42b677454e02b383b315f1fbc0e444c5aa07f82f6f3c95a60fb7a`；231 右键实际拉起
+  Thunar，窗口标题 `pan4dex-thunar-probe.Az7k1h - Thunar`，目标行高亮且状态栏显示
+  `"target.txt" | 20 bytes | Plain text document`。测试窗口、Thunar 窗口和探针已清理，用户
+  旧实例 PID 4013330/4013342 保持运行，验证包与日志保留。记录：gotchas #75、CHANGELOG
+  `[1.9.055] 未发布`、linux-gap 与测试基线。该 `[1.9.055] 未发布` 段已随本版出包翻牌，代码提交 `d7824c9`。**
+
+- 2026-11-25 **231 Linux 文件管理器无法启动：根因实测、GLib 环境修复与 Nautilus 对照验证**。只读探针确认
+  231 是 Ubuntu 24.04.5 + Xfce/xrdp，运行 054；Nautilus 继承 `/tmp/_MEI...` 后加载包内 GLib，
+  日志为 `libdee ... undefined symbol: g_once_init_enter_pointer`，同会话清除库路径后退 0。
+  `core/reveal.py` 仅剔除当前 `_MEIPASS` 条目，保留用户库路径；`tests/test_reveal.py` +3 条，
+  旧实现 3 条红、修复后 42 条绿，全量 **1069 passed / 5 skipped（153.48s，EXIT=0）**。
+  WSL2 Docker 临时验证包 **108,208,384 字节**，SHA-256
+  `83d65a35c879b21ea1ef70d56c75b1d5e3ba530bf654975379ab96e11c7a3201`，`--version` 为
+  054 + build 10:10:33；上传后双开复测，实际子进程为
+  `nautilus --select /tmp/pan4dex-reveal-probe.V6C8Rn/target.txt`，窗口状态栏显示
+  `"target.txt" selected (21 bytes)`。测试实例与 Nautilus 已退出、探针已清理，原 054 及 PID
+  3626408/3626430 未覆盖、未关闭，远程验证包与启动日志保留。文档：gotchas #74、CHANGELOG
+  `[1.9.055] 未发布`、linux-gap 与测试基线。该 `[1.9.055] 未发布` 段已随本版出包翻牌，代码提交 `d7824c9`。**
 
 - 2026-11-25 **1.9.054 双平台出包并本地核验**（用户「出054版本，双平台，linux使用wsl里的docker编译」）。
   全量 **1066 passed / 5 skipped（159.46s，EXIT=0）**。Linux 在 WSL2 原生目录

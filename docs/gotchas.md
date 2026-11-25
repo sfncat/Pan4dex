@@ -1745,6 +1745,86 @@ xdg-open 失败时的兜底）；`load()` 增加一次性迁移，只搬走「�
 旧配置迁移、用户选择保留、走系统默认、迁移只做一次；对照组 3 条红。**已知代价**：用户当初
 确实主动选了 gedit 也无法区分，会被重置一次，可在「打开方式」里重新指定。
 
+### 74. Linux onefile 启动外部文件管理器：包内 GLib 经 LD_LIBRARY_PATH 泄漏
+
+**现场**：231（Ubuntu 24.04.5 + Xfce/xrdp）运行 1.9.054，右键「在文件管理器中显示」
+没有任何窗口。`core/reveal.py` 按 PATH 优先选 Nautilus；`pan4dex-launch.log` 连续记录
+`nautilus: symbol lookup error: /lib/x86_64-linux-gnu/libdee-1.0.so.4: undefined symbol:
+g_once_init_enter_pointer`，进程留下 `<defunct>`。
+
+**根因**：Pan4dex onefile 进程的 `LD_LIBRARY_PATH=/tmp/_MEI...`，Nautilus 原样继承后，
+`ldd` 显示它改加载包内的 `libglib-2.0.so.0` / `libgobject-2.0.so.0` / `libgio-2.0.so.0`；
+包内 GLib 没有系统 `libdee` 需要的 `g_once_init_enter_pointer`。同一会话、同一显示与
+D-Bus 环境下，带该路径运行 `nautilus --version` 退出 **127**，去掉后退出 **0**。
+这不是候选文件管理器缺失，也不是 D-Bus 地址问题。
+
+**修法**：`core/reveal.py:reveal_in_file_manager()` 在 Linux 启动外部程序前复制环境，
+只剔除 `LD_LIBRARY_PATH` 中等于当前 `sys._MEIPASS` 的条目；其余用户路径保留，全被剔除时
+删除该变量。源码运行没有 `_MEIPASS`，环境原样传递。`tests/test_reveal.py` 新增 3 条，
+旧实现 3 条全红；修复后该文件 42 条全绿，全量 1069 passed / 5 skipped。
+**231 修复产物复测**：临时包上传后双开，右键触发的实际子进程为
+`nautilus --select /tmp/pan4dex-reveal-probe.V6C8Rn/target.txt`；Nautilus 46.4 窗口打开到
+`pan4dex-reveal-probe.V6C8Rn`，右下角显示 `"target.txt" selected (21 bytes)`。测试实例与
+Nautilus 均已退出，探针目录已清理，231 原 054 进程未覆盖、未关闭。D-Bus `ShowItems` 与
+其它文件管理器的选中效果仍待真机，不把本次 Nautilus 通过外推成全部通过。
+
+### 75. XFCE 文件管理器：桌面精确匹配优先于 PATH，Thunar 传文件路径能选中
+
+**现场**：用户指出 231 当前默认文件管理器是 Thunar。`_linux_argv()` 只精确匹配 KDE/GNOME，
+XFCE 落到 PATH 候选列表，而 Nautilus 排在 Thunar 前；同时旧注释与 `selected` 判定把 Thunar
+传文件路径当成“只开父目录、不选中”。
+
+**根因**：候选列表顺序不是桌面默认。Thunar 4.18.8 手册的 INVOCATION 明确写着，文件 URI
+会在新文件管理器窗口中选中；不需要 `--select`，空参数列表不代表 `selected=False`。
+
+**修法**：XFCE 且 `thunar` 在 PATH 时直接返回 `['thunar', norm], True`；PATH 兜底分支也把
+Thunar 标为可选中。新增“XFCE + Nautilus/Thunar 同时存在”用例，并修正已有 Thunar 用例，
+两条在旧实现上先红后绿；定位模块 43 条通过，全量 1070 passed / 5 skipped。
+
+**231 修复产物复测**：右键实际拉起 Thunar，窗口标题为
+`pan4dex-thunar-probe.Az7k1h - Thunar`，`target.txt` 行高亮，状态栏显示
+`"target.txt" | 20 bytes | Plain text document`；未启动新的 Nautilus。测试实例、测试 Thunar
+窗口与探针已清理，用户旧实例保持运行。D-Bus `ShowItems` 与其它管理器仍不外推为通过。
+
+---
+
+### 76. 压缩选 TAR.GZ/TAR.XZ：`7z a out.tar.gz` 产出的是裸 gzip，不是 tar.gz
+
+**现场**：压缩对话框加了格式选择后，集成用例里 `tarfile.open()` 读 7-Zip 生成的
+`*.tar.gz` / `*.tar.xz` 报 “truncated header”，`.tar` / `.tar.bz2` 却正常。
+
+**根因**：本机 7-Zip 26.04（`C:\Program Files\7-Zip\7z.exe`）按**最后一个后缀**推断容器，
+不看复合后缀。实测 `7z l` 对两个产物分别报 `Type = gzip` 和 `Type = xz`——里面装的是
+单个文件的压缩流，压根没有 tar 成员表，所以任何 tar 读取器都解不开。`.tar.bz2` 只是
+没撞上这条，不代表 7-Zip 理解 tar。
+
+**修法**：`core/archive_ops.py` 增加 `_archive_suffix()`（先匹配 `.tar.gz`/`.tar.bz2`/`.tar.xz`
+双后缀，再退回 `splitext`）与 `_TAR_MODES`，TAR 系列全部改走标准库 `tarfile.open(mode='w:*')`，
+`arcname` 取 `basename` 以保住目录结构；只有 7z/zip 仍交给 7-Zip。
+`tests/test_archive_compress_dialog.py` 对 zip/tar/tar.gz/tar.bz2/tar.xz 五种后缀逐个
+“生成后立刻读回来”，并断言成员集合含子目录；改前那两条 TAR 复合后缀用例红。
+
+---
+
+### 77. 改内置默认更新源地址没用：设置页点过一次「确定」，旧地址就永久存进 QSettings
+
+**现场**：更新服务器端口由 23011 改到 10062，`core/updater.py:DEFAULT_SERVER_URL` 改了、
+服务端也换了端口，但已装 054 的机器并不会自动跟过去。
+
+**根因**：`core/main_window.py:1549-1551` 在应用设置时无条件
+`setValue("update/server_url", settings.get('update_server_url') or DEFAULT_SERVER_URL)`，
+而 `widgets/settings_dialog.py:338` 把输入框预填成「已存的值或当时的默认值」——**用户一个字符
+都没输，只要点过「确定」，那一刻的默认地址就被写死进配置**；此后 `_update_server_url()`
+读的是这份存量，内置默认值再怎么改都不生效。这类「默认值 + 一次保存即固化」的组合在设置项里
+不止这一处。
+
+**修法**：不在客户端猜用户意图，改用服务端过渡——`.env` 里 `PAN4DEX_UPDATE_EXTRA_PORTS=23011`
+让同一进程双端口监听，manifest 的 `download_url` 用新地址（旧客户端拿到的仍是可达链接），
+等老版本陆续升上来再删该行。实测（2026-11-25）：同一 pid 两条 LISTEN，两端口 `/healthz` 均 200，
+用旧地址 `check_for_update()` 也能拿到 10062 的产物与正确 SHA-256。
+**下次改端口/改主机**要么沿用双监听过渡，要么显式写一次性迁移（同 #73 的 gedit 做法：只改
+「恰好还是旧默认值」的条目，用户自填的不动），并在 `tests/test_updater.py` 钉住迁移判据。
+
 ---
 
 ## 八、回归防护机制
