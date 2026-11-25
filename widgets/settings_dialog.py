@@ -338,7 +338,7 @@ class SettingsDialog(QDialog):
             str(s.value("update/server_url", DEFAULT_SERVER_URL) or DEFAULT_SERVER_URL))
         self.update_server_edit.setPlaceholderText(DEFAULT_SERVER_URL)
         sf.addRow("服务器地址:", self.update_server_edit)
-        server_hint = QLabel("局域网更新源，例如 http://192.168.5.230:23011")
+        server_hint = QLabel("局域网更新源，例如 http://192.168.5.230:10062")
         server_hint.setWordWrap(True)
         sf.addRow("", server_hint)
         layout.addWidget(server_group)

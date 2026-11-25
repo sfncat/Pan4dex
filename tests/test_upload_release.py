@@ -153,7 +153,7 @@ def test_password_from_dotenv(server, tmp_path, monkeypatch):
     env_file.write_text(
         "# 注释\n"
         'export PAN4DEX_UPDATE_ADMIN_PASSWORD="secret"\n'
-        "PAN4DEX_UPDATE_PUBLIC_BASE_URL=http://192.168.5.230:23011\n",
+        "PAN4DEX_UPDATE_PUBLIC_BASE_URL=http://192.168.5.230:10062\n",
         encoding="utf-8")
     monkeypatch.setattr(upload_release, "DOTENV_PATH", env_file)
     result = upload_artifact(_artifact(tmp_path), "windows", "1.9.028",

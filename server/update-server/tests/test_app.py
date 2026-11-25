@@ -34,7 +34,7 @@ def app(tmp_path):
             "DATA_DIR": str(tmp_path / "data"),
             "ADMIN_PASSWORD": "test-password",
             "SECRET_KEY": "test-secret",
-            "PUBLIC_BASE_URL": "http://192.168.5.230:23011",
+            "PUBLIC_BASE_URL": "http://192.168.5.230:10062",
         }
     )
 
@@ -353,3 +353,30 @@ def test_releases_api_lists_versions(client):
     payload = client.get("/api/v1/releases?platform=windows").get_json()
     assert len(payload["releases"]) == 1
     assert payload["releases"][0]["version"] == "1.9.028"
+
+
+def test_listen_spec_defaults_to_single_port(monkeypatch):
+    from app import _listen_spec
+
+    monkeypatch.delenv("PAN4DEX_UPDATE_PORT", raising=False)
+    monkeypatch.delenv("PAN4DEX_UPDATE_EXTRA_PORTS", raising=False)
+    assert _listen_spec() == "0.0.0.0:10062"
+
+
+def test_listen_spec_adds_legacy_ports(monkeypatch):
+    from app import _listen_spec
+
+    monkeypatch.setenv("PAN4DEX_UPDATE_PORT", "10062")
+    monkeypatch.setenv("PAN4DEX_UPDATE_EXTRA_PORTS", "23011, 23011 abc 10062")
+    assert _listen_spec() == "0.0.0.0:10062 0.0.0.0:23011"
+
+
+def test_listen_spec_is_what_waitress_accepts(monkeypatch):
+    from waitress.adjustments import Adjustments
+
+    from app import _listen_spec
+
+    monkeypatch.setenv("PAN4DEX_UPDATE_PORT", "10062")
+    monkeypatch.setenv("PAN4DEX_UPDATE_EXTRA_PORTS", "23011")
+    parsed = Adjustments(listen=_listen_spec()).listen
+    assert [entry[-1] for entry in parsed] == [("0.0.0.0", 10062), ("0.0.0.0", 23011)]

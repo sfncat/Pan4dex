@@ -35,7 +35,7 @@ CONFIG_PATH = Path(__file__).with_name("update_server.json")
 DOTENV_PATH = Path(__file__).resolve().parent.parent / "server" / "update-server" / ".env"
 
 DEFAULT_CONFIG = {
-    "server_url": "http://192.168.5.230:23011",
+    "server_url": "http://192.168.5.230:10062",
     "notes_template": "Pan4dex {version} 自动构建",
     "timeout_seconds": 900,
     "replace": False,

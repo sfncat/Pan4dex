@@ -38,7 +38,7 @@ from config.app_config import VERSION
 
 logger = logging.getLogger("pan4dex.updater")
 
-DEFAULT_SERVER_URL = "http://192.168.5.230:23011"
+DEFAULT_SERVER_URL = "http://192.168.5.230:10062"
 LATEST_PATH = "/api/v1/latest"
 PLATFORMS = ("windows", "linux")
 

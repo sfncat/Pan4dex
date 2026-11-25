@@ -43,7 +43,7 @@ from storage import (
 )
 
 SERVER_VERSION = "1.0.0"
-DEFAULT_PORT = 23011
+DEFAULT_PORT = 10062
 DEFAULT_MAX_UPLOAD_MB = 500
 DEFAULT_RETENTION = 5
 LOGIN_MAX_FAILURES = 5
@@ -437,12 +437,25 @@ def create_app(overrides: dict | None = None) -> Flask:
     return app
 
 
+def _listen_spec() -> str:
+    """主端口 + 过渡期并行监听的旧端口（waitress 按空格分隔多个 host:port）。"""
+    ports = [int(os.environ.get("PAN4DEX_UPDATE_PORT", DEFAULT_PORT))]
+    raw = os.environ.get("PAN4DEX_UPDATE_EXTRA_PORTS", "").replace(",", " ")
+    for token in raw.split():
+        try:
+            extra = int(token)
+        except ValueError:
+            continue
+        if extra not in ports:
+            ports.append(extra)
+    return " ".join(f"0.0.0.0:{port}" for port in ports)
+
+
 def _serve() -> None:
     from waitress import serve
 
     app = create_app()
-    port = int(os.environ.get("PAN4DEX_UPDATE_PORT", DEFAULT_PORT))
-    serve(app, host="0.0.0.0", port=port, threads=8)
+    serve(app, listen=_listen_spec(), threads=8)
 
 
 if __name__ == "__main__":

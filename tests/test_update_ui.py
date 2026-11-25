@@ -22,7 +22,7 @@ def _info(**overrides) -> UpdateInfo:
         filename="pan4dex-1.9.028.zip",
         size=1024,
         sha256="a" * 64,
-        download_url="http://192.168.5.230:23011/download/windows/pan4dex-1.9.028.zip",
+        download_url="http://192.168.5.230:10062/download/windows/pan4dex-1.9.028.zip",
         notes="修复若干问题\n新增更新功能",
         published_at="2026-10-30T00:00:00Z",
     )
@@ -35,7 +35,7 @@ def _make_dialog(qtbot, *, manual=False, auto_download=False, auto_install=False
     dialog = UpdateDialog(None, _info(), "1.9.027", manual=manual,
                           auto_download=auto_download,
                           auto_install=auto_install,
-                          server_url="http://192.168.5.230:23011")
+                          server_url="http://192.168.5.230:10062")
     qtbot.addWidget(dialog)
     return dialog
 
@@ -241,7 +241,7 @@ def test_settings_dialog_rejects_invalid_server(qapp, qtbot, monkeypatch):
                         lambda *args, **kwargs: warnings.append(args[2]))
     dialog = module.SettingsDialog()
     qtbot.addWidget(dialog)
-    dialog.update_server_edit.setText("192.168.5.230:23011")
+    dialog.update_server_edit.setText("192.168.5.230:10062")
     dialog.accept()
     assert warnings and "http" in warnings[0]
     assert dialog.result() != dialog.DialogCode.Accepted
@@ -293,6 +293,6 @@ def test_update_runner_emits_check_result(qapp, qtbot, monkeypatch):
     monkeypatch.setattr(updater, "check_for_update", lambda *a, **k: info)
     runner = UpdateRunner(None)
     with qtbot.waitSignal(runner.check_done, timeout=5000) as blocker:
-        assert runner.check("http://192.168.5.230:23011", "1.9.027")
+        assert runner.check("http://192.168.5.230:10062", "1.9.027")
     assert blocker.args[0].version == "1.9.028"
     assert blocker.args[1] == ""

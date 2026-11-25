@@ -99,9 +99,9 @@ def test_parse_version_and_compare():
 
 
 def test_normalize_server_url():
-    assert updater.normalize_server_url(" http://192.168.5.230:23011/ ") == \
-        "http://192.168.5.230:23011"
-    for bad in ("", "192.168.5.230:23011", "ftp://host", "http://"):
+    assert updater.normalize_server_url(" http://192.168.5.230:10062/ ") == \
+        "http://192.168.5.230:10062"
+    for bad in ("", "192.168.5.230:10062", "ftp://host", "http://"):
         with pytest.raises(ValueError):
             updater.normalize_server_url(bad)
 

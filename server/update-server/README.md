@@ -3,9 +3,20 @@
 局域网内部的发布源：管理页手动上传 Windows/Linux 产物，客户端通过 `/api/v1/latest` 检查更新。
 机制、客户端行为与安全边界见仓库 [`docs/update.md`](../../docs/update.md)，本页只讲部署与操作。
 
-- 默认端口：**23011**
-- 默认地址：`http://192.168.5.230:23011`
+- 默认端口：**10062**（2026-11-25 起，原 **23011**）
+- 过渡期端口：**23011 仍在并行监听**，由 `.env` 的 `PAN4DEX_UPDATE_EXTRA_PORTS=23011` 提供
+- 默认地址：`http://192.168.5.230:10062`
 - 数据目录：部署目录下的 `data/`（SQLite + 产物 + 审计日志；容器里是 `/data`）
+
+> **端口迁移已于 2026-11-25 落地 230**：`app.py` 改为 `serve(app, listen=_listen_spec())`
+> （waitress 3.0.2 实测支持空格分隔的多个 `host:port`），`.env` 补 `PAN4DEX_UPDATE_PORT=10062` +
+> `PAN4DEX_UPDATE_EXTRA_PORTS=23011`，`PAN4DEX_UPDATE_PUBLIC_BASE_URL` 同步换成 10062，重启后
+> `ss -ltnp` 同一 pid 两条 LISTEN、两端口 `/healthz` 均 200、`latest` 与 `/download/...` 头一致。
+> 为什么要留旧端口：只要用户在设置窗口点过「确定」，`core/main_window.py` 就把当时的地址无条件
+> 写进 QSettings，旧客户端读的是那份而不是内置默认值（gotchas #77）。
+> **收尾时机**：等 054 及更早的机器陆续升上来，删掉 `.env` 里 `PAN4DEX_UPDATE_EXTRA_PORTS` 这行
+> 并重启即可停用 23011；改前的旧 `.env` 备份在 `/home/kali/runspace/pan4dex/.env.bak-20261125-175150`
+> （旧 `app.py` 同目录 `app.py.bak-20261125-175150`）。
 
 ## 在 230 上部署（uv + systemd）
 
@@ -18,7 +29,7 @@ vi .env                      # 必须修改 PAN4DEX_UPDATE_ADMIN_PASSWORD
 
 uv sync                      # 建 .venv 并安装 Flask/waitress
 sudo systemctl restart pan4dex-update
-curl -s http://127.0.0.1:23011/healthz
+curl -s http://127.0.0.1:10062/healthz
 ```
 
 一次性的 systemd unit（`/etc/systemd/system/pan4dex-update.service`）：
@@ -44,10 +55,10 @@ WantedBy=multi-user.target
 放行局域网端口（Kali 若用 ufw）：
 
 ```bash
-sudo ufw allow from 192.168.5.0/24 to any port 23011
+sudo ufw allow from 192.168.5.0/24 to any port 10062
 ```
 
-首次打开 `http://192.168.5.230:23011/admin` 用 `.env` 里的口令登录。
+首次打开 `http://192.168.5.230:10062/admin` 用 `.env` 里的口令登录。
 未设置 `PAN4DEX_UPDATE_ADMIN_PASSWORD` 时服务会拒绝启动，不会以空口令运行。
 
 ## 另一条路：Docker Compose
@@ -58,10 +69,10 @@ sudo ufw allow from 192.168.5.0/24 to any port 23011
 放行局域网端口（Kali 若用 ufw）：
 
 ```bash
-ufw allow from 192.168.5.0/24 to any port 23011
+ufw allow from 192.168.5.0/24 to any port 10062
 ```
 
-首次打开 `http://192.168.5.230:23011/admin` 用 `.env` 里的口令登录。
+首次打开 `http://192.168.5.230:10062/admin` 用 `.env` 里的口令登录。
 未设置 `PAN4DEX_UPDATE_ADMIN_PASSWORD` 时服务会拒绝启动，不会以空口令运行。
 
 ## 上传版本
@@ -91,9 +102,9 @@ bash scripts/build-linux-docker.sh -U   # 只 Linux
 ## 客户端接口
 
 ```bash
-curl "http://192.168.5.230:23011/api/v1/latest?platform=windows"
-curl "http://192.168.5.230:23011/api/v1/latest?platform=linux"
-curl -O "http://192.168.5.230:23011/download/windows/pan4dex-1.9.028.zip"
+curl "http://192.168.5.230:10062/api/v1/latest?platform=windows"
+curl "http://192.168.5.230:10062/api/v1/latest?platform=linux"
+curl -O "http://192.168.5.230:10062/download/windows/pan4dex-1.9.028.zip"
 ```
 
 `latest` 返回 `version/size/sha256/notes/download_url`；没有版本时返回 404 `no_release`。
@@ -128,4 +139,4 @@ uv run pytest -q
 
 - 仅用于局域网，默认 HTTP；管理口令 + 会话 + CSRF + 登录限速，上传/删除写审计日志。
 - 客户端依赖 SHA-256 防止坏包；不防局域网内主动篡改 manifest 的中间人（见 `docs/update.md` 第 7 节）。
-- 不要把 23011 映射到公网。
+- 不要把 10062 映射到公网。
