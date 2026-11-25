@@ -8,13 +8,16 @@ updated: 2026-11-25
 
 ## 当前进展
 
-**1.9.055 出包中**（用户「出055版本，正好我验证一下新服务器域名」）：三批功能改动已按
-`d7824c9`（reveal）、`f5dfacb`（压缩对话框 + TAR 后端）、`a918206`（更新服务器 10062 双监听）
-提交，版本号已翻到 055。发布前置全量 **1082 passed / 5 skipped** 已在改前拿到汇总行。
-本版客户端内置更新源是 `http://192.168.5.230:10062`，230 服务端已提前上线该端口
-（旧 23011 并行监听着），所以装完 055 就能直接验新地址。产物：Windows 构建 → Linux（WSL2
-Docker）构建 → 上传 230 → 用 10062 核对 latest/download 的 version/size/SHA-256 → tag
-`v1.9.055` → 推送；数字与哈希出来后记到下面的「最近完成」。
+**1.9.055 已发布并上传（2026-11-25）**（用户「出055版本，正好我验证一下新服务器域名」）：三批功能
+改动按 `d7824c9`（reveal）、`f5dfacb`（压缩对话框 + TAR 后端）、`a918206`（更新服务器 10062 双监听）
+提交，翻牌提交 `92cb387`，tag `v1.9.055` 已指向该提交。双平台产物均已构建、核验、上传，
+并用 **10062** 完成 latest / download / 回下载逐字节哈希核对（数字见「最近完成」第一条）。
+本版客户端内置更新源是 `http://192.168.5.230:10062`，旧 23011 仍并行监听，所以**已装 054 的机器
+也能收到提示并升上来**（gotchas #77）。出包过程中撞到一个构建工具缺陷已一并修掉并提交
+`75f2bef`：默认输出目录 `dist\pan4dex` 正是用户日常在跑的那份，PyInstaller `--noconfirm` 清空时
+撞到被映射的 DLL 报错，**停下前已把它删掉一半（1277 → 750 文件）**——未动用户进程，那份现在
+还能用但关掉起不来，恢复办法是用 `releases\pan4dex-1.9.055\` 整目录覆盖（需先关掉实例）。
+新守卫 `PAN4DEX_WIN_DISTPATH` 与实测数字记入 gotchas **#78**、`docs/build/build-windows.md` W2.3。
 
 **更新服务器端口 23011 → 10062 已改完并在 230 落地双端口过渡**：改前实测 230 只有 23011 在听
 （`.env` 无端口项，走 `app.py` 进程内默认），10062 空闲。服务端 `_serve()` 改成
@@ -69,7 +72,7 @@ Xfce/xrdp 会话中按 PATH 启动 Nautilus，却继承 onefile 的 `LD_LIBRARY_
   点「检查更新」会直接连不上，得自己改设置或重新下安装包。建议：**跟着下一次发布走** —— 055 出包
   并确认几台主力机升上来后，删掉 230 上 `/home/kali/runspace/pan4dex/.env` 里的
   `PAN4DEX_UPDATE_EXTRA_PORTS` 一行再 `systemctl restart pan4dex-update` 即可，一条命令就能回退。
-  本版（055）正在出包，等你在新装的 055 上验过 10062 之后，这一条就可以安排。
+  055 已出包上传（latest 双平台均为 1.9.055），等你在新装的 055 上验过 10062 之后，这一条就可以安排。
 - **地址栏访问局域网共享：Windows 半边已落地，剩下两条各挡住一项待办**（原来四条决策的答复记在
   `docs/design-unc-share-access.md` §9，实现回执在 §11，**两条待定项的逐项对比在 §12**）：
   1. **Linux 那半边的口令谁来存**。决定什么：原先以为是「加一个 Python 依赖还是调系统命令」二选一，
@@ -102,6 +105,24 @@ Xfce/xrdp 会话中按 PATH 启动 Nautilus，却继承 onefile 的 `LD_LIBRARY_
 | 5 | 审指向 `core/pane.py` / `widgets/*` / `config/*` 的行号指针（051 那轮只清了 `main.py` 与构建脚本 12 处，同一类问题在别的文件上还没扫） | 待开始 | 待补充 | 同类旧活，一并挂着；本轮 `core/pane.py` 插入了新方法，旧行号指针又漂了一批 |
 
 ## 最近完成
+
+- 2026-11-25 **1.9.055 双平台出包、上传并用新端口 10062 回验**（用户「出055版本，正好我验证一下
+  新服务器域名」）。出包前最后一次全量 **1082 passed / 5 skipped（134.59s，EXIT=0）**，本轮只追加
+  构建脚本与文档改动，`tests/test_build_windows.py` **6 passed**。Windows onedir **272,285,234 字节**，
+  zip **116,650,454 字节**，SHA-256 `087b5115731c5dfa0a6d24ffe7423f1b8f3e83e49666c3d9b90024f6a598c078`；
+  zip 1277 条 CRC 全过、顶层均为 `pan4dex/`，含 `7z.exe`/`7z.dll`/`exiftool.exe` 且无 Linux 二进制残留，
+  `--version`/`--info` 报 v1.9.055 + 编译时间 + frozen True，`build/pan4dex/Analysis-00.toc` 证新模块已打包。
+  Linux 在 WSL2 Docker（缓存基座）构建，ELF **108,210,864 字节**，SHA-256
+  `a79261b57395fe4d22a870a983095fbab505389ad0b73dc6defbfcca18d3444b`，`\x7fELF` 魔数正确、可执行位随包保留；
+  在构建镜像里读出 CArchive 共 648 条：`resources/tools/7z/7zz` **恰好 1** 条 + `License-7zip-linux.txt` 1 条、
+  `7z.exe`/`7z.dll`/`7za.exe` **全 0**、exiftool-linux 247 条、`platforminputcontexts` 2 条、图标 3 条 +
+  `NotoSansCJK-Regular.ttc` 1 条；PYZ 内含 `widgets.archive_tool` 与 `core.archive_ops`；实跑 `--version`
+  报 `Pan4dex v1.9.055 (build 2026-11-25 18:29:44)`。**已上传 230（走 10062）**：Windows 6.8s / Linux 6.2s；
+  两平台 `latest` 的 version/size/SHA-256 与本地一致，`/download/` HEAD 的 `Content-Length` 与
+  `X-Checksum-Sha256` 一致，两个产物回下载到本机逐字节 sha256 一致（临时副本已删）。旧端口 23011 的
+  `latest` 仍 200 且 `download_url` 指向 10062（过渡成立）。保留策略生效：051–055 五个可下，**050 与 049
+  均 404**。用户正在跑的 `dist\pan4dex\pan4dex.exe`（PID 15324）未杀、未替换；构建工具修复另见 gotchas #78。
+  tag `v1.9.055` → `92cb387`；推送结果记入本文件的 git log。
 
 - 2026-11-25 **更新服务器端口改到 10062，并在 230 落地双端口过渡**（用户「端口改为 10062，
   服务端的代码也在项目里吧」→ 选「双端口并行 + 现在就改并重启验证」）。
