@@ -4,7 +4,8 @@
 机制、客户端行为与安全边界见仓库 [`docs/update.md`](../../docs/update.md)，本页只讲部署与操作。
 
 - 默认端口：**10062**（2026-11-25 起，原 **23011**）
-- 过渡期端口：**23011 仍在并行监听**，由 `.env` 的 `PAN4DEX_UPDATE_EXTRA_PORTS=23011` 提供
+- 旧端口 **23011 已于 2026-11-25 关闭**（过渡期结束，见下）；需要再次并行时用它：`.env` 里
+  `PAN4DEX_UPDATE_EXTRA_PORTS=<端口>`
 - 默认地址：`http://192.168.5.230:10062`
 - 数据目录：部署目录下的 `data/`（SQLite + 产物 + 审计日志；容器里是 `/data`）
 
@@ -14,9 +15,13 @@
 > `ss -ltnp` 同一 pid 两条 LISTEN、两端口 `/healthz` 均 200、`latest` 与 `/download/...` 头一致。
 > 为什么要留旧端口：只要用户在设置窗口点过「确定」，`core/main_window.py` 就把当时的地址无条件
 > 写进 QSettings，旧客户端读的是那份而不是内置默认值（gotchas #77）。
-> **收尾时机**：等 054 及更早的机器陆续升上来，删掉 `.env` 里 `PAN4DEX_UPDATE_EXTRA_PORTS` 这行
-> 并重启即可停用 23011；改前的旧 `.env` 备份在 `/home/kali/runspace/pan4dex/.env.bak-20261125-175150`
-> （旧 `app.py` 同目录 `app.py.bak-20261125-175150`）。
+> **收尾已完成（2026-11-25 22:32）**：1.9.055 双平台上线并验过后，把 `.env` 里
+> `PAN4DEX_UPDATE_EXTRA_PORTS=23011` 注释掉并 `systemctl restart pan4dex-update`，实测只剩
+> 10062 一条 LISTEN（pid 1871947）、服务 `active`、`/healthz` 200，23011 从 230 本机与局域网
+> 两侧都是「连接被拒」。改前备份 `/home/kali/runspace/pan4dex/.env.bak-close23011-20261125-223258`
+> （更早的端口迁移备份：同目录 `.env.bak-20261125-175150`、`app.py.bak-20261125-175150`）。
+> **影响**：地址被写死进 QSettings 的老客户端（在设置页点过「确定」的）此后点「检查更新」会连不上，
+> 需在设置「更新」页改成 `http://192.168.5.230:10062` 一次；下次再改端口/主机，沿用同一双监听过渡流程。
 
 ## 在 230 上部署（uv + systemd）
 

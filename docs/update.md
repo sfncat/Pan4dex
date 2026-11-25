@@ -223,8 +223,9 @@ SQLite 表 `releases`：
 - 服务：`/etc/systemd/system/pan4dex-update.service`，`EnvironmentFile=.env`、`PAN4DEX_UPDATE_DATA_DIR=<目录>/data`、`ExecStart=.venv/bin/python app.py`、`Restart=always`；`systemctl enable --now pan4dex-update`。
 - 数据：`<目录>/data/`（SQLite、产物、`secret.key`、`logs/admin.log`），备份拷这个目录即可。
 - 防火墙只放行局域网：`ufw allow from 192.168.5.0/24 to any port 10062`（Kali 若用 nftables，按同义规则；本机 ufw 关闭时无需配置）。
-- 过渡期并行监听旧端口：`.env` 里 `PAN4DEX_UPDATE_EXTRA_PORTS=23011` 让同一进程在 10062 之外继续听旧端口
-  （旧客户端的 QSettings 里存着旧地址，见 gotchas #77）；老版本升完后删掉这一行重启即停用。
+- 改端口/主机时可用 `PAN4DEX_UPDATE_EXTRA_PORTS=<旧端口>` 让同一进程并行监听旧端口
+  （旧客户端的 QSettings 里存着旧地址，见 gotchas #77）。230 的这次过渡已于 **2026-11-25 结束**：
+  该行已注释、服务重启，现网只听 10062；操作与实测记录见 `server/update-server/README.md`。
 - 备选：仓库内 `Dockerfile` / `docker-compose.yml` 仍可用；230 曾因拉不到 Docker Hub 基础镜像改走 uv 方案。
 - 反向代理/域名不在本次范围；以后上 HTTPS 只需在客户端改 `update/server_url`。
 
@@ -546,9 +547,10 @@ SHA-256（不初始化 Qt）。退出码：`0` 已是最新、`3` 有新版本�
 ## 11. 待确认 / 风险
 
 1. 端口现定为 **10062**（2026-11-25 起，原为 **23011**；改前在 230 上 `ss -ltnp` 实测 10062 无人监听）。
-   冲突时只改环境变量 `PAN4DEX_UPDATE_PORT` 与客户端默认值；过渡期旧端口 23011 由
+   冲突时只改环境变量 `PAN4DEX_UPDATE_PORT` 与客户端默认值；过渡期旧端口 23011 曾由
    `PAN4DEX_UPDATE_EXTRA_PORTS` 并行监听（旧客户端 QSettings 里存的是旧地址，gotchas #77），
-   230 已按此落地，收尾步骤见 `server/update-server/README.md`。
+   **已于 2026-11-25 随 1.9.055 上线后关闭**，现网 `ss -ltnp` 只剩 10062 一条 LISTEN。
+   下次改端口/主机要么沿用这套双监听过渡，要么写一次性配置迁移，收尾步骤见 `server/update-server/README.md`。
 2. 230 磁盘余量：每个平台约 100 MB/版本，需确认可用空间（建议保留 ≥ 10 GB）。
 3. Windows 目标机是否有 PowerShell 5.1（Win10/11 自带；不支持 Win7）。
 4. 客户端默认服务器地址确定为 `http://192.168.5.230:10062`（230 的 IP 变更时在设置页修改）。
