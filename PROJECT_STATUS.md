@@ -8,11 +8,11 @@ updated: 2026-11-25
 
 ## 当前进展
 
-**1.9.054 已发布（2026-11-25）：修复「点一下整个界面转圈」的文件图标卡死**（用户报「本机 pan4dex 卡死，点一下就转圈，应该是 SMB 相关」）。原生栈定位到根因不在 SMB 读取，而在取文件图标：`type_icon()` 旧实现把真实路径交给 `QFileIconProvider`，Windows shell 逐项调用注册的云盘图标覆盖处理器（本机 25+ 个：OneDrive/百度网盘/Google Drive 等），其中跨进程 COM RPC 卡住 → UI 线程在 `QAbstractFileIconEngine::scaledPixmap → QWaitCondition::wait` 同步等死。已改成 `SHGetFileInfoW` + 伪文件名 + `SHGFI_USEFILEATTRIBUTES`，只按扩展名查关联、不碰真实文件；非 Windows 沿用原路径。新增 `tests/test_type_icon.py` 7 条，对照组（换回旧实现）3 条红、恢复全绿。改动仅落 `core/dir_model.py` + 测试，未动配置/视图。**本版已翻牌为正式版本：`VERSION` / `pyproject.toml` / `AGENTS.md` 同步 1.9.054，CHANGELOG 顶部改为 `2026-11-25（master）`，tag `v1.9.054`。**
+**1.9.054 已发布并上传（2026-11-25）：修复「点一下整个界面转圈」的文件图标卡死**（用户报「本机 pan4dex 卡死，点一下就转圈，应该是 SMB 相关」）。原生栈定位到根因不在 SMB 读取，而在取文件图标：`type_icon()` 旧实现把真实路径交给 `QFileIconProvider`，Windows shell 逐项调用注册的云盘图标覆盖处理器（本机 25+ 个：OneDrive/百度网盘/Google Drive 等），其中跨进程 COM RPC 卡住 → UI 线程在 `QAbstractFileIconEngine::scaledPixmap → QWaitCondition::wait` 同步等死。已改成 `SHGetFileInfoW` + 伪文件名 + `SHGFI_USEFILEATTRIBUTES`，只按扩展名查关联、不碰真实文件；非 Windows 沿用原路径。新增 `tests/test_type_icon.py` 7 条，对照组（换回旧实现）3 条红、恢复全绿。改动仅落 `core/dir_model.py` + 测试，未动配置/视图。**本版已翻牌为正式版本：`VERSION` / `pyproject.toml` / `AGENTS.md` 同步 1.9.054，CHANGELOG 顶部改为 `2026-11-25（master）`，tag `v1.9.054`。**
 
 **同批落地四条 Linux/跨平台问题**（用户列 4 项）：① Linux 右键「在文件管理器中显示」变浏览器——`core/reveal.py` 旧回落 `xdg-open 父目录` 把 `inode/directory` 交给了 MIME 默认程序，改成桌面匹配 → PATH 探测真实文件管理器 → D-Bus `ShowItems` → 最后才 xdg-open（gotchas #71）；② Linux 压缩/解压「功能没了」——菜单在但 `find_7z()` 三级兜底全空，官方 7zz 25.01 + LGPL 许可证已入库并精确放行 `.gitignore`、Linux 构建随附许可证（gotchas #72）；③ Linux 双击 `.md` 不走系统默认——默认表写死 gedit 且 `open_file()` 关联优先，删掉硬编码并对老配置里恰好是旧默认值的做一次性迁移（gotchas #73）；④ 文件视图/目录树右键新增「复制路径」「复制文件名」（原「复制文件地址」更名），搜索右键补「复制文件名」，多选逐行写剪贴板。四条均有新用例与对照组（reveal 红 3 / md 红 3 / 图标红 3）；构建脚本加许可证时引入内层 `if` 撞上既有守卫的解析假设，已改成单行 `&&` 并补守卫。
 
-**卡在哪 / 验证结果**：全量第一次跑崩在 `EXIT=139`——非产品代码问题：卡死的老进程（PID 32680，31 小时）仍握着 `%APPDATA%\pan4dex\logs\pan4dex.log` 句柄，测试里 `TimedRotatingFileHandler` 跨天轮转 `os.rename` 撞 `[WinError 32]`，每条 logger 都重试一次把 pytest-qt 拖到段错误。未擅自杀用户进程，改用隔离 `APPDATA` + 全新 `TMPDIR` 重跑（config/paths.py 与 main.py 都读 APPDATA）：中途那轮 **1046 passed / 6 skipped / 2 failed** 的 2 条（`test_bookmarks`、`test_m4_theme` 默认收藏）是隔离环境缺 `~/Desktop` 导致「桌面」条目被跳过；补建 Desktop 后那轮全量 1048 passed / 6 skipped。叠加本轮四项修复后**最终全量 1065 passed / 6 skipped（215.04s，EXIT=0，0 失败；版本翻牌后复跑同数）**。之前 1.9.053 基线 1042 passed / 5 skipped。
+**卡在哪 / 验证结果**：全量第一次跑崩在 `EXIT=139`——非产品代码问题：卡死的老进程（PID 32680，31 小时）仍握着 `%APPDATA%\pan4dex\logs\pan4dex.log` 句柄，测试里 `TimedRotatingFileHandler` 跨天轮转 `os.rename` 撞 `[WinError 32]`，每条 logger 都重试一次把 pytest-qt 拖到段错误。未擅自杀用户进程，改用隔离 `APPDATA` + 全新 `TMPDIR` 重跑（config/paths.py 与 main.py 都读 APPDATA）：中途那轮 **1046 passed / 6 skipped / 2 failed** 的 2 条（`test_bookmarks`、`test_m4_theme` 默认收藏）是隔离环境缺 `~/Desktop` 导致「桌面」条目被跳过；补建 Desktop 后那轮全量 1048 passed / 6 skipped。叠加本轮四项修复后发布前置全量为 **1065 passed / 6 skipped（215.04s，EXIT=0）**；本次双平台出包在隔离 `APPDATA` + 全新 `TMPDIR` 下复跑为 **1066 passed / 5 skipped（159.46s，EXIT=0，0 失败）**。之前 1.9.053 基线 1042 passed / 5 skipped。
 
 ## 等你决策
 
@@ -49,6 +49,22 @@ updated: 2026-11-25
 
 ## 最近完成
 
+- 2026-11-25 **1.9.054 双平台出包并本地核验**（用户「出054版本，双平台，linux使用wsl里的docker编译」）。
+  全量 **1066 passed / 5 skipped（159.46s，EXIT=0）**。Linux 在 WSL2 原生目录
+  `/root/pan4dex-release-054.YqebVh` 用 Docker 29.8.2 + 缓存基座构建，ELF **108,207,536 字节**，
+  SHA-256 `3a959b29bc39aa1adbf44f12fa92c641f6f6b41d0cadb7ae6dfd70ea84e6d25a`；`--version`
+  报 v1.9.054，`--info` 报 frozen True，ELF 为 x86-64、权限 755。Windows onedir
+  **272,282,209 字节**，zip **116,647,078 字节**，SHA-256
+  `0d6f4ac76f726473430ee7caa460869cbd1e8a435895ede56a4eb9a34cf22aa2`；`--version`/`--info`
+  同为 054 + frozen True，zip 1277 条全部通过 CRC 且顶层均为 `pan4dex/`。包内 7-Zip 26.04 与
+  ExifTool 13.60 均实跑成功；Linux 包 `7zz`/LGPL 许可证各 1、ExifTool 247，Windows 专用三件为 0；
+  Windows 包内置 7z.exe/7z.dll/exiftool.exe，无 Linux 二进制残留，归档清单含 net_share、
+  net_credentials_dialog、rdp_files、reveal、file_associations。构建临时文件已还原，工作树无构建污染。
+  **已上传更新服务器**：Windows 4.9s / Linux 2.7s；两端 latest 均为 1.9.054，version/size/SHA-256
+  与本地一致，`X-Checksum-Sha256` 也一致，并把两个产物真下载回来逐字节哈希核对一致，临时副本已删除。
+  050–053 四个旧包 HEAD 均 200 且字节数原样；049 按每平台保留 5 版策略裁为 404。远端 master 与
+  tag `v1.9.054` 已存在于 `37b5201`；本次回执提交与推送结果另行记入 git log。
+
 - 2026-11-25 **Linux 四项修复 + 跨平台右键复制（1.9.054 的内容）**（用户列 4 条）：
   **①** 右键「在文件管理器中显示」在 Linux 弹浏览器——`core/reveal.py:_linux_argv()` 只认
   KDE/GNOME，未识别桌面就 `xdg-open 父目录`，而本机 `inode/directory` 关联到浏览器。改成三层：
@@ -70,7 +86,8 @@ updated: 2026-11-25
   （原「复制文件地址」更名），多选逐行写入系统剪贴板；新增 `tests/test_copy_path_name.py`
   4 条 + 搜索侧 1 条，同步更新钉着旧菜单文案的既有用例。文档：gotchas **#71–#73**、
   CHANGELOG `[1.9.054]` 补 Added/Fixed 共 4 条（出包时已翻牌）、`docs/linux-gap.md` 两处表格与两处正文。
-  版本/pyproject/tag 已随本版同步。全量 **1065 passed / 6 skipped（215.04s，EXIT=0）**。
+  版本/pyproject/tag 已随本版同步。发布前置全量 **1065 passed / 6 skipped（215.04s，EXIT=0）**；
+  双平台出包复跑 **1066 passed / 5 skipped（159.46s，EXIT=0）**。
 - 2026-11-24 **文件图标卡死修复（1.9.054 的内容）**（用户「本机 pan4dex 处于卡死状态，
   点一下就转圈，应该是 SMB 相关」）。不动正在跑的进程，先 `procdump` 抓转圈那一刻的完整 dump，
   自写 PE/栈解析器把两条线程的原生栈翻成符号：主线程

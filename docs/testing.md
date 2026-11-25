@@ -146,9 +146,10 @@ Qt 对象，控件用例用 `qtbot`）。
 QT_QPA_PLATFORM=offscreen pytest tests/ -q
 ```
 
-> **当前基线（2026-11-25 实测）**：上面这条**能跑完**，不需要任何 `--ignore`：
-> Windows / Python 3.13（`.venv`）/ offscreen → **1065 passed, 6 skipped in 215.04s**
-> （1.9.054 发布前置。+17 条 = reveal 3 + archive_ops_linux 3 + file_associations_default 5
+> **当前基线（2026-11-25 出包复跑实测）**：上面这条**能跑完**，不需要任何 `--ignore`：
+> Windows / Python 3.13（`.venv`）/ offscreen → **1066 passed, 5 skipped in 159.46s**
+> （隔离 `APPDATA` + `TMPDIR`，1.9.054 双平台出包前置；发布前置那轮为
+> 1065 passed / 6 skipped（215.04s）。+17 条 = reveal 3 + archive_ops_linux 3 + file_associations_default 5
 > + copy_path_name 4 + search_results 1 + build_linux_docker 1。上一基线是 2026-11-24 的
 > 1048 passed / 6 skipped（206.69s，图标卡死修复那轮）；再上一基线是 2026-11-19 的
 > 1042 passed / 5 skipped（104.90s，

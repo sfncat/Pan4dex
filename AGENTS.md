@@ -113,7 +113,7 @@ bash scripts/build-linux-docker.sh              # Linux 唯一入口 → release
 python scripts/build_windows.py                 # Windows 本机 → releases/pan4dex-<版本>/ + 同名 .zip
 ```
 
-> 全量那条**现在跑得完**，无需 `--ignore`（2026-11-25 基线：**1065 passed / 6 skipped**，
+> 全量那条**现在跑得完**，无需 `--ignore`（2026-11-25 出包复跑基线：**1066 passed / 5 skipped**，
 > 见 `docs/testing.md` §5；跑之前留意该节关于日志轮转与隔离 APPDATA 的提醒）。历史：v1.9.020–027 曾因「用两个文件路径构造 `FileCompareDialog`」
 > 弹模态框挂住 `test_new_features.py` / `test_m5_tools.py` 两档，v1.9.028 修复、T4/T5 已销账
 > （gotchas #56）。规矩没变：**跑不完就是跑不过**，报「全量通过」必须真拿到汇总行。
