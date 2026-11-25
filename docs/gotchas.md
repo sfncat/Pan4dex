@@ -1827,6 +1827,26 @@ Thunar 标为可选中。新增“XFCE + Nautilus/Thunar 同时存在”用例�
 
 ---
 
+### 78. Windows 构建的输出目录就是用户正在用的安装目录：`--noconfirm` 把它删了一半才报错
+
+**现场**：出 1.9.055 时 `python scripts/build_windows.py 1.9.055` 崩在
+`PermissionError: [WinError 5] ... dist\pan4dex\_internal\imageformats\qgif.dll`。
+回头数 `dist\pan4dex\` 只剩 **750 个文件**（完整产物 1277 个），用户那台机器上的程序进程还活着，
+但一旦关掉就再也起不来——**报错发生在删除之后，不是之前**。
+
+**根因**：构建机日常就跑着 `dist\pan4dex\pan4dex.exe`（和仓库默认 `--distpath=dist` 是同一份），
+PyInstaller 的 `--noconfirm` 会先递归清空 `dist\pan4dex\`，清到第一个被进程映射住的 DLL 才停手。
+所以「撞权限」这种失败**不是无害失败**，它先把用户正在用的安装目录破坏掉。
+
+**修法**：`scripts/build_windows.py:44` 读 `PAN4DEX_WIN_DISTPATH`（不设时仍是 `dist/`，
+行为不变），`--distpath` 与后续 `src_folder` 都用这一处，构建前把输出指到临时目录即可绕开
+正在运行的实例，产物照样拷进 `releases/`。**不要为了构建去 `taskkill /F /IM pan4dex*`**。
+`tests/test_build_windows.py` 钉住「env 设了就用、没设仍是 dist」。
+受损那份的恢复办法是拿 `releases\pan4dex-<版本>\` 整目录覆盖（需先关掉在跑的实例），
+而不是重跑构建去救。
+
+---
+
 ## 八、回归防护机制
 
 ### 部署脚本

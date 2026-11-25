@@ -40,7 +40,7 @@
 | 上手跑起来、日常命令 | `QUICKSTART.md` |
 | 开发流程、加测试、代码规范、文档维护 | `docs/development-guide.md`；测试策略见 `docs/testing.md` |
 | 某功能做没做、还剩什么 | `docs/feature-checklist.md`（状态表）；**待办看 `docs/todo.md`**；Linux 半边另看 `docs/linux-gap.md` |
-| 为什么不能那么写（踩过一次的都在这） | `docs/gotchas.md`（#1–#77，第六/七节是模型与生命周期） |
+| 为什么不能那么写（踩过一次的都在这） | `docs/gotchas.md`（#1–#78，第六/七节是模型与生命周期） |
 | 发布改了什么 | `CHANGELOG.md` |
 | 版本更新机制（230 更新服务器 + 客户端自动更新） | `docs/update.md` |
 | 现在还挂着的问题 | `docs/unsolved-issues.md` |

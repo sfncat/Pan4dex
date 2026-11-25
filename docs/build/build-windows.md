@@ -103,10 +103,14 @@ scp 'sshuser@192.168.5.54:C:\workspace\Pan4dex\releases\pan4dex-1.9.027.zip' ./r
 - **不要用 `tar | ssh` 往 Windows 灌源码**：落地会按 GBK 码页，带中文注释的源文件变乱码，触发
   `UnicodeDecodeError: 'utf-8' can't decode byte 0x94`。要同步源码用 `git`(bundle/pull) 或 `rsync/scp`，
   且 `build_windows.py` 读 `config/app_config.py` 已做 utf-8→gbk 回退解码兜底。
-- **运行中的 exe 删不掉**：`dist\pan4dex\` 被正在运行的产物占住时，PyInstaller 清目录会报
-  `PermissionError: [WinError 5]`。**别急着 `taskkill /F /IM pan4dex*` 掉用户正在用的程序** ——
-  给 PyInstaller 传 `--distpath` 指到另一个目录（如 `build/dist-<版本>`）即可绕开，产物照样拷进 `releases/`。
-  只有真要替换那份正在运行的产物时，才先关掉它。（2026-11-13 出 1.9.049 时实测，gotchas #66）
+- **运行中的 exe 删不掉，而且失败前已经删掉一批**：`dist\pan4dex\` 被正在运行的产物占住时，
+  PyInstaller 的 `--noconfirm` 会先递归清目录，到第一个被映射住的 DLL 才抛
+  `PermissionError: [WinError 5]` —— 停下时那份**用户正在用的安装目录已被删掉一部分**（2026-11-25
+  实测：剩 750 个文件，完好参照 1277 个；进程还活着，但关掉就再也起不来）。所以
+  **构建前先确认 `dist\pan4dex\pan4dex.exe` 有没有在跑**，在跑就直接换输出目录，别试默认路径：
+  `PAN4DEX_WIN_DISTPATH=<临时目录> python scripts/build_windows.py <版本>`（不设时仍是 `dist/`，
+  产物照样拷进 `releases/`）。**别急着 `taskkill /F /IM pan4dex*` 掉用户正在用的程序**；
+  只有真要替换那份正在运行的产物时，才先关掉它。详见 gotchas **#78**（与 #66 同一条链）。
 - **Windows 侧 PyInstaller 的 `--add-data` 分隔符是 `;` 不是 `:`**（`build_windows.py` 内部已处理，别手改 Linux 那套）。
 
 ### W2.4 验证（拉回本机后）

@@ -38,6 +38,11 @@ print(f"Building Pan4dex {VERSION} for Windows...")
 print(f"Working dir: {os.getcwd()}")
 print(f"Script: {script_path}")
 
+# 产物输出目录，默认 dist/（PyInstaller 自身的默认值）。机器上正跑着 dist\pan4dex\pan4dex.exe
+# 时，--noconfirm 清理 dist\pan4dex 会撞 WinError 5；用 PAN4DEX_WIN_DISTPATH 指到临时目录
+# 绕开它，不去动正在运行的实例。
+DIST_DIR = pathlib.Path(os.environ.get("PAN4DEX_WIN_DISTPATH") or project_root / "dist")
+
 # 编译时间写进临时生成的 config/_build_info.py（已 gitignore，打包后删除）：
 # 不再改写受版本控制的 app_config.py，构建不再弄脏工作区。
 build_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -133,6 +138,7 @@ for _warning in _missing_tool_warnings(tools_dir):
 cmd = [
     sys.executable, "-m", "PyInstaller",
     "--onedir", "--windowed", "--noconfirm",
+    f"--distpath={DIST_DIR}",
     "--name=pan4dex",
     "--add-data=resources;resources",
     "--hidden-import=PyQt6.QtCore",
@@ -192,8 +198,7 @@ if result.returncode != 0:
 releases_dir = project_root / "releases"
 releases_dir.mkdir(exist_ok=True)
 
-dist_dir = project_root / "dist"
-src_folder = dist_dir / "pan4dex"
+src_folder = DIST_DIR / "pan4dex"
 dest_folder = releases_dir / f"pan4dex-{VERSION}"
 
 if not src_folder.exists():
