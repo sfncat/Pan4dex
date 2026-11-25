@@ -5,9 +5,8 @@
 写哪个状态栏。纯执行层：不认识窗格、不弹窗（把异常咽进模态框会让测试永久挂住，
 gotchas #56），失败只返回结果 + 记日志。
 
-**待真机实测**（本轮没有真的拉起文件管理器窗口，见 docs/improvement-plan-t6-t9.md §4.5）：
-Windows 的 argv 形式能否选中带空格/UNC 路径、Linux 的 `dolphin --select` /
-`nautilus --select` 能否高亮。参数按各桌面环境的公开用法拼，验完再回来改这一处。
+真机记录：231 上 Nautilus 46.4 与 Thunar 4.18.8 的选中效果已验；其它平台/管理器见
+`docs/gotchas.md` #71、#74、#75。
 """
 import json
 import logging
@@ -22,8 +21,8 @@ logger = logging.getLogger("pan4dex.reveal")
 
 REVEAL_LIMIT = 5      # 一次最多定位几个（一人开十个窗口是灾难）
 
-# PATH 里常见文件管理器；第二项是「选中该文件」的命令行参数。
-# Thunar 没有 --select，传文件路径它自己定位父目录（不保证高亮，故 selected=False）。
+# PATH 里常见文件管理器；第二项是额外的「选中该文件」参数。
+# Thunar 直接接收文件路径即可选中，不需要额外参数。
 _LINUX_FILE_MANAGERS = (
     ("nautilus", ("--select",)),
     ("dolphin", ("--select",)),
@@ -61,7 +60,7 @@ def _linux_argv(norm: str):
     就回落 `xdg-open 父目录`——本机实测这条会把 `inode/directory` 交给浏览器，
     于是「在文件管理器中显示」变成开浏览器。现在按三层挑：
 
-    1. 桌面环境精确匹配（KDE→dolphin、GNOME→nautilus，保留原行为）；
+    1. 桌面环境精确匹配（KDE→dolphin、GNOME→nautilus、XFCE→thunar，保留原行为）；
     2. 不管桌面环境写什么，按 PATH 探测 _LINUX_FILE_MANAGERS 里真实存在的一个；
     3. 都不在 PATH（如 Flatpak 版）走 freedesktop 标准 D-Bus ShowItems。
 
@@ -72,11 +71,13 @@ def _linux_argv(norm: str):
         return ['dolphin', '--select', norm], True
     if 'GNOME' in desktop and shutil.which('nautilus'):
         return ['nautilus', '--select', norm], True
+    if 'XFCE' in desktop and shutil.which('thunar'):
+        return ['thunar', norm], True
 
     # 桌面环境变量不可信/没设：按可执行文件本身挑，不再走 xdg-open
     for name, select_args in _LINUX_FILE_MANAGERS:
         if shutil.which(name):
-            return [name, *select_args, norm], bool(select_args)
+            return [name, *select_args, norm], name == 'thunar' or bool(select_args)
 
     # 文件管理器不在 PATH：让正在运行的 FM 通过标准接口自己高亮
     if shutil.which('gdbus'):
@@ -115,11 +116,25 @@ def reveal_in_file_manager(paths, limit: int = REVEAL_LIMIT) -> RevealResult:
     opened = failed = 0
     selected = True
     error = ""
+    popen_kwargs = {}
+    if sys.platform == 'linux':
+        env = os.environ.copy()
+        bundle_dir = getattr(sys, '_MEIPASS', '')
+        if bundle_dir and env.get('LD_LIBRARY_PATH'):
+            # 外部 GTK 程序不能继承 onefile 的私有 GLib，否则会 symbol lookup error。
+            bundle_dir = os.path.normpath(bundle_dir)
+            entries = [p for p in env['LD_LIBRARY_PATH'].split(':')
+                       if os.path.normpath(p) != bundle_dir]
+            if entries:
+                env['LD_LIBRARY_PATH'] = ':'.join(entries)
+            else:
+                env.pop('LD_LIBRARY_PATH')
+        popen_kwargs['env'] = env
     for p in paths[:limit]:
         argv, can_select = _argv_for(os.path.normpath(p))
         selected = selected and can_select
         try:
-            subprocess.Popen(argv)
+            subprocess.Popen(argv, **popen_kwargs)
             opened += 1
         except OSError as e:
             failed += 1

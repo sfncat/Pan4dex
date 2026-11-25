@@ -9,8 +9,8 @@
 - 回落路径要**明说没选中**，不能让用户以为文件已经高亮
 - 两处调用方对同一路径拼出**同一条 argv**（这就是「合一」的观测量）
 
-真机行为（Explorer 哪种形式能选中、dolphin/nautilus 的 --select 是否高亮）本轮
-**未实测**，不在这里断言；见 docs/improvement-plan-t6-t9.md §4.5 的待实测清单。
+真机记录：231 的 Nautilus 46.4 与 Thunar 4.18.8 已验证选中；其它平台/管理器不外推，
+见 docs/gotchas.md #71、#74、#75。
 """
 import json
 import os
@@ -156,14 +156,58 @@ def test_linux_unknown_desktop_uses_nautilus_from_path_not_browser(popen, as_pla
     assert result.selected is True
 
 
-def test_linux_thunar_opens_manager_not_browser(popen, as_platform, tmp_path):
-    """Thunar 没有 --select：传文件路径定位父目录，但也不能退回 xdg-open"""
+def test_linux_thunar_selects_file_not_browser(popen, as_platform, tmp_path):
+    """Thunar 接收文件路径后会打开所在目录并选中该文件"""
     as_platform("linux", desktop="XFCE", bins=("thunar",))
     p = str(tmp_path / "a.txt")
     result = reveal.reveal_in_file_manager(p)
     assert popen.argvs == [["thunar", os.path.normpath(p)]]
     assert popen.argvs[0][0] != "xdg-open"
-    assert result.selected is False
+    assert result.selected is True
+
+
+def test_linux_xfce_thunar_wins_even_with_nautilus_in_path(popen, as_platform, tmp_path):
+    """XFCE 默认文件管理器是 Thunar，不能被 PATH 里更靠前的 Nautilus 抢走"""
+    as_platform("linux", desktop="XFCE", bins=("nautilus", "thunar"))
+    p = str(tmp_path / "a.txt")
+    result = reveal.reveal_in_file_manager(p)
+    assert popen.argvs == [["thunar", os.path.normpath(p)]]
+    assert result.selected is True
+
+
+def test_linux_external_app_keeps_user_libraries_without_bundle_glib(
+        popen, as_platform, monkeypatch, tmp_path):
+    as_platform("linux", desktop="XFCE", bins=("thunar",))
+    monkeypatch.setattr(sys, "_MEIPASS", "/tmp/_MEIpan4dex", raising=False)
+    monkeypatch.setenv("LD_LIBRARY_PATH", "/tmp/_MEIpan4dex:/opt/custom/lib")
+    monkeypatch.setenv("PAN4DEX_TEST_KEEP", "yes")
+
+    reveal.reveal_in_file_manager(str(tmp_path / "a.txt"))
+
+    env = popen.calls[0][1]["env"]
+    assert env["LD_LIBRARY_PATH"] == "/opt/custom/lib"
+    assert env["PAN4DEX_TEST_KEEP"] == "yes"
+
+
+def test_linux_external_app_drops_library_path_when_only_bundle_remains(
+        popen, as_platform, monkeypatch, tmp_path):
+    as_platform("linux", desktop="XFCE", bins=("thunar",))
+    monkeypatch.setattr(sys, "_MEIPASS", "/tmp/_MEIpan4dex", raising=False)
+    monkeypatch.setenv("LD_LIBRARY_PATH", "/tmp/_MEIpan4dex")
+
+    reveal.reveal_in_file_manager(str(tmp_path / "a.txt"))
+
+    assert "LD_LIBRARY_PATH" not in popen.calls[0][1]["env"]
+
+
+def test_linux_source_run_preserves_library_path(popen, as_platform, monkeypatch, tmp_path):
+    as_platform("linux", desktop="XFCE", bins=("thunar",))
+    monkeypatch.delattr(sys, "_MEIPASS", raising=False)
+    monkeypatch.setenv("LD_LIBRARY_PATH", "/opt/custom/lib")
+
+    reveal.reveal_in_file_manager(str(tmp_path / "a.txt"))
+
+    assert popen.calls[0][1]["env"]["LD_LIBRARY_PATH"] == "/opt/custom/lib"
 
 
 def test_linux_dbus_fallback_when_no_manager_in_path(popen, as_platform, tmp_path):
